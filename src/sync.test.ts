@@ -98,11 +98,12 @@ function fakeNostr(): NostrService {
 async function harness() {
   const dir = await mkdtemp(join(tmpdir(), "npanel-sync-"));
   const db: Kysely<Database> = await openDatabase(":memory:");
-  const blobs = new BlobStore(join(dir, "blobs"));
-  const settings = await SettingsService.load(db);
   // The test Blossom servers listen on loopback, which is exactly what the
   // SSRF guard exists to refuse.
-  await settings.update({ allow_private_blob_servers: true }, PUBKEY);
+  const blobs = new BlobStore(join(dir, "blobs"), { isPublic: async () => true });
+  const settings = await SettingsService.load(db);
+  // The default fallbacks are real Blossom servers; no test may touch them.
+  await settings.update({ blossom_fallback_servers: [] }, PUBKEY);
   const log = new Logger("error");
   const worker = new SyncWorker({ db, blobs, nostr: fakeNostr(), settings, log });
 

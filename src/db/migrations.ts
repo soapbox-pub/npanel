@@ -95,6 +95,12 @@ const MIGRATIONS: Migration[] = [
       "CREATE INDEX deploy_log_event_idx ON deploy_log (event_id, id)",
     ],
   },
+  {
+    // Downloads are now always restricted to public addresses, so this row
+    // would only sit in the table meaning nothing.
+    name: "002_drop_allow_private_blob_servers",
+    statements: ["DELETE FROM settings WHERE key = 'allow_private_blob_servers'"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

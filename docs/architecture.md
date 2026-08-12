@@ -89,11 +89,17 @@ Deploying means downloading every blob the version references, four at a time,
 trying each candidate server in turn. Only when all of them are on disk does the
 version become `ready`.
 
-Downloads only go to public addresses. A manifest names its own servers, so
-without that rule publishing one would be enough to make npanel probe whatever
-is listening on its own network; `allow_private_blob_servers` turns the check
-off for people whose Blossom server is on the LAN. Redirects are followed by
-hand, three at most, so each hop is checked rather than only the first.
+Downloads only go to public addresses, and there is no way to turn that off.
+Download targets are not npanel's to choose — they come from the manifest's own
+`server` tags, from the author's kind 10063 list, and from wherever those
+servers redirect — so without the rule, publishing a manifest would be enough to
+make npanel probe cloud metadata, a LAN admin interface, or a database's HTTP
+port, with the resulting status codes landing in a deploy log the author can
+read. Redirects are followed by hand, three at most, so each hop is resolved and
+checked rather than only the first. The check resolves the name rather than
+pinning the connection to the address it checked, so a determined DNS-rebinding
+attack can still get through: don't run npanel somewhere a single GET request to
+a neighbouring service would be a disaster.
 
 That last part is the important invariant: **a host serves only `ready`
 versions**. A deploy that is still downloading, or that failed outright, never

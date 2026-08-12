@@ -277,11 +277,10 @@ back in if it ever happens anyway.)
 ```json
 {
   "settings": {
-    "relays": ["wss://relay.damus.io"],
-    "blossom_fallback_servers": [],
+    "relays": ["wss://relay.ditto.pub"],
+    "blossom_fallback_servers": ["https://blossom.ditto.pub/"],
     "max_file_size": 104857600,
     "resync_interval": 600,
-    "allow_private_blob_servers": false,
     "allowed_host_suffixes": [],
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600
@@ -337,7 +336,7 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
   "ready_versions": 30,
   "blobs": 1840,
   "blob_bytes": 419430400,
-  "relays": ["wss://relay.damus.io"]
+  "relays": ["wss://relay.ditto.pub"]
 }
 ```
 

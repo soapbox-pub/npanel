@@ -85,11 +85,7 @@ export class SyncWorker {
       if (keys.includes("resync_interval")) {
         this.scheduleResync();
       }
-      if (
-        keys.includes("blossom_fallback_servers") ||
-        keys.includes("max_file_size") ||
-        keys.includes("allow_private_blob_servers")
-      ) {
+      if (keys.includes("blossom_fallback_servers") || keys.includes("max_file_size")) {
         // New servers or a bigger limit may be exactly what a failed deploy needed.
         void this.retryIncomplete();
       }
@@ -507,11 +503,7 @@ export class SyncWorker {
     for (const server of servers) {
       const url = blobUrl(server, sha256);
       try {
-        const size = await this.blobs.download(url, sha256, {
-          maxSize,
-          signal: this.controller.signal,
-          allowPrivate: this.settings.get("allow_private_blob_servers"),
-        });
+        const size = await this.blobs.download(url, sha256, { maxSize, signal: this.controller.signal });
         await this.recordBlob(sha256, size);
         await this.writeDeployLog(eventId, "debug", "blob_downloaded", { sha256, server, size });
         return true;

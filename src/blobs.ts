@@ -37,10 +37,18 @@ export class BlobDownloadError extends Error {
 export class BlobStore {
   private readonly dir: string;
   private readonly tmpDir: string;
+  private readonly isPublic: (url: URL) => Promise<boolean>;
 
-  constructor(dir: string) {
+  /**
+   * `isPublic` decides whether a download may reach a given address. It
+   * defaults to a real DNS-resolving check and is overridden only by tests,
+   * whose Blossom servers listen on loopback — exactly what the real check is
+   * there to refuse.
+   */
+  constructor(dir: string, opts: { isPublic?: (url: URL) => Promise<boolean> } = {}) {
     this.dir = resolve(dir);
     this.tmpDir = join(this.dir, "tmp");
+    this.isPublic = opts.isPublic ?? isPublicUrl;
   }
 
   /** Filesystem path a blob occupies, whether or not it exists. */
@@ -89,9 +97,9 @@ export class BlobStore {
   /**
    * Download a blob from `url`, verifying it hashes to `sha256`.
    *
-   * Unless `allowPrivate` is set, the target — and every redirect it leads to
-   * — must resolve to a public address, because the URL ultimately comes from
-   * a manifest that anyone can publish.
+   * The target — and every redirect it leads to — must resolve to a public
+   * address, because the URL ultimately comes from a manifest that anyone can
+   * publish.
    *
    * Returns the size in bytes. Throws {@link BlobDownloadError} on any failure,
    * leaving the store untouched.
@@ -99,14 +107,14 @@ export class BlobStore {
   async download(
     url: string,
     sha256: string,
-    opts: { maxSize: number; signal?: AbortSignal; timeout?: number; allowPrivate?: boolean },
+    opts: { maxSize: number; signal?: AbortSignal; timeout?: number },
   ): Promise<number> {
     assertSha256(sha256);
 
     const timeout = AbortSignal.timeout(opts.timeout ?? 30_000);
     const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
-    const response = await request(url, { signal, allowPrivate: opts.allowPrivate ?? false });
+    const response = await request(url, { signal, isPublic: this.isPublic });
 
     if (!response.ok || !response.body) {
       throw new BlobDownloadError(`HTTP ${response.status}`, "http", response.status);
@@ -214,7 +222,10 @@ function assertSha256(value: string): void {
  * checked — a cooperative server could redirect npanel anywhere. Each hop is
  * vetted before it is requested.
  */
-async function request(url: string, opts: { signal: AbortSignal; allowPrivate: boolean }): Promise<Response> {
+async function request(
+  url: string,
+  opts: { signal: AbortSignal; isPublic: (url: URL) => Promise<boolean> },
+): Promise<Response> {
   let target: URL;
   try {
     target = new URL(url);
@@ -226,9 +237,7 @@ async function request(url: string, opts: { signal: AbortSignal; allowPrivate: b
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       throw new BlobDownloadError(`Refusing to fetch a ${target.protocol} URL`, "blocked");
     }
-    if (!opts.allowPrivate) {
-      await assertPublic(target);
-    }
+    await assertPublic(target, opts.isPublic);
 
     let response: Response;
     try {
@@ -260,17 +269,17 @@ async function request(url: string, opts: { signal: AbortSignal; allowPrivate: b
 }
 
 /** Refuse to fetch anything that isn't on the public internet. */
-async function assertPublic(url: URL): Promise<void> {
+async function assertPublic(url: URL, isPublic: (url: URL) => Promise<boolean>): Promise<void> {
   let publicAddress: boolean;
   try {
-    publicAddress = await isPublicUrl(url);
+    publicAddress = await isPublic(url);
   } catch (error) {
     throw new BlobDownloadError(String(error instanceof Error ? error.message : error), "network");
   }
 
   if (!publicAddress) {
     throw new BlobDownloadError(
-      `${url.hostname} is not a public address. Enable allow_private_blob_servers in Settings to fetch from your own network.`,
+      `${url.hostname} is not a public address. Publish this site's blobs to a Blossom server reachable on the public internet.`,
       "blocked",
     );
   }

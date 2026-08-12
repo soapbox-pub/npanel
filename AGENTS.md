@@ -99,6 +99,11 @@ component files, no `setState` in effects, no `FIXME` comments.
 
 Run both before calling anything done.
 
+## Committing
+
+Always commit when the work is finished and the checks above pass. Never wait to
+be asked — no exceptions.
+
 ## Conventions
 
 - Fix problems at the root. No bandaid fixes, no dead code left behind, no `any`

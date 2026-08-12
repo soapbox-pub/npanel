@@ -76,11 +76,9 @@ rejected with a readable error rather than being stored.
 Default:
 
 ```
-wss://relay.damus.io
-wss://nos.lol
-wss://relay.nostr.band
-wss://purplepag.es
-wss://user.kindpag.es
+wss://relay.ditto.pub
+wss://relay.dreamith.to
+wss://relay.primal.net
 ```
 
 The relays npanel uses for everything: watching for new site manifests, and
@@ -88,7 +86,7 @@ looking up authors' NIP-65 relay lists (kind 10002) and Blossom server lists
 (kind 10063). There is no separate lookup-relay list.
 
 At least one relay is required, and each must be a `ws://` or `wss://` URL.
-Include a couple of profile-oriented relays (`purplepag.es`,
+Consider adding a couple of profile-oriented relays (`purplepag.es`,
 `user.kindpag.es`) — that's where kind 10002 and 10063 events usually live, and
 without them npanel may not learn where an author's blobs are.
 
@@ -97,9 +95,17 @@ the live subscription. Nothing needs a restart.
 
 ### `blossom_fallback_servers`
 
-Default empty. Blossom servers to try when a manifest carries no `server` tags
-*and* its author publishes no kind 10063 list. Most sites need none of these,
-because publishing tools include server hints.
+Default:
+
+```
+https://blossom.ditto.pub/
+https://blossom.dreamith.to/
+https://blossom.primal.net/
+```
+
+Blossom servers to try when a manifest carries no `server` tags *and* its author
+publishes no kind 10063 list. Most sites need none of these, because publishing
+tools include server hints.
 
 If a deploy fails with "No Blossom servers to download from", this is the fix.
 Adding servers here immediately retries every version that isn't ready.
@@ -123,29 +129,6 @@ The live subscription normally catches new deploys within seconds; this is the
 backstop for manifests missed during relay downtime or a restart. Lowering it
 makes npanel notice sooner at the cost of more relay traffic. Changing it
 re-arms the timer immediately.
-
-### `allow_private_blob_servers`
-
-Default `false`. Whether npanel may download blobs from loopback, LAN, and other
-non-public addresses.
-
-Download targets are not npanel's to choose: they come from the manifest's own
-`server` tags, from the author's kind 10063 list, and from whatever those
-servers redirect to. Left unrestricted, publishing a manifest is enough to make
-npanel issue GET requests to anything reachable from the machine it runs on —
-cloud metadata, an admin interface on the LAN, a database's HTTP port — and the
-resulting status codes land in a deploy log the author's operators can read.
-The response body can't leak, since it has to hash to the requested blob or it
-is discarded, but the probe itself is the problem.
-
-So each hop is resolved and refused unless every address it answers with is
-public. Turn this on if your Blossom server is on your own network; the check
-is then skipped entirely, for every source. Note that the check resolves the
-name rather than pinning the connection to the address it checked, so a
-determined DNS-rebinding attack can still get through: don't run npanel
-somewhere a single GET request to a neighbouring service would be a disaster.
-
-Changing this retries every version that isn't ready.
 
 ### `allowed_host_suffixes`
 
