@@ -16,6 +16,7 @@ dist-ssr
 .tsbuildinfo
 .ai/
 yarn.lock
+package-lock.json
 
 # Editor directories and files
 .idea

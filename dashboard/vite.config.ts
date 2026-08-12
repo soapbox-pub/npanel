@@ -38,6 +38,12 @@ export default defineConfig(() => ({
     onConsoleLog(log) {
       return !log.includes("React Router Future Flag Warning");
     },
+    server: {
+      // Vitest runs under Bun (see bunfig.toml), and Bun's loader mis-resolves
+      // zod's `export *` chain, leaving `z` undefined. Inlining it routes zod
+      // through Vite's transform instead, which resolves it correctly.
+      deps: { inline: ["zod"] },
+    },
     env: {
       DEBUG_PRINT_LIMIT: '0', // Suppress DOM output that exceeds AI context windows
     },

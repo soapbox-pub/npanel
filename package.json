@@ -12,9 +12,10 @@
     "check": "tsc --noEmit",
     "make-admin": "bun run scripts/make-admin.ts",
     "prune-blobs": "bun run scripts/prune-blobs.ts",
-    "dashboard:install": "cd dashboard && npm install",
-    "dashboard:dev": "cd dashboard && npm run dev",
-    "dashboard:build": "cd dashboard && npm run build"
+    "dashboard:install": "cd dashboard && bun install",
+    "dashboard:dev": "cd dashboard && bun run dev",
+    "dashboard:build": "cd dashboard && bun run build",
+    "dashboard:test": "cd dashboard && bun run test"
   },
   "dependencies": {
     "@nostrify/nostrify": "^0.54.0",

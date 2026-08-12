@@ -1,0 +1,6 @@
+[run]
+# The dashboard's tools (tsc, eslint, vitest, vite) ship `#!/usr/bin/env node`
+# shebangs in node_modules/.bin. Without this, `bun run` honors them and shells
+# out to a real Node, which npanel doesn't otherwise require. This makes Bun
+# substitute itself instead, so Bun is the only runtime needed to build or test.
+bun = true

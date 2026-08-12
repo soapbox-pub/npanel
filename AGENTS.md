@@ -48,8 +48,9 @@ Node, and Deno.
   `bun:sqlite` or `node:sqlite` at runtime. **Do not add `better-sqlite3`** — it
   crashes Bun's NAPI implementation.
 
-Node here is managed by asdf, so `node` only resolves in a directory with a
-`.tool-versions` file. It won't work from `/tmp`.
+Those rules are about keeping the *source* portable. The toolchain itself is
+Bun only — installing, running, testing, and building the dashboard all go
+through Bun, and nothing in the repo needs Node or npm installed.
 
 ## Configuration
 
@@ -87,13 +88,16 @@ bun check    # tsc --noEmit, covers src and scripts
 bun test
 ```
 
-Dashboard (its own toolchain — npm, eslint, vitest):
+Dashboard (its own toolchain — vite, eslint, vitest, all driven by Bun):
 
 ```sh
-cd dashboard && npm test
+bun run dashboard:test
 ```
 
-That runs `tsc --noEmit`, eslint, vitest, and a production build. The eslint
+That runs `tsc --noEmit`, eslint, vitest, and a production build. From inside
+`dashboard/` it has to be `bun run test` rather than `bun test`: a bare
+`bun test` starts Bun's test runner instead of the script, and these tests need
+vitest's DOM environment. The eslint
 config is inherited from mkstack and is strict: no non-component exports from
 component files, no `setState` in effects, no `FIXME` comments.
 

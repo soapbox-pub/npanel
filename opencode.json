@@ -3,7 +3,7 @@
   "mcp": {
     "nostr": {
       "type": "local",
-      "command": ["npx", "-y", "@nostrbook/mcp@latest"]
+      "command": ["bunx", "@nostrbook/mcp@latest"]
     }
   }
 }

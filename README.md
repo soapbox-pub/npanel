@@ -18,8 +18,7 @@ when the relays and Blossom servers it came from are down.
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.3+
-- Node.js and npm (to build the dashboard)
+- [Bun](https://bun.sh) 1.3+ — the only runtime you need; Node.js is not required
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included
 
@@ -89,8 +88,12 @@ bun test                    # node:test, via bun
 The dashboard has its own checks:
 
 ```sh
-cd dashboard && npm test    # tsc, eslint, vitest, and a production build
+bun run dashboard:test      # tsc, eslint, vitest, and a production build
 ```
+
+Run it from the root like that, or as `cd dashboard && bun run test`. Note the
+`run`: a bare `bun test` in `dashboard/` would start Bun's own test runner
+instead of the script, and the dashboard's tests need vitest's DOM environment.
 
 ## License
 
