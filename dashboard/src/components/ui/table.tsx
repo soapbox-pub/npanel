@@ -10,7 +10,13 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        className={cn(
+          // Tables are dropped straight into cards, which have no horizontal
+          // padding, so inset the outer columns to the card's px-6 while
+          // leaving the row borders full-bleed.
+          "w-full caption-bottom text-sm [&_tr>*:first-child]:pl-6 [&_tr>*:last-child]:pr-6",
+          className
+        )}
         {...props}
       />
     </div>
