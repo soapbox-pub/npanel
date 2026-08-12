@@ -23,7 +23,8 @@
 
     "paths": {
       "@/*": ["./src/*"],
-      "@shared/nsite-address": ["../src/nsite-address.ts"]
+      "@shared/nsite-address": ["../src/nsite-address.ts"],
+      "@shared/pubkey": ["../src/pubkey.ts"]
     }
   },
   "include": ["src"]

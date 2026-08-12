@@ -3,6 +3,7 @@ import { nip19 } from "nostr-tools";
 import { Config } from "../src/config.ts";
 import { openDatabase } from "../src/db/index.ts";
 import { Logger } from "../src/log.ts";
+import { parsePubkey } from "../src/pubkey.ts";
 
 /**
  * Bootstrap the first admin, or promote someone from the command line.
@@ -26,7 +27,15 @@ const config = new Config({
 });
 
 const log = new Logger(config.logLevel);
-const pubkey = parsePubkey(input);
+
+let pubkey: string;
+try {
+  pubkey = parsePubkey(input);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
 const db = await openDatabase(config.databasePath, log);
 
 const existing = await db.selectFrom("users").selectAll().where("pubkey", "=", pubkey).executeTakeFirst();
@@ -65,20 +74,3 @@ if (existing?.role === "admin") {
 }
 
 await db.destroy();
-
-function parsePubkey(value: string): string {
-  const trimmed = value.trim().replace(/^nostr:/i, "");
-
-  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) return trimmed.toLowerCase();
-
-  try {
-    const decoded = nip19.decode(trimmed);
-    if (decoded.type === "npub") return decoded.data;
-    if (decoded.type === "nprofile") return decoded.data.pubkey;
-  } catch {
-    // Fall through to the error below.
-  }
-
-  console.error(`Not a valid pubkey: ${value}`);
-  process.exit(1);
-}

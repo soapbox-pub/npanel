@@ -2,10 +2,10 @@ import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
 
 import { PubkeyLabel } from '@/components/PubkeyLabel';
+import { PubkeySearchInput } from '@/components/PubkeySearchInput';
 import { shorten } from '@/lib/format';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -52,14 +52,12 @@ export function UsersPage() {
       <Card>
         <CardContent className="flex flex-wrap items-end gap-3 pt-6">
           <div className="min-w-64 flex-1 space-y-2">
-            <Label htmlFor="new-user">npub or hex pubkey</Label>
-            <Input
+            <Label htmlFor="new-user">Name, npub, or hex pubkey</Label>
+            <PubkeySearchInput
               id="new-user"
               value={pubkey}
-              onChange={(event) => setPubkey(event.target.value)}
-              placeholder="npub1…"
-              autoComplete="off"
-              spellCheck={false}
+              onChange={setPubkey}
+              placeholder="Search by name, or paste an npub…"
             />
           </div>
 

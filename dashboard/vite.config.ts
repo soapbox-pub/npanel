@@ -48,6 +48,7 @@ export default defineConfig(() => ({
       // One address parser for the server and the dashboard, so the preview
       // shown while typing is exactly what the server will store.
       "@shared/nsite-address": path.resolve(import.meta.dirname, "../src/nsite-address.ts"),
+      "@shared/pubkey": path.resolve(import.meta.dirname, "../src/pubkey.ts"),
     },
   },
 }));

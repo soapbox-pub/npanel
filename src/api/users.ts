@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { nip19 } from "nostr-tools";
 import { z } from "zod";
 import { requireAdmin } from "../auth.ts";
+import { parsePubkey } from "../pubkey.ts";
 import { type ApiDeps, type ApiEnv, audit } from "./context.ts";
 
 const createSchema = z.object({
@@ -130,23 +131,6 @@ export function userRoutes(deps: ApiDeps): Hono<ApiEnv> {
   });
 
   return app;
-}
-
-/** Accept an npub, nprofile, or hex pubkey; always store hex. */
-export function parsePubkey(input: string): string {
-  const value = input.trim().replace(/^nostr:/i, "");
-
-  if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();
-
-  try {
-    const decoded = nip19.decode(value);
-    if (decoded.type === "npub") return decoded.data;
-    if (decoded.type === "nprofile") return decoded.data.pubkey;
-  } catch {
-    throw new Error(`Not a valid pubkey: ${input.trim()}`);
-  }
-
-  throw new Error(`Not a valid pubkey: ${input.trim()}`);
 }
 
 async function adminCount(db: ApiDeps["db"]): Promise<number> {
