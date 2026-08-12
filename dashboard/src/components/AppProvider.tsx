@@ -1,4 +1,4 @@
-import { ReactNode, useEffect } from 'react';
+import { ReactNode, useEffect, useLayoutEffect } from 'react';
 import { z } from 'zod';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { AppContext, type AppConfig, type AppContextType, type Theme, type RelayMetadata, type BlossomServerMetadata } from '@/contexts/AppContext';
@@ -81,7 +81,9 @@ export function AppProvider(props: AppProviderProps) {
  * Hook to apply theme changes to the document root
  */
 function useApplyTheme(theme: Theme) {
-  useEffect(() => {
+  // Before paint, not after: a passive effect here would render one frame in
+  // the light theme before switching, which reads as a flash.
+  useLayoutEffect(() => {
     const root = window.document.documentElement;
 
     root.classList.remove('light', 'dark');

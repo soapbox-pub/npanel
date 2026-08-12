@@ -25,7 +25,11 @@ const TLS_CHECK_PATH = "/api/tls-check";
  */
 export function createApp(deps: AppDeps): Hono {
   const { log } = deps;
-  const serveDashboard = createDashboardServer({ dir: deps.dashboardDir, log });
+  const serveDashboard = createDashboardServer({
+    dir: deps.dashboardDir,
+    dashboardHost: deps.dashboardHost,
+    log,
+  });
   const serveSite = createSiteServer({ db: deps.db, blobs: deps.blobs, log });
 
   const app = new Hono();

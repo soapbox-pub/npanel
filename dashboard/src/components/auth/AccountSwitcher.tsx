@@ -32,7 +32,7 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className='flex items-center gap-2 h-10 p-1 pr-2.5 rounded-full hover:bg-accent transition-all text-foreground'>
+        <button className='flex items-center gap-2 h-10 p-1 pr-2.5 rounded-full hover:bg-sidebar-accent transition-all text-current'>
           <Avatar className='w-8 h-8'>
             <AvatarImage
               src={currentUser.metadata.picture}
@@ -46,7 +46,7 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
               )}
             </AvatarFallback>
           </Avatar>
-          <ChevronDown className='w-4 h-4 text-muted-foreground' />
+          <ChevronDown className='w-4 h-4 opacity-60' />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className='w-56 p-2 animate-scale-in'>

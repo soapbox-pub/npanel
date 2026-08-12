@@ -41,6 +41,13 @@ certificate.
 
 A site only answers `GET` and `HEAD`; anything else is a `405`.
 
+The dashboard is otherwise served straight off disk, with one exception:
+`index.html` is read into memory and its `og:image` and `og:url` tags are
+rewritten from site-relative paths to absolute URLs built from `DASHBOARD_HOST`
+(`src/dashboard.ts`). A built static file cannot know its own origin, and
+link-preview crawlers are inconsistent about resolving relative ones. The
+result is cached until the file's mtime changes.
+
 ## The nsite model
 
 A site is identified by a **pubkey**, a **kind**, and an **identifier**:

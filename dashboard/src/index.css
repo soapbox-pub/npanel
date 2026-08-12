@@ -47,6 +47,14 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
 
+  /* The brand ramp: the logo gradient, and anything that should feel like it. */
+  --color-brand: var(--brand);
+  --color-brand-glow: var(--brand-glow);
+  --color-brand-foreground: var(--brand-foreground);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -83,96 +91,142 @@
   }
 }
 
-:root {
-  --radius: 0.75rem;
+/*
+ * The faint blueprint grid behind the content area. It reads as "machine you
+ * administer" rather than "web page", which is the whole point of the theme.
+ */
+@utility grid-canvas {
+  background-image:
+    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: center top;
+}
 
-  --background: hsl(0 0% 100%);
-  --foreground: hsl(222.2 84% 4.9%);
+:root {
+  --radius: 0.625rem;
+
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  --font-code: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  color-scheme: light;
+
+  /* cPanel's orange, and the amber it fades into in the logo. */
+  --brand: hsl(18 100% 58%);
+  --brand-glow: hsl(33 100% 57%);
+  --brand-foreground: hsl(0 0% 100%);
+
+  --background: hsl(210 33% 96%);
+  --foreground: hsl(213 32% 15%);
 
   --card: hsl(0 0% 100%);
-  --card-foreground: hsl(222.2 84% 4.9%);
+  --card-foreground: hsl(213 32% 15%);
 
   --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(222.2 84% 4.9%);
+  --popover-foreground: hsl(213 32% 15%);
 
-  --primary: hsl(222.2 47.4% 11.2%);
-  --primary-foreground: hsl(210 40% 98%);
+  --primary: hsl(18 100% 55%);
+  --primary-foreground: hsl(0 0% 100%);
 
-  --secondary: hsl(210 40% 96.1%);
-  --secondary-foreground: hsl(222.2 47.4% 11.2%);
+  --secondary: hsl(210 28% 91%);
+  --secondary-foreground: hsl(213 32% 20%);
 
-  --muted: hsl(210 40% 96.1%);
-  --muted-foreground: hsl(215.4 16.3% 46.9%);
+  --muted: hsl(210 30% 94%);
+  --muted-foreground: hsl(213 14% 42%);
 
-  --accent: hsl(210 40% 96.1%);
-  --accent-foreground: hsl(222.2 47.4% 11.2%);
+  --accent: hsl(20 90% 95%);
+  --accent-foreground: hsl(15 78% 32%);
 
-  --destructive: hsl(0 84.2% 60.2%);
-  --destructive-foreground: hsl(210 40% 98%);
+  --destructive: hsl(0 72% 45%);
+  --destructive-foreground: hsl(0 0% 100%);
 
-  --border: hsl(214.3 31.8% 91.4%);
-  --input: hsl(214.3 31.8% 91.4%);
-  --ring: hsl(222.2 84% 4.9%);
+  --border: hsl(212 24% 87%);
+  --input: hsl(212 22% 84%);
+  --ring: hsl(18 100% 55%);
 
-  --chart-1: hsl(12 76% 61%);
-  --chart-2: hsl(173 58% 39%);
-  --chart-3: hsl(197 37% 24%);
-  --chart-4: hsl(43 74% 66%);
-  --chart-5: hsl(27 87% 67%);
+  --chart-1: hsl(18 100% 55%);
+  --chart-2: hsl(199 89% 44%);
+  --chart-3: hsl(161 62% 36%);
+  --chart-4: hsl(43 96% 50%);
+  --chart-5: hsl(258 68% 58%);
 
-  --sidebar: hsl(0 0% 98%);
-  --sidebar-foreground: hsl(240 5.3% 26.1%);
-  --sidebar-primary: hsl(240 5.9% 10%);
-  --sidebar-primary-foreground: hsl(0 0% 98%);
-  --sidebar-accent: hsl(240 4.8% 95.9%);
-  --sidebar-accent-foreground: hsl(240 5.9% 10%);
-  --sidebar-border: hsl(220 13% 91%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  /* The dark chrome: top bar and left rail, on both themes. */
+  --sidebar: hsl(212 44% 14%);
+  --sidebar-foreground: hsl(210 26% 80%);
+  --sidebar-primary: hsl(18 100% 58%);
+  --sidebar-primary-foreground: hsl(0 0% 100%);
+  --sidebar-accent: hsl(212 38% 21%);
+  --sidebar-accent-foreground: hsl(0 0% 100%);
+  --sidebar-border: hsl(212 36% 23%);
+  --sidebar-ring: hsl(18 100% 58%);
+
+  --grid-line: hsl(213 25% 91%);
 }
 
 .dark {
-  --background: hsl(222.2 84% 4.9%);
-  --foreground: hsl(210 40% 98%);
+  color-scheme: dark;
 
-  --card: hsl(222.2 84% 4.9%);
-  --card-foreground: hsl(210 40% 98%);
+  --brand: hsl(20 100% 60%);
+  --brand-glow: hsl(35 100% 60%);
+  --brand-foreground: hsl(0 0% 100%);
 
-  --popover: hsl(222.2 84% 4.9%);
-  --popover-foreground: hsl(210 40% 98%);
+  --background: hsl(213 35% 8%);
+  --foreground: hsl(210 30% 94%);
 
-  --primary: hsl(210 40% 98%);
-  --primary-foreground: hsl(222.2 47.4% 11.2%);
+  --card: hsl(213 32% 12%);
+  --card-foreground: hsl(210 30% 94%);
 
-  --secondary: hsl(217.2 32.6% 17.5%);
-  --secondary-foreground: hsl(210 40% 98%);
+  --popover: hsl(213 32% 12%);
+  --popover-foreground: hsl(210 30% 94%);
 
-  --muted: hsl(217.2 32.6% 17.5%);
-  --muted-foreground: hsl(215 20.2% 65.1%);
+  --primary: hsl(20 100% 58%);
+  --primary-foreground: hsl(0 0% 100%);
 
-  --accent: hsl(217.2 32.6% 17.5%);
-  --accent-foreground: hsl(210 40% 98%);
+  --secondary: hsl(213 28% 18%);
+  --secondary-foreground: hsl(210 30% 94%);
 
-  --destructive: hsl(0 62.8% 30.6%);
-  --destructive-foreground: hsl(210 40% 98%);
+  --muted: hsl(213 26% 17%);
+  --muted-foreground: hsl(212 16% 64%);
 
-  --border: hsl(217.2 32.6% 17.5%);
-  --input: hsl(217.2 32.6% 17.5%);
-  --ring: hsl(212.7 26.8% 83.9%);
+  --accent: hsl(18 45% 20%);
+  --accent-foreground: hsl(24 96% 76%);
 
-  --chart-1: hsl(220 70% 50%);
-  --chart-2: hsl(160 60% 45%);
-  --chart-3: hsl(30 80% 55%);
-  --chart-4: hsl(280 65% 60%);
-  --chart-5: hsl(340 75% 55%);
+  --destructive: hsl(0 68% 52%);
+  --destructive-foreground: hsl(0 0% 100%);
 
-  --sidebar: hsl(240 5.9% 10%);
-  --sidebar-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-primary: hsl(224.3 76.3% 48%);
+  --border: hsl(213 24% 21%);
+  --input: hsl(213 24% 24%);
+  --ring: hsl(20 100% 58%);
+
+  --chart-1: hsl(20 100% 60%);
+  --chart-2: hsl(199 88% 55%);
+  --chart-3: hsl(161 58% 48%);
+  --chart-4: hsl(43 96% 58%);
+  --chart-5: hsl(258 76% 70%);
+
+  --sidebar: hsl(213 40% 10%);
+  --sidebar-foreground: hsl(210 24% 78%);
+  --sidebar-primary: hsl(20 100% 60%);
   --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(240 3.7% 15.9%);
-  --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
-  --sidebar-border: hsl(240 3.7% 15.9%);
-  --sidebar-ring: hsl(217.2 91.2% 59.8%);
+  --sidebar-accent: hsl(213 34% 17%);
+  --sidebar-accent-foreground: hsl(0 0% 100%);
+  --sidebar-border: hsl(213 32% 19%);
+  --sidebar-ring: hsl(20 100% 60%);
+
+  --grid-line: hsl(213 26% 15%);
+}
+
+/*
+ * There is no theme class on <html> until React mounts, so a dark-mode desktop
+ * would flash white first. Only the bare canvas is visible that early, so only
+ * the canvas needs covering — and a <script> can't do it under our CSP.
+ */
+@media (prefers-color-scheme: dark) {
+  html:not(.light):not(.dark) {
+    background-color: hsl(213 35% 8%);
+  }
 }
 
 @layer base {
@@ -186,5 +240,16 @@
 
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-ui);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Tabular figures everywhere numbers are compared down a column. */
+  table,
+  code,
+  kbd,
+  samp,
+  pre {
+    font-variant-numeric: tabular-nums;
   }
 }
