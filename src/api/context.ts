@@ -1,0 +1,148 @@
+import type { Kysely } from "kysely";
+import type { AuthUser } from "../auth.ts";
+import type { BlobStore } from "../blobs.ts";
+import type { Database, Host } from "../db/schema.ts";
+import type { Logger } from "../log.ts";
+import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
+import type { SettingsService } from "../settings.ts";
+import { activeEvent, newestEvent } from "../sites.ts";
+import type { SyncWorker } from "../sync.ts";
+
+export interface ApiDeps {
+  db: Kysely<Database>;
+  settings: SettingsService;
+  sync: SyncWorker;
+  blobs: BlobStore;
+  log: Logger;
+  dashboardHost: string;
+}
+
+export type ApiEnv = { Variables: { user: AuthUser } };
+
+/** Whether a user may see and manage a host. */
+export async function canAccessHost(db: Kysely<Database>, user: AuthUser, hostId: number): Promise<boolean> {
+  if (user.role === "admin") return true;
+
+  const grant = await db
+    .selectFrom("host_grants")
+    .select("host_id")
+    .where("user_pubkey", "=", user.pubkey)
+    .where("host_id", "=", hostId)
+    .executeTakeFirst();
+
+  return grant !== undefined;
+}
+
+/** Record an administrative change. */
+export async function audit(
+  db: Kysely<Database>,
+  actor: string,
+  action: string,
+  target: string | null,
+  oldValue?: unknown,
+  newValue?: unknown,
+): Promise<void> {
+  await db
+    .insertInto("audit_log")
+    .values({
+      actor_pubkey: actor,
+      action,
+      target,
+      old_value: oldValue === undefined ? null : JSON.stringify(oldValue),
+      new_value: newValue === undefined ? null : JSON.stringify(newValue),
+      created_at: Math.floor(Date.now() / 1000),
+    })
+    .execute();
+}
+
+export interface HostView {
+  id: number;
+  hostname: string;
+  pubkey: string;
+  kind: number;
+  identifier: string;
+  address: string;
+  naddr: string;
+  enabled: boolean;
+  pinned_event_id: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  /** The version currently being served, if any. */
+  active: VersionView | null;
+  /** The newest known version, which may still be deploying or failed. */
+  latest: VersionView | null;
+}
+
+export interface VersionView {
+  event_id: string;
+  created_at: number;
+  status: string;
+  files_total: number;
+  files_ready: number;
+  error: string | null;
+  fetched_at: number;
+  ready_at: number | null;
+}
+
+/** Shape a host row for the API, including its deploy state. */
+export async function serializeHost(db: Kysely<Database>, host: Host): Promise<HostView> {
+  const address = { pubkey: host.pubkey, kind: host.kind, identifier: host.identifier };
+  const [active, latest] = await Promise.all([activeEvent(db, host), newestEvent(db, address)]);
+
+  return {
+    id: host.id,
+    hostname: host.hostname,
+    pubkey: host.pubkey,
+    kind: host.kind,
+    identifier: host.identifier,
+    address: formatNsiteAddress(address),
+    naddr: encodeNaddr(address),
+    enabled: host.enabled === 1,
+    pinned_event_id: host.pinned_event_id,
+    created_by: host.created_by,
+    created_at: host.created_at,
+    updated_at: host.updated_at,
+    active: active ? serializeVersion(active) : null,
+    latest: latest ? serializeVersion(latest) : null,
+  };
+}
+
+export function serializeVersion(row: {
+  event_id: string;
+  created_at: number;
+  status: string;
+  files_total: number;
+  files_ready: number;
+  error: string | null;
+  fetched_at: number;
+  ready_at: number | null;
+}): VersionView {
+  return {
+    event_id: row.event_id,
+    created_at: row.created_at,
+    status: row.status,
+    files_total: row.files_total,
+    files_ready: row.files_ready,
+    error: row.error,
+    fetched_at: row.fetched_at,
+    ready_at: row.ready_at,
+  };
+}
+
+/** Hostnames must be resolvable names, not URLs or wildcards. */
+export function parseHostname(input: string): string {
+  const hostname = input.trim().toLowerCase().replace(/\.$/, "");
+
+  if (!hostname) {
+    throw new Error("Enter a hostname.");
+  }
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname)) {
+    throw new Error(`Not a valid hostname: ${input.trim()}`);
+  }
+  if (hostname.length > 253) {
+    throw new Error("Hostname is too long.");
+  }
+
+  return hostname;
+}

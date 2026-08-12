@@ -1,0 +1,246 @@
+# Deployment
+
+A production npanel is three pieces: DNS pointing at your box, npanel itself
+running as a service on a local port, and a reverse proxy terminating TLS in
+front of it.
+
+## 1. DNS
+
+Point every hostname you plan to serve at the box:
+
+```
+panel.example.com.   A     203.0.113.10
+panel.example.com.   AAAA  2001:db8::10
+example.org.         A     203.0.113.10
+blog.example.org.    A     203.0.113.10
+```
+
+The dashboard hostname is just another name pointed at the same address. A
+wildcard (`*.example.com`) works too, and is convenient when staff add
+subdomains often — npanel still refuses to serve, or to get a certificate for,
+any hostname that isn't configured in the dashboard.
+
+DNS must resolve *before* you add a host, because the certificate is issued the
+first time someone visits.
+
+## 2. Install and build
+
+npanel runs from a checkout. Bun runs the TypeScript directly; there is no build
+step for the server.
+
+```sh
+sudo useradd --system --home /opt/npanel --shell /usr/sbin/nologin npanel
+sudo mkdir -p /opt/npanel
+sudo chown npanel:npanel /opt/npanel
+
+sudo -u npanel git clone <your-repo-url> /opt/npanel
+cd /opt/npanel
+sudo -u npanel bun install
+```
+
+Build the dashboard. The server serves `dashboard/dist` as a static SPA, so this
+must exist or the dashboard hostname returns 503 with an explanatory message:
+
+```sh
+sudo -u npanel bun run dashboard:install
+sudo -u npanel bun run dashboard:build
+```
+
+Configure:
+
+```sh
+sudo -u npanel cp .env.example .env
+sudo -u npanel $EDITOR .env
+```
+
+At minimum set `DASHBOARD_HOST`. Set `DATA_DIR` to somewhere durable —
+`/var/lib/npanel` is a good choice on a machine where the checkout might be
+replaced:
+
+```sh
+sudo mkdir -p /var/lib/npanel
+sudo chown npanel:npanel /var/lib/npanel
+```
+
+## 3. Bootstrap the first admin
+
+npanel is not permissionless: an unknown pubkey gets a 403, and user management
+in the dashboard is admin-only. So the first account has to come from the
+command line.
+
+```sh
+sudo -u npanel bun run make-admin npub1yourkeyhere
+```
+
+It accepts an npub, nprofile, or hex pubkey, and promotes an existing user if
+they're already there. Everyone after that is added from the Users page.
+
+## 4. systemd
+
+`/etc/systemd/system/npanel.service`:
+
+```ini
+[Unit]
+Description=npanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=npanel
+Group=npanel
+WorkingDirectory=/opt/npanel
+ExecStart=/usr/local/bin/bun run src/server.ts
+Restart=on-failure
+RestartSec=5s
+
+# Logs are one JSON object per line on stdout.
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/npanel
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Adjust `ExecStart` to wherever `bun` actually lives (`command -v bun`), and
+`ReadWritePaths` to your `DATA_DIR`.
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now npanel
+sudo journalctl -u npanel -f -o cat | jq
+```
+
+## 5. TLS with Caddy
+
+npanel speaks plain HTTP and routes on the `Host` header. It never terminates
+TLS itself.
+
+The wrinkle is that staff add hostnames at runtime, so the set of certificates
+isn't known when the proxy starts. Caddy solves this with on-demand TLS, and
+npanel provides the authorization endpoint Caddy needs. Copy the sample
+`Caddyfile` from the repository root and change `panel.example.com`:
+
+```caddy
+{
+	on_demand_tls {
+		ask http://127.0.0.1:3000/api/tls-check
+	}
+}
+
+panel.example.com {
+	reverse_proxy 127.0.0.1:3000
+}
+
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+Caddy calls `/api/tls-check?domain=<name>` before issuing any certificate.
+npanel answers `200` for the dashboard hostname and for every enabled host, and
+`404` for anything else. **Do not run on-demand TLS without the `ask`
+directive**: anyone who points a domain at your IP could otherwise drive
+certificate issuance on your behalf and get you rate-limited by Let's Encrypt.
+
+That endpoint is the one unauthenticated route in the API, necessarily so — it
+only reveals whether a hostname is configured, which DNS already tells you.
+
+### Other proxies
+
+nginx, HAProxy, and friends work, but you'll be managing certificates yourself
+(or with a wildcard cert) since they have no on-demand equivalent. Whatever you
+use must either preserve the `Host` header or set `X-Forwarded-Host`; npanel
+prefers `X-Forwarded-Host` when present. Without one of those, every hostname
+looks like the proxy's address and nothing resolves.
+
+## Adding a host
+
+In the dashboard: **Add host**, give it a hostname and an address. The address
+can be an npub, nprofile, naddr, an `a` tag (`35128:<pubkey>:<identifier>`), a
+NIP-5A label, or a URL to paste from.
+
+npanel then fetches the newest manifest, downloads every blob it references, and
+only marks the version ready when all of them are on disk. Until then the host
+serves `503` with a `Retry-After`. If a deploy fails, open the version's deploy
+log — it records each blob attempt, the servers tried, and why it gave up.
+
+## Backups
+
+Everything is in `DATA_DIR`. The blob store is content-addressed and re-fetchable
+from Blossom servers, so the database is the part that actually matters — losing
+blobs costs a re-download, losing the database costs your configuration.
+
+Back up SQLite with the online backup API rather than copying the file, which
+can catch a write in progress:
+
+```sh
+sqlite3 /var/lib/npanel/npanel.sqlite3 ".backup '/backup/npanel-$(date +%F).sqlite3'"
+```
+
+To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
+named by hash, so incremental syncs are cheap.
+
+## Upgrading
+
+```sh
+cd /opt/npanel
+sudo -u npanel git pull
+sudo -u npanel bun install
+sudo -u npanel bun run dashboard:install
+sudo -u npanel bun run dashboard:build
+sudo systemctl restart npanel
+```
+
+Migrations run automatically at startup. Back up the database first.
+
+## Reclaiming disk space
+
+Every version of every site is kept, along with its files. On a site that
+deploys often this adds up.
+
+```sh
+sudo -u npanel bun run prune-blobs --keep 10 --dry-run
+sudo -u npanel bun run prune-blobs --keep 10
+```
+
+`--keep N` forgets all but the newest N versions of each site, then deletes
+every blob no remaining version references. The version a host is currently
+serving and any pinned version are never removed. Without `--keep` it only
+deletes unreferenced blobs. `--dry-run` reports what would go.
+
+A monthly timer is reasonable. Note that pruning a version also removes the
+history you'd roll back to, so keep more than you think you need.
+
+## Troubleshooting
+
+**The dashboard returns 503 "The dashboard has not been built."** Run
+`bun run dashboard:build`. The server logs `dashboard_not_built` once with the
+directory it looked in.
+
+**A site returns 503 "This site has not finished deploying yet."** No version is
+ready. Check the version list and its deploy log in the dashboard.
+
+**Login fails with "Auth event was signed for … not …".** `DASHBOARD_HOST`
+doesn't match the hostname in the browser. It must be the public name, not the
+proxy's upstream address.
+
+**Login fails with "Auth event expired."** The clock on the server or the client
+is off by more than a minute. Run NTP.
+
+**Login fails with "This account has no access to npanel."** The signature is
+valid but the pubkey isn't a user. Add it from the Users page, or bootstrap with
+`make-admin`.
+
+**Caddy won't issue a certificate.** Confirm DNS resolves to the box, the host
+exists in the dashboard and is enabled, and that
+`curl 'http://127.0.0.1:3000/api/tls-check?domain=example.org'` returns `ok`.

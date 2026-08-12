@@ -1,0 +1,31 @@
+{
+  "name": "npanel",
+  "version": "0.1.0",
+  "description": "Self-hostable nsite gateway with a team dashboard",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/server.ts",
+    "start": "bun run src/server.ts",
+    "test": "bun test",
+    "lint": "biome check",
+    "check": "tsc --noEmit",
+    "make-admin": "bun run scripts/make-admin.ts",
+    "prune-blobs": "bun run scripts/prune-blobs.ts",
+    "dashboard:install": "cd dashboard && npm install",
+    "dashboard:dev": "cd dashboard && npm run dev",
+    "dashboard:build": "cd dashboard && npm run build"
+  },
+  "dependencies": {
+    "@nostrify/nostrify": "^0.54.0",
+    "hono": "^4.13.1",
+    "kysely": "^0.29.5",
+    "nostr-tools": "^2.24.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^25.0.10",
+    "typescript": "^5.7.3"
+  }
+}

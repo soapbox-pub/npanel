@@ -1,0 +1,31 @@
+# Sample Caddyfile for npanel.
+#
+# npanel speaks plain HTTP and routes on the Host header. Caddy terminates TLS
+# and forwards everything to it. Because staff add hostnames at runtime, the
+# certificate for a site can't be known when Caddy starts — so this uses
+# on-demand TLS, with npanel itself deciding which names deserve a certificate.
+
+{
+	# Caddy asks npanel before issuing any certificate. npanel answers 200 for
+	# the dashboard hostname and for every enabled host, 404 for anything else.
+	# Without this guard, anyone pointing a domain at the box could make Caddy
+	# request certificates on their behalf.
+	on_demand_tls {
+		ask http://127.0.0.1:3000/api/tls-check
+	}
+
+	# email you@example.com
+}
+
+# The dashboard. Its certificate is issued at startup like a normal site.
+panel.example.com {
+	reverse_proxy 127.0.0.1:3000
+}
+
+# Every other hostname pointed at this box, served as an nsite.
+https:// {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:3000
+}

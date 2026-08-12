@@ -1,0 +1,4 @@
+[test]
+# The dashboard has its own test runner (vitest, with a DOM environment). Without
+# this, `bun test` walks into dashboard/src and fails on tests it can't run.
+root = "src"
