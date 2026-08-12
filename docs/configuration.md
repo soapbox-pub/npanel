@@ -130,6 +130,34 @@ backstop for manifests missed during relay downtime or a restart. Lowering it
 makes npanel notice sooner at the cost of more relay traffic. Changing it
 re-arms the timer immediately.
 
+### `dns_targets`
+
+Default empty. What the dashboard tells staff to point a hostname at, shown in
+the *Add hostname* dialog. Each value becomes one record:
+
+| Value                 | Record                        |
+| --------------------- | ----------------------------- |
+| `203.0.113.10`        | `A 203.0.113.10`              |
+| `2001:db8::1`         | `AAAA 2001:db8::1`            |
+| `gateway.example.com` | `CNAME gateway.example.com`   |
+
+A hostname must be the only entry, because DNS doesn't allow a CNAME beside any
+other record for the same name. Up to eight values otherwise.
+
+Left empty — the default — npanel resolves `DASHBOARD_HOST` and repeats its A
+and AAAA records. Nobody reaches the dashboard without having pointed that name
+at this server already, so the answer is right without anyone configuring it.
+The result is cached for five minutes.
+
+Set this when that inference is wrong or unhelpful: the dashboard sits behind a
+CDN whose addresses aren't where nsites should go, the machine has more
+addresses than the dashboard hostname advertises, or you want staff to use a
+CNAME so the address can change without touching every zone.
+
+Nothing here affects routing — npanel serves whatever arrives with a configured
+`Host` header regardless. It is advice for the human editing the zone, so a
+wrong value costs a confusing DNS record, not an outage.
+
 ### `allowed_host_suffixes`
 
 Default empty, which allows any hostname. Otherwise a hostname must equal one of

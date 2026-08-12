@@ -57,11 +57,26 @@ export interface NpanelUser {
   host_ids: number[];
 }
 
+export interface DnsRecord {
+  type: 'A' | 'AAAA' | 'CNAME';
+  value: string;
+}
+
+/** What a hostname's DNS should point at to reach this server. */
+export interface DnsTarget {
+  /** Empty when npanel couldn't work out its own address. */
+  records: DnsRecord[];
+  /** `settings` when an admin set the target, `dashboard_host` when detected. */
+  source: 'settings' | 'dashboard_host';
+  dashboard_host: string;
+}
+
 export interface Settings {
   relays: string[];
   blossom_fallback_servers: string[];
   max_file_size: number;
   resync_interval: number;
+  dns_targets: string[];
   allowed_host_suffixes: string[];
   tls_check_limit_per_host: number;
   tls_check_limit_total: number;

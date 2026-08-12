@@ -2,6 +2,7 @@ import type { Kysely } from "kysely";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
 import type { Database, Host } from "../db/schema.ts";
+import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
 import type { SettingsService } from "../settings.ts";
@@ -13,6 +14,7 @@ export interface ApiDeps {
   settings: SettingsService;
   sync: SyncWorker;
   blobs: BlobStore;
+  dns: DnsTargets;
   log: Logger;
   dashboardHost: string;
 }

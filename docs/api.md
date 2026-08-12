@@ -67,6 +67,29 @@ Refusals aren't metered, and `DASHBOARD_HOST` is exempt.
 { "pubkey": "<hex>", "npub": "npub1...", "role": "admin" }
 ```
 
+## DNS
+
+### `GET /api/dns`
+
+The records that point a hostname at this server, which the dashboard shows
+while staff are adding one. Available to any authenticated user.
+
+```json
+{
+  "records": [
+    { "type": "A", "value": "203.0.113.10" },
+    { "type": "AAAA", "value": "2001:db8::1" }
+  ],
+  "source": "dashboard_host",
+  "dashboard_host": "panel.example.com"
+}
+```
+
+`source` is `settings` when an admin set `dns_targets`, and `dashboard_host`
+when the answer was detected by resolving `DASHBOARD_HOST` — see
+[configuration](configuration.md#dns_targets). `records` is empty when neither
+produced anything; `type` is `A`, `AAAA`, or `CNAME`.
+
 ## Hosts
 
 A host object:
@@ -281,6 +304,7 @@ back in if it ever happens anyway.)
     "blossom_fallback_servers": ["https://blossom.ditto.pub/"],
     "max_file_size": 104857600,
     "resync_interval": 600,
+    "dns_targets": [],
     "allowed_host_suffixes": [],
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600

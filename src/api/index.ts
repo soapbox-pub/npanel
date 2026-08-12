@@ -128,6 +128,17 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
     });
   });
 
+  /**
+   * Where staff should point a hostname's DNS, shown when they add one.
+   *
+   * Available to staff, not just admins: they are the ones editing the zone,
+   * and it only repeats what the dashboard hostname's own records already say.
+   */
+  app.get("/dns", async (c) => {
+    const { records, source } = await deps.dns.target();
+    return c.json({ records, source, dashboard_host: deps.dashboardHost });
+  });
+
   app.route("/hosts", hostRoutes(deps));
   app.route("/users", userRoutes(deps));
 

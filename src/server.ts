@@ -5,6 +5,7 @@ import { createApp } from "./app.ts";
 import { BlobStore } from "./blobs.ts";
 import { Config } from "./config.ts";
 import { openDatabase } from "./db/index.ts";
+import { DnsTargets } from "./dns.ts";
 import { Logger, errFields } from "./log.ts";
 import { NostrService } from "./nostr.ts";
 import { SettingsService } from "./settings.ts";
@@ -23,6 +24,7 @@ const settings = await SettingsService.load(db, log);
 const blobs = new BlobStore(config.blobsDir);
 const nostr = new NostrService(settings, log);
 const sync = new SyncWorker({ db, blobs, nostr, settings, log });
+const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 
 await sync.start();
 
@@ -31,6 +33,7 @@ const app = createApp({
   settings,
   sync,
   blobs,
+  dns,
   log,
   dashboardHost: config.dashboardHost,
   dashboardDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dashboard", "dist"),

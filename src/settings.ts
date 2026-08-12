@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { isIP } from "node:net";
 import type { Kysely } from "kysely";
 import { z } from "zod";
 import type { Database } from "./db/schema.ts";
@@ -21,6 +22,13 @@ export interface SettingsValues {
   max_file_size: number;
   /** Seconds between full manifest re-fetches from relays. */
   resync_interval: number;
+  /**
+   * What staff are told to point hostnames at, as IP addresses (an A or AAAA
+   * record) or a single hostname (a CNAME).
+   *
+   * Empty means detect it, by resolving the dashboard hostname.
+   */
+  dns_targets: string[];
   /**
    * Domains hostnames may sit under, or empty to allow any hostname.
    *
@@ -87,6 +95,20 @@ const hostSuffix = z
     return suffix;
   });
 
+const dnsTarget = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    if (isIP(value)) return value;
+
+    const hostname = normalizeHostname(value);
+    if (!isHostname(hostname)) {
+      ctx.addIssue({ code: "custom", message: `Not an IP address or hostname: ${value}` });
+      return z.NEVER;
+    }
+    return hostname;
+  });
+
 /** Per-key validation. Values are stored as JSON in the `settings` table. */
 const SCHEMAS = {
   relays: z.array(relayUrl).min(1, "At least one relay is required."),
@@ -97,6 +119,15 @@ const SCHEMAS = {
     .positive()
     .max(8 * 1024 ** 3),
   resync_interval: z.number().int().min(60).max(86400),
+  // A CNAME may not coexist with any other record for the same name, so a
+  // hostname target has to stand alone — advertising it beside an A record
+  // would tell staff to build a zone their provider will reject.
+  dns_targets: z
+    .array(dnsTarget)
+    .max(8)
+    .refine((targets) => targets.length < 2 || targets.every((target) => isIP(target)), {
+      message: "A hostname target becomes a CNAME, which must be the only record. Use IP addresses to list several.",
+    }),
   allowed_host_suffixes: z.array(hostSuffix),
   tls_check_limit_per_host: z.number().int().min(1).max(10_000),
   tls_check_limit_total: z.number().int().min(1).max(100_000),
@@ -111,6 +142,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   ],
   max_file_size: 100 * 1024 * 1024,
   resync_interval: 600,
+  dns_targets: [],
   allowed_host_suffixes: [],
   tls_check_limit_per_host: 60,
   tls_check_limit_total: 600,

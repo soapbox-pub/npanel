@@ -23,6 +23,11 @@ any hostname that isn't configured in the dashboard.
 DNS must resolve *before* you add a host, because the certificate is issued the
 first time someone visits.
 
+The dashboard shows staff exactly which records to create, working them out from
+what the dashboard hostname itself resolves to. If that inference is wrong for
+your setup — a CDN in front, or a CNAME you'd rather everyone used — set
+[`dns_targets`](configuration.md#dns_targets).
+
 ## 2. Install and build
 
 npanel runs from a checkout. Bun runs the TypeScript directly; there is no build

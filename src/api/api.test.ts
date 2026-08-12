@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { nip19 } from "nostr-tools";
 import { NAMED_SITE_KIND, ROOT_SITE_KIND } from "../nsite-address.ts";
-import { type Harness, createHarness, testUser } from "../test/harness.ts";
+import { type Harness, createHarness, fakeResolver, testUser } from "../test/harness.ts";
 
 const harnesses: Harness[] = [];
 
@@ -520,6 +520,34 @@ test("rejects domains that are not hostnames", async () => {
 
   assert.equal(response.status, 400);
   assert.match((await response.json()).error, /Not a valid domain/);
+});
+
+test("tells staff which DNS records point a hostname here", async () => {
+  const harness = await createHarness({
+    resolver: fakeResolver({ resolve4: async () => ["203.0.113.10"] }),
+  });
+  harnesses.push(harness);
+
+  const staff = testUser();
+  const admin = testUser();
+  await harness.addUser(staff, "staff");
+  await harness.addUser(admin, "admin");
+
+  const detected = await harness.request(staff, "GET", "/api/dns");
+  assert.equal(detected.status, 200);
+  assert.deepEqual(await detected.json(), {
+    records: [{ type: "A", value: "203.0.113.10" }],
+    source: "dashboard_host",
+    dashboard_host: "panel.test",
+  });
+
+  await harness.request(admin, "PUT", "/api/settings", { dns_targets: ["gateway.example.com"] });
+
+  const configured = await (await harness.request(staff, "GET", "/api/dns")).json();
+  assert.equal(configured.source, "settings");
+  assert.deepEqual(configured.records, [{ type: "CNAME", value: "gateway.example.com" }]);
+
+  assert.equal((await harness.request(undefined, "GET", "/api/dns")).status, 401);
 });
 
 test("unknown API routes answer with JSON, not the dashboard SPA", async () => {

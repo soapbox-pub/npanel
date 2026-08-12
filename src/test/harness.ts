@@ -11,6 +11,7 @@ import { NIP98_KIND } from "../auth.ts";
 import { BlobStore } from "../blobs.ts";
 import { openDatabase } from "../db/index.ts";
 import type { Database, UserRole } from "../db/schema.ts";
+import { type DnsResolver, DnsTargets } from "../dns.ts";
 import { Logger } from "../log.ts";
 import type { NostrService } from "../nostr.ts";
 import { SettingsService } from "../settings.ts";
@@ -86,8 +87,17 @@ export interface Harness {
   cleanup(): Promise<void>;
 }
 
+/** A DNS resolver that answers nothing, so tests never touch the network. */
+export function fakeResolver(overrides: Partial<DnsResolver> = {}): DnsResolver {
+  return {
+    resolve4: async () => [],
+    resolve6: async () => [],
+    ...overrides,
+  };
+}
+
 /** A fully wired app backed by an in-memory database and a temp blob store. */
-export async function createHarness(opts: { nostr?: NostrService } = {}): Promise<Harness> {
+export async function createHarness(opts: { nostr?: NostrService; resolver?: DnsResolver } = {}): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "npanel-test-"));
   const dashboardDir = join(dir, "dashboard");
   await mkdir(dashboardDir, { recursive: true });
@@ -98,12 +108,19 @@ export async function createHarness(opts: { nostr?: NostrService } = {}): Promis
   const blobs = new BlobStore(join(dir, "blobs"));
   const log = new Logger("error");
   const sync = new SyncWorker({ db, blobs, nostr: opts.nostr ?? fakeNostr(), settings, log });
+  const dns = new DnsTargets({
+    dashboardHost: DASHBOARD_HOST,
+    settings,
+    log,
+    resolver: opts.resolver ?? fakeResolver(),
+  });
 
   const app = createApp({
     db,
     settings,
     sync,
     blobs,
+    dns,
     log,
     dashboardHost: DASHBOARD_HOST,
     dashboardDir,

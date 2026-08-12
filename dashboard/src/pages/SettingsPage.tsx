@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
-import { useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
+import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 import { formatBytes } from '@/lib/format';
 
@@ -17,6 +17,7 @@ interface Draft {
   maxFileSize?: string;
   resyncInterval?: string;
   allowedHostSuffixes?: string;
+  dnsTargets?: string;
   tlsCheckLimitPerHost?: string;
   tlsCheckLimitTotal?: string;
 }
@@ -32,6 +33,7 @@ export function SettingsPage() {
 
   const settings = useSettings();
   const status = useStatus();
+  const dns = useDnsTarget();
   const updateSettings = useUpdateSettings();
   const { toast } = useToast();
 
@@ -47,6 +49,7 @@ export function SettingsPage() {
   const maxFileSize = draft.maxFileSize ?? String(Math.round((current?.max_file_size ?? 0) / (1024 * 1024)));
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
   const allowedHostSuffixes = draft.allowedHostSuffixes ?? current?.allowed_host_suffixes.join('\n') ?? '';
+  const dnsTargets = draft.dnsTargets ?? current?.dns_targets.join('\n') ?? '';
   const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
 
@@ -58,6 +61,7 @@ export function SettingsPage() {
         max_file_size: Math.round(Number(maxFileSize) * 1024 * 1024),
         resync_interval: Number(resyncInterval),
         allowed_host_suffixes: lines(allowedHostSuffixes),
+        dns_targets: lines(dnsTargets),
         tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
         tls_check_limit_total: Number(tlsCheckLimitTotal),
       });
@@ -149,6 +153,35 @@ export function SettingsPage() {
               onChange={(event) => setDraft({ ...draft, resyncInterval: event.target.value })}
             />
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">DNS target</CardTitle>
+          <CardDescription>
+            What staff are told to point hostnames at when they add one. One per line: an IP address
+            becomes an A or AAAA record, a hostname becomes a CNAME and must be the only entry. Leave
+            this empty to use whatever {dns.data?.dashboard_host ?? 'the dashboard hostname'} itself
+            resolves to.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Textarea
+            value={dnsTargets}
+            onChange={(event) => setDraft({ ...draft, dnsTargets: event.target.value })}
+            rows={3}
+            spellCheck={false}
+            className="font-mono text-sm"
+            placeholder="203.0.113.10"
+          />
+          {!dnsTargets.trim() && dns.data && (
+            <p className="text-sm text-muted-foreground">
+              {dns.data.records.length
+                ? `Detected: ${dns.data.records.map((record) => `${record.type} ${record.value}`).join(', ')}`
+                : `Nothing detected — ${dns.data.dashboard_host} doesn't resolve from this server, so staff are shown no records.`}
+            </p>
+          )}
         </CardContent>
       </Card>
 

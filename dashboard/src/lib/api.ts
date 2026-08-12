@@ -3,6 +3,7 @@ import type { NostrSigner } from '@nostrify/nostrify';
 import type {
   AuditEntry,
   DeployLogEntry,
+  DnsTarget,
   Host,
   HostVersion,
   Me,
@@ -76,6 +77,10 @@ export class ApiClient {
 
   status(): Promise<ServerStatus> {
     return this.request('GET', '/api/status');
+  }
+
+  dns(): Promise<DnsTarget> {
+    return this.request('GET', '/api/dns');
   }
 
   hosts(): Promise<{ hosts: Host[] }> {

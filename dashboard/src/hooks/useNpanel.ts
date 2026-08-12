@@ -33,6 +33,20 @@ export function useStatus() {
   });
 }
 
+/** The DNS records staff must create for a hostname to reach this server. */
+export function useDnsTarget() {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('dns'),
+    queryFn: () => api!.dns(),
+    enabled: !!api,
+    // The server caches its own detection for the same span; asking more often
+    // than that only re-reads what it already decided.
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
 export function useHosts() {
   const api = useApi();
 

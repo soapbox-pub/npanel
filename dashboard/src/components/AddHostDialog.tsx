@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { AddressInput } from '@/components/AddressInput';
+import { DnsRecords } from '@/components/DnsRecords';
 import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { Button } from '@/components/ui/button';
 import {
@@ -53,7 +54,7 @@ export function AddHostDialog() {
         <DialogHeader>
           <DialogTitle>Add a hostname</DialogTitle>
           <DialogDescription>
-            Point the hostname's A or AAAA record at this server, then map it to an nsite here.
+            Point the hostname at this server with the DNS records below, then map it to an nsite here.
           </DialogDescription>
         </DialogHeader>
 
@@ -68,6 +69,7 @@ export function AddHostDialog() {
               autoComplete="off"
               spellCheck={false}
             />
+            <DnsRecords hostname={hostname} />
           </div>
 
           <AddressInput value={address} onChange={setAddress} parsed={parsed} />
