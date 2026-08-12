@@ -99,7 +99,7 @@
   background-image:
     linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
     linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
-  background-size: 32px 32px;
+  background-size: 40px 40px;
   background-position: center top;
 }
 
@@ -162,7 +162,7 @@
   --sidebar-border: hsl(212 36% 23%);
   --sidebar-ring: hsl(18 100% 58%);
 
-  --grid-line: hsl(213 25% 91%);
+  --grid-line: hsl(213 25% 94%);
 }
 
 .dark {
@@ -215,7 +215,7 @@
   --sidebar-border: hsl(213 32% 19%);
   --sidebar-ring: hsl(20 100% 60%);
 
-  --grid-line: hsl(213 26% 15%);
+  --grid-line: hsl(213 26% 11%);
 }
 
 /*
