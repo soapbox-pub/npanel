@@ -100,6 +100,9 @@ async function harness() {
   const db: Kysely<Database> = await openDatabase(":memory:");
   const blobs = new BlobStore(join(dir, "blobs"));
   const settings = await SettingsService.load(db);
+  // The test Blossom servers listen on loopback, which is exactly what the
+  // SSRF guard exists to refuse.
+  await settings.update({ allow_private_blob_servers: true }, PUBKEY);
   const log = new Logger("error");
   const worker = new SyncWorker({ db, blobs, nostr: fakeNostr(), settings, log });
 
@@ -265,4 +268,44 @@ test("skips blobs that are already stored", async () => {
   const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
   assert.equal(row.status, "ready");
   assert.deepEqual(server.requests, [], "no download was attempted");
+});
+
+test("a deploy interrupted by shutdown is never marked ready", async () => {
+  const files: Record<string, string> = {};
+  // More files than BLOB_CONCURRENCY, so some are still queued when we stop.
+  for (let i = 0; i < 8; i++) {
+    files[`/file-${i}.txt`] = `content ${i}`;
+  }
+
+  // A server that accepts requests and never answers them.
+  const held: ServerResponse[] = [];
+  const server: Server = createServer((_req, res) => {
+    held.push(res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (typeof address === "string" || !address) throw new Error("no address");
+  cleanups.push(async () => {
+    for (const res of held) res.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  const { db, blobs, worker } = await harness();
+  const event = manifest(files, { servers: [`http://127.0.0.1:${address.port}/`] });
+
+  await worker.ingest(event);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await worker.stop();
+  await worker.whenIdle();
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.notEqual(row.status, "ready", "a half-downloaded version must never serve");
+  assert.equal(row.status, "pending", "and must be left in a state the next sync retries");
+
+  for (const content of Object.values(files)) {
+    assert.equal(await blobs.has(sha256(content)), false);
+  }
+
+  const logs = await db.selectFrom("deploy_log").selectAll().where("event_id", "=", event.id).execute();
+  assert.ok(logs.some((entry) => entry.msg === "deploy_interrupted"));
 });

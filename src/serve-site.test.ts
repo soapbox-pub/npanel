@@ -126,10 +126,49 @@ test("serves index.html with caching headers", async () => {
   assert.equal(response.headers.get("content-type"), "text/html; charset=utf-8");
   assert.equal(response.headers.get("etag"), `"${sha256(body)}"`);
   assert.equal(response.headers.get("content-length"), String(body.length));
-  assert.equal(response.headers.get("cache-control"), "public, max-age=3600");
+  // A document's URL survives a redeploy, so it must revalidate every time.
+  assert.equal(response.headers.get("cache-control"), "public, no-cache");
   assert.equal(response.headers.get("accept-ranges"), "bytes");
   assert.equal(response.headers.get("x-npanel-pubkey"), PUBKEY);
   assert.equal(response.headers.get("x-npanel-event"), "a".repeat(64));
+});
+
+test("assets may be cached, documents may not", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page", "/app.js": "code" } }],
+  });
+
+  const asset = await harness.site("docs.example.com", "/app.js");
+  assert.match(asset.headers.get("cache-control") ?? "", /max-age=/);
+
+  const document = await harness.site("docs.example.com", "/");
+  assert.equal(document.headers.get("cache-control"), "public, no-cache");
+});
+
+test("only GET and HEAD reach a site", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/", { method: "POST" });
+
+  assert.equal(response.status, 405);
+  assert.equal(response.headers.get("allow"), "GET, HEAD");
+});
+
+test("last-modified never runs ahead of when the manifest was seen", async () => {
+  const { harness } = await setup({
+    versions: [
+      // created_at far in the future: the author writes whatever they like.
+      { eventId: "a".repeat(64), createdAt: 4_000_000_000, files: { "/index.html": "page" } },
+    ],
+  });
+
+  const response = await harness.site("docs.example.com", "/");
+  const modified = new Date(response.headers.get("last-modified") ?? "");
+
+  assert.ok(!Number.isNaN(modified.getTime()), "a parseable date");
+  assert.ok(modified.getTime() <= Date.now(), "not in the future");
 });
 
 test("serves nested paths and their index files", async () => {

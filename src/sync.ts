@@ -52,6 +52,8 @@ export class SyncWorker {
   private queue: string[] = [];
   private queued = new Set<string>();
   private pumping: Promise<void> | undefined;
+  private resyncing: Promise<void> | undefined;
+  private resyncAgain = false;
   private running = false;
 
   constructor(deps: SyncWorkerDeps) {
@@ -67,6 +69,10 @@ export class SyncWorker {
     if (this.running) return;
     this.running = true;
 
+    // stop() aborts this controller, so a restarted worker needs a fresh one
+    // or every fetch it makes is cancelled before it begins.
+    this.controller = new AbortController();
+
     // Temp files can only be leftovers from a download interrupted by a crash.
     await this.blobs.clearTemp();
 
@@ -79,7 +85,11 @@ export class SyncWorker {
       if (keys.includes("resync_interval")) {
         this.scheduleResync();
       }
-      if (keys.includes("blossom_fallback_servers") || keys.includes("max_file_size")) {
+      if (
+        keys.includes("blossom_fallback_servers") ||
+        keys.includes("max_file_size") ||
+        keys.includes("allow_private_blob_servers")
+      ) {
         // New servers or a bigger limit may be exactly what a failed deploy needed.
         void this.retryIncomplete();
       }
@@ -147,8 +157,36 @@ export class SyncWorker {
     }
   }
 
-  /** Re-fetch every configured site from relays. */
+  /**
+   * Re-fetch every configured site from relays.
+   *
+   * Passes never overlap — the timer firing while a host change is still being
+   * fetched would duplicate every round trip — but a call made mid-pass isn't
+   * dropped either: the walk may already be past whatever prompted it, so one
+   * more pass is queued behind the current one.
+   */
   async resyncAll(): Promise<void> {
+    if (this.resyncing) {
+      this.resyncAgain = true;
+      await this.resyncing;
+      return;
+    }
+
+    this.resyncing = this.resyncUntilSettled().finally(() => {
+      this.resyncing = undefined;
+    });
+
+    await this.resyncing;
+  }
+
+  private async resyncUntilSettled(): Promise<void> {
+    do {
+      this.resyncAgain = false;
+      await this.runResync();
+    } while (this.resyncAgain && this.running);
+  }
+
+  private async runResync(): Promise<void> {
     const sites = await listConfiguredSites(this.db);
     this.log.debug("resync_started", { sites: sites.length });
 
@@ -301,6 +339,12 @@ export class SyncWorker {
       try {
         await this.deploy(eventId);
       } catch (error) {
+        if (!this.running) {
+          // Whatever went wrong is a consequence of shutting down, not of the
+          // version itself, so leave it for the next run rather than failing it.
+          await this.interrupt(eventId, 0);
+          return;
+        }
         this.log.error("deploy_crashed", { event_id: eventId, ...errFields(error) });
         await this.finish(eventId, "failed", `Deploy failed: ${message(error)}`);
       }
@@ -362,6 +406,12 @@ export class SyncWorker {
     });
 
     if (!servers.length) {
+      if (!this.running) {
+        // The lookup was aborted by the shutdown, not answered with nothing.
+        await this.interrupt(eventId, missing.length);
+        return;
+      }
+
       const reason =
         "No Blossom servers to download from. The manifest has no server tags and the author has no kind 10063 list — add fallback servers in Settings.";
       await this.writeDeployLog(eventId, "error", "no_blob_servers", { missing: missing.length });
@@ -374,7 +424,14 @@ export class SyncWorker {
       servers: servers.join(" "),
     });
 
-    const failed = await this.downloadAll(eventId, missing, servers, hashes.length - missing.length);
+    const { failed, abandoned } = await this.downloadAll(eventId, missing, servers, hashes.length - missing.length);
+
+    if (abandoned) {
+      // Shutting down mid-deploy. Marking this ready would serve a site whose
+      // files aren't all on disk, and a ready version is never retried.
+      await this.interrupt(eventId, abandoned + failed.length);
+      return;
+    }
 
     if (failed.length) {
       const sample = failed.slice(0, 3).join(", ");
@@ -386,13 +443,19 @@ export class SyncWorker {
     await this.finish(eventId, "ready");
   }
 
-  /** Download missing blobs with bounded concurrency; returns the failures. */
+  /**
+   * Download missing blobs with bounded concurrency.
+   *
+   * Returns the blobs no server could supply, plus however many were never
+   * attempted because the worker stopped — those are not failures, and a
+   * version that has any of them must not be marked ready.
+   */
   private async downloadAll(
     eventId: string,
     missing: string[],
     servers: string[],
     alreadyReady: number,
-  ): Promise<string[]> {
+  ): Promise<{ failed: string[]; abandoned: number }> {
     const maxSize = this.settings.get("max_file_size");
     const queue = [...missing];
     const failed: string[] = [];
@@ -415,7 +478,28 @@ export class SyncWorker {
 
     await Promise.all(Array.from({ length: Math.min(BLOB_CONCURRENCY, queue.length) }, worker));
 
-    return failed;
+    return { failed, abandoned: queue.length };
+  }
+
+  /**
+   * Leave an interrupted deploy incomplete, so the next sync resumes it.
+   *
+   * A version only ever leaves `pending`/`fetching_blobs` when every blob is
+   * accounted for; anything else would strand a half-downloaded version in a
+   * state nothing retries.
+   */
+  private async interrupt(eventId: string, remaining: number): Promise<void> {
+    await this.db
+      .updateTable("site_events")
+      .set({
+        status: "pending",
+        error: "Deploy was interrupted while npanel was stopping. It resumes on the next sync.",
+      })
+      .where("event_id", "=", eventId)
+      .execute();
+
+    await this.writeDeployLog(eventId, "warn", "deploy_interrupted", { remaining });
+    this.log.warn("deploy_interrupted", { event_id: eventId, remaining });
   }
 
   /** Try each server in turn for one blob. */
@@ -426,6 +510,7 @@ export class SyncWorker {
         const size = await this.blobs.download(url, sha256, {
           maxSize,
           signal: this.controller.signal,
+          allowPrivate: this.settings.get("allow_private_blob_servers"),
         });
         await this.recordBlob(sha256, size);
         await this.writeDeployLog(eventId, "debug", "blob_downloaded", { sha256, server, size });

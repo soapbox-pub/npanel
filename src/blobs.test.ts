@@ -76,7 +76,7 @@ test("downloads and verifies a blob", async () => {
   const server = await serve((_url, res) => res.end("downloaded"));
 
   try {
-    const size = await blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024 });
+    const size = await blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: true });
     assert.equal(size, 10);
     assert.equal(await text(blobs.read(hash)), "downloaded");
   } finally {
@@ -91,7 +91,7 @@ test("a lying server leaves nothing behind", async () => {
 
   try {
     await assert.rejects(
-      () => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024 }),
+      () => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: true }),
       (error: BlobDownloadError) => {
         assert.equal(error.reason, "hash_mismatch");
         return true;
@@ -113,7 +113,7 @@ test("surfaces HTTP failures with their status", async () => {
 
   try {
     await assert.rejects(
-      () => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024 }),
+      () => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: true }),
       (error: BlobDownloadError) => {
         assert.equal(error.reason, "http");
         assert.equal(error.status, 404);
@@ -136,7 +136,7 @@ test("refuses blobs larger than the limit, declared or not", async () => {
   });
   try {
     await assert.rejects(
-      () => blobs.download(`${declared.url}/${hash}`, hash, { maxSize: 100 }),
+      () => blobs.download(`${declared.url}/${hash}`, hash, { maxSize: 100, allowPrivate: true }),
       (error: BlobDownloadError) => {
         assert.equal(error.reason, "too_large");
         return true;
@@ -154,7 +154,7 @@ test("refuses blobs larger than the limit, declared or not", async () => {
   });
   try {
     await assert.rejects(
-      () => blobs.download(`${chunked.url}/${hash}`, hash, { maxSize: 100 }),
+      () => blobs.download(`${chunked.url}/${hash}`, hash, { maxSize: 100, allowPrivate: true }),
       (error: BlobDownloadError) => {
         assert.equal(error.reason, "too_large");
         return true;
@@ -171,13 +171,103 @@ test("reports network failures instead of throwing raw fetch errors", async () =
   const hash = sha256("unreachable");
 
   await assert.rejects(
-    () => blobs.download("http://127.0.0.1:1/nope", hash, { maxSize: 1024, timeout: 2000 }),
+    () => blobs.download("http://127.0.0.1:1/nope", hash, { maxSize: 1024, timeout: 2000, allowPrivate: true }),
     (error: BlobDownloadError) => {
       assert.equal(error.name, "BlobDownloadError");
       assert.equal(error.reason, "network");
       return true;
     },
   );
+});
+
+test("refuses to fetch anything that is not a public address", async () => {
+  const blobs = await store();
+  const hash = sha256("internal");
+  const server = await serve((_url, res) => res.end("internal"));
+
+  try {
+    for (const url of [`${server.url}/${hash}`, `http://169.254.169.254/${hash}`, `http://[::1]/${hash}`]) {
+      await assert.rejects(
+        () => blobs.download(url, hash, { maxSize: 1024 }),
+        (error: BlobDownloadError) => {
+          assert.equal(error.reason, "blocked");
+          return true;
+        },
+        url,
+      );
+    }
+
+    assert.equal(await blobs.has(hash), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test("refuses non-http schemes", async () => {
+  const blobs = await store();
+  const hash = sha256("file");
+
+  await assert.rejects(
+    () => blobs.download("file:///etc/passwd", hash, { maxSize: 1024 }),
+    (error: BlobDownloadError) => {
+      assert.equal(error.reason, "blocked");
+      return true;
+    },
+  );
+});
+
+test("a redirect cannot smuggle a download into a private address", async () => {
+  const blobs = await store();
+  const hash = sha256("redirected");
+
+  const target = await serve((_url, res) => res.end("redirected"));
+  const redirector = await serve((_url, res) => {
+    res.statusCode = 302;
+    res.setHeader("location", `${target.url}/${hash}`);
+    res.end();
+  });
+
+  try {
+    // The first hop is allowed, so only the re-check of the redirect target
+    // can catch this one.
+    await assert.rejects(
+      () => blobs.download(`${redirector.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: false }),
+      (error: BlobDownloadError) => {
+        assert.equal(error.reason, "blocked");
+        return true;
+      },
+    );
+
+    // With private addresses allowed, the same redirect is followed normally.
+    assert.equal(await blobs.download(`${redirector.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: true }), 10);
+    assert.equal(await text(blobs.read(hash)), "redirected");
+  } finally {
+    await redirector.close();
+    await target.close();
+  }
+});
+
+test("gives up on a redirect loop", async () => {
+  const blobs = await store();
+  const hash = sha256("loop");
+
+  const server = await serve((url, res) => {
+    res.statusCode = 302;
+    res.setHeader("location", url);
+    res.end();
+  });
+
+  try {
+    await assert.rejects(
+      () => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024, allowPrivate: true }),
+      (error: BlobDownloadError) => {
+        assert.match(error.message, /redirects/);
+        return true;
+      },
+    );
+  } finally {
+    await server.close();
+  }
 });
 
 test("lists and deletes stored blobs", async () => {

@@ -342,6 +342,64 @@ test("tls-check answers for configured hosts only", async () => {
   assert.equal(dashboard.status, 200);
 });
 
+test("tls-check answers Caddy, which asks over the loopback address", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  // Exactly what Caddy's on-demand TLS `ask` sends: a plain GET to the address
+  // it proxies to, so `Host` is the loopback address, not the dashboard.
+  const ask = (domain: string) =>
+    harness.app.fetch(
+      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+    );
+
+  assert.equal((await ask("docs.example.com")).status, 200);
+  assert.equal((await ask("panel.test")).status, 200);
+  assert.equal((await ask("evil.example.com")).status, 404);
+});
+
+test("unknown API routes answer with JSON, not the dashboard SPA", async () => {
+  const { harness, admin } = await setup();
+
+  const response = await harness.request(admin, "GET", "/api/nonexistent");
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+  assert.match((await response.json()).error, /No such API route/);
+});
+
+test("refuses an oversized body before verifying anything", async () => {
+  const { harness, stranger } = await setup();
+
+  const body = JSON.stringify({ hostname: "x".repeat(2 * 1024 * 1024) });
+  const response = await harness.app.fetch(
+    new Request("http://127.0.0.1/api/hosts", {
+      method: "POST",
+      headers: {
+        host: "panel.test",
+        "content-type": "application/json",
+        authorization: stranger.auth("POST", "/api/hosts", body),
+      },
+      body,
+    }),
+  );
+
+  assert.equal(response.status, 413);
+  assert.match((await response.json()).error, /too large/);
+});
+
+test("dashboard responses refuse to be framed", async () => {
+  const { harness, admin } = await setup();
+
+  const response = await harness.request(admin, "GET", "/api/me");
+
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
+});
+
 test("a token signed for one route does not work on another", async () => {
   const { harness, admin } = await setup();
 

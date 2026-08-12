@@ -10,6 +10,10 @@
 	# the dashboard hostname and for every enabled host, 404 for anything else.
 	# Without this guard, anyone pointing a domain at the box could make Caddy
 	# request certificates on their behalf.
+	#
+	# The request arrives with `Host: 127.0.0.1:3000`, so /api/tls-check is
+	# exempt from npanel's hostname routing. Newer Caddy versions spell this
+	# `permission http http://127.0.0.1:3000/api/tls-check`.
 	on_demand_tls {
 		ask http://127.0.0.1:3000/api/tls-check
 	}

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { nip19 } from "nostr-tools";
 import { type AuthUser, nip98Auth, requireAdmin } from "../auth.ts";
@@ -8,6 +9,9 @@ import { hostRoutes } from "./hosts.ts";
 import { userRoutes } from "./users.ts";
 
 export type { ApiDeps } from "./context.ts";
+
+/** Largest request body the API accepts, in bytes. */
+const MAX_BODY_SIZE = 1024 * 1024;
 
 /**
  * The dashboard's JSON API.
@@ -20,6 +24,18 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   const app = new Hono<ApiEnv>();
 
   app.use("*", cors());
+
+  // Bodies are read before the caller is known — NIP-98 hashes the payload to
+  // check it against the signature — so anyone able to sign an event could
+  // otherwise make npanel buffer an arbitrarily large request. Every endpoint
+  // here takes small JSON.
+  app.use(
+    "*",
+    bodyLimit({
+      maxSize: MAX_BODY_SIZE,
+      onError: (c) => c.json({ error: "Request body is too large." }, 413),
+    }),
+  );
 
   /**
    * Certificate authorization for Caddy's `on_demand_tls ask`.

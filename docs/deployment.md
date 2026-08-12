@@ -155,6 +155,25 @@ certificate issuance on your behalf and get you rate-limited by Let's Encrypt.
 That endpoint is the one unauthenticated route in the API, necessarily so — it
 only reveals whether a hostname is configured, which DNS already tells you.
 
+It is also the one route exempt from npanel's `Host` routing. Caddy asks with a
+plain `GET` to the address it proxies to, so the request arrives with
+`Host: 127.0.0.1:3000` rather than the dashboard hostname; were it routed like
+everything else it would be served as an unconfigured nsite, answer `404`, and
+quietly deny every certificate. Because of that exemption `/api/tls-check`
+answers on any hostname npanel serves — keep it on a port only the proxy can
+reach, as the sample configuration does.
+
+Caddy has deprecated the `ask` sub-directive in favour of the `permission`
+module. Newer versions accept:
+
+```caddy
+on_demand_tls {
+	permission http http://127.0.0.1:3000/api/tls-check
+}
+```
+
+Both forms send the same request; use whichever your Caddy accepts.
+
 ### Other proxies
 
 nginx, HAProxy, and friends work, but you'll be managing certificates yourself
@@ -162,6 +181,12 @@ nginx, HAProxy, and friends work, but you'll be managing certificates yourself
 use must either preserve the `Host` header or set `X-Forwarded-Host`; npanel
 prefers `X-Forwarded-Host` when present. Without one of those, every hostname
 looks like the proxy's address and nothing resolves.
+
+npanel trusts `X-Forwarded-Host` unconditionally, because it has no way to tell
+a proxy's header from a client's. Your proxy must therefore *set* that header
+rather than pass a client-supplied one through — Caddy and nginx's
+`proxy_set_header` both do — and npanel must not be reachable directly from the
+internet. Bind it to loopback if the proxy is on the same machine.
 
 ## Adding a host
 

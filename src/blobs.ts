@@ -3,14 +3,21 @@ import { createReadStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
+import { isPublicUrl } from "./net.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+
+/** Redirects followed before giving up on a blob. */
+const MAX_REDIRECTS = 3;
+
+/** Statuses that mean "look somewhere else". */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /** A download that failed, with fields suitable for the deploy log. */
 export class BlobDownloadError extends Error {
   constructor(
     message: string,
-    readonly reason: "http" | "too_large" | "hash_mismatch" | "network",
+    readonly reason: "http" | "too_large" | "hash_mismatch" | "network" | "blocked",
     readonly status?: number,
   ) {
     super(message);
@@ -82,25 +89,24 @@ export class BlobStore {
   /**
    * Download a blob from `url`, verifying it hashes to `sha256`.
    *
+   * Unless `allowPrivate` is set, the target — and every redirect it leads to
+   * — must resolve to a public address, because the URL ultimately comes from
+   * a manifest that anyone can publish.
+   *
    * Returns the size in bytes. Throws {@link BlobDownloadError} on any failure,
    * leaving the store untouched.
    */
   async download(
     url: string,
     sha256: string,
-    opts: { maxSize: number; signal?: AbortSignal; timeout?: number },
+    opts: { maxSize: number; signal?: AbortSignal; timeout?: number; allowPrivate?: boolean },
   ): Promise<number> {
     assertSha256(sha256);
 
     const timeout = AbortSignal.timeout(opts.timeout ?? 30_000);
     const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
-    let response: Response;
-    try {
-      response = await fetch(url, { signal, redirect: "follow" });
-    } catch (error) {
-      throw new BlobDownloadError(String(error instanceof Error ? error.message : error), "network");
-    }
+    const response = await request(url, { signal, allowPrivate: opts.allowPrivate ?? false });
 
     if (!response.ok || !response.body) {
       throw new BlobDownloadError(`HTTP ${response.status}`, "http", response.status);
@@ -198,5 +204,74 @@ export class BlobStore {
 function assertSha256(value: string): void {
   if (!SHA256.test(value)) {
     throw new Error(`Not a sha256 hash: ${value}`);
+  }
+}
+
+/**
+ * Fetch a URL, following redirects one at a time.
+ *
+ * `fetch` can follow redirects itself, but then only the first URL is ever
+ * checked — a cooperative server could redirect npanel anywhere. Each hop is
+ * vetted before it is requested.
+ */
+async function request(url: string, opts: { signal: AbortSignal; allowPrivate: boolean }): Promise<Response> {
+  let target: URL;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new BlobDownloadError(`Not a valid URL: ${url}`, "blocked");
+  }
+
+  for (let hop = 0; ; hop++) {
+    if (target.protocol !== "http:" && target.protocol !== "https:") {
+      throw new BlobDownloadError(`Refusing to fetch a ${target.protocol} URL`, "blocked");
+    }
+    if (!opts.allowPrivate) {
+      await assertPublic(target);
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(target, { signal: opts.signal, redirect: "manual" });
+    } catch (error) {
+      throw new BlobDownloadError(String(error instanceof Error ? error.message : error), "network");
+    }
+
+    if (!REDIRECT_STATUSES.has(response.status)) {
+      return response;
+    }
+
+    const location = response.headers.get("location");
+    await response.body?.cancel().catch(() => {});
+
+    if (!location) {
+      throw new BlobDownloadError(`HTTP ${response.status} without a Location header`, "http", response.status);
+    }
+    if (hop >= MAX_REDIRECTS) {
+      throw new BlobDownloadError(`More than ${MAX_REDIRECTS} redirects`, "http", response.status);
+    }
+
+    try {
+      target = new URL(location, target);
+    } catch {
+      throw new BlobDownloadError(`Redirected to an invalid URL: ${location}`, "blocked");
+    }
+  }
+}
+
+/** Refuse to fetch anything that isn't on the public internet. */
+async function assertPublic(url: URL): Promise<void> {
+  let publicAddress: boolean;
+  try {
+    publicAddress = await isPublicUrl(url);
+  } catch (error) {
+    throw new BlobDownloadError(String(error instanceof Error ? error.message : error), "network");
+  }
+
+  if (!publicAddress) {
+    throw new BlobDownloadError(
+      `${url.hostname} is not a public address. Enable allow_private_blob_servers in Settings to fetch from your own network.`,
+      "blocked",
+    );
   }
 }

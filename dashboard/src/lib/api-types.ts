@@ -62,6 +62,7 @@ export interface Settings {
   blossom_fallback_servers: string[];
   max_file_size: number;
   resync_interval: number;
+  allow_private_blob_servers: boolean;
 }
 
 export interface AuditEntry {

@@ -3,8 +3,10 @@
 The dashboard is a client of this API and uses nothing private, so anything the
 UI can do, a script can do.
 
-Everything lives under `/api` on `DASHBOARD_HOST`. All responses are JSON.
-Errors are `{ "error": "..." }` with a 4xx or 5xx status.
+Everything lives under `/api` on `DASHBOARD_HOST`. All responses are JSON,
+including `404`s for routes that don't exist. Errors are `{ "error": "..." }`
+with a 4xx or 5xx status. Request bodies are limited to 1 MB; anything larger
+is `413`, refused before the signature is checked.
 
 ## Authentication
 
@@ -48,6 +50,10 @@ Routes marked **admin** below return `403` for staff.
 The one unauthenticated route, for Caddy's `on_demand_tls ask`. Returns `200`
 with `ok` when the domain is `DASHBOARD_HOST` or an enabled host, and `404`
 otherwise. It reveals only whether a hostname is configured.
+
+It is also the one route that answers on any hostname rather than only on
+`DASHBOARD_HOST`, because Caddy asks over the address it proxies to. Keep
+npanel's port reachable only by the proxy.
 
 ## Session
 
@@ -265,7 +271,8 @@ back in if it ever happens anyway.)
     "relays": ["wss://relay.damus.io"],
     "blossom_fallback_servers": [],
     "max_file_size": 104857600,
-    "resync_interval": 600
+    "resync_interval": 600,
+    "allow_private_blob_servers": false
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

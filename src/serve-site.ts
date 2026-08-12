@@ -1,3 +1,4 @@
+import { extname } from "node:path/posix";
 import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import type { BlobStore } from "./blobs.ts";
@@ -12,8 +13,20 @@ export interface SiteServerDeps {
   log: Logger;
 }
 
-/** How long browsers may cache a file. Content is addressed by hash anyway. */
-const CACHE_CONTROL = "public, max-age=3600";
+/**
+ * How long browsers may cache a file.
+ *
+ * A site's URLs are stable across deploys — only the blobs behind them change
+ * — so a long max-age would keep serving the previous deploy from browser
+ * caches for as long as it lasts. Documents revalidate every time, which the
+ * `ETag` makes cheap; fingerprinted assets are the ones worth caching, and
+ * those are only ever fetched by a document that revalidated first.
+ */
+const CACHE_CONTROL = "public, no-cache";
+const ASSET_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
+
+/** Extensions whose contents are the site itself, rather than its assets. */
+const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifest", ".xml", ".txt", ".md"]);
 
 /**
  * Serve a request for one of the configured hostnames.
@@ -26,6 +39,14 @@ export function createSiteServer(deps: SiteServerDeps) {
   const { db, blobs, log } = deps;
 
   return async function serveSite(request: Request, hostname: string): Promise<Response> {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      // An nsite is a pile of files. There is nothing to POST to.
+      return new Response("This site only serves GET and HEAD requests.", {
+        status: 405,
+        headers: { "content-type": "text/plain; charset=utf-8", allow: "GET, HEAD" },
+      });
+    }
+
     const host = await findHost(db, hostname);
 
     if (!host || host.enabled !== 1) {
@@ -61,9 +82,9 @@ export function createSiteServer(deps: SiteServerDeps) {
     const etag = `"${file.sha256}"`;
     const headers = new Headers({
       "content-type": contentType(file.path),
-      "cache-control": CACHE_CONTROL,
+      "cache-control": cacheControl(file.path),
       etag,
-      "last-modified": new Date(version.created_at * 1000).toUTCString(),
+      "last-modified": lastModified(version.created_at, version.fetched_at),
       "accept-ranges": "bytes",
       "x-npanel-pubkey": host.pubkey,
       "x-npanel-event": version.event_id,
@@ -142,6 +163,23 @@ export function parseRange(
   if (start > end || start >= size) return "unsatisfiable";
 
   return { start, end };
+}
+
+/** How long a file may be cached, by what kind of file it is. */
+export function cacheControl(path: string): string {
+  return DOCUMENT_TYPES.has(extname(path).toLowerCase()) ? CACHE_CONTROL : ASSET_CACHE_CONTROL;
+}
+
+/**
+ * `Last-Modified` for a version.
+ *
+ * A manifest's `created_at` is whatever its author put there, including dates
+ * in the future or beyond what `Date` can represent, so it is capped at the
+ * moment npanel actually saw the event.
+ */
+export function lastModified(createdAt: number, fetchedAt: number): string {
+  const seconds = Number.isFinite(createdAt) ? Math.min(createdAt, fetchedAt) : fetchedAt;
+  return new Date(Math.max(seconds, 0) * 1000).toUTCString();
 }
 
 /** Whether an `If-None-Match` header matches the current ETag. */

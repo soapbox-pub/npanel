@@ -20,6 +20,14 @@ export interface SettingsValues {
   max_file_size: number;
   /** Seconds between full manifest re-fetches from relays. */
   resync_interval: number;
+  /**
+   * Allow blob downloads from loopback, LAN, and other non-public addresses.
+   *
+   * Off by default: a manifest can name any server it likes, so leaving this
+   * on lets an nsite author aim npanel at whatever is listening next to it.
+   * Turn it on only to serve from a Blossom server on your own network.
+   */
+  allow_private_blob_servers: boolean;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -72,6 +80,7 @@ const SCHEMAS = {
     .positive()
     .max(8 * 1024 ** 3),
   resync_interval: z.number().int().min(60).max(86400),
+  allow_private_blob_servers: z.boolean(),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -85,6 +94,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   blossom_fallback_servers: [],
   max_file_size: 100 * 1024 * 1024,
   resync_interval: 600,
+  allow_private_blob_servers: false,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

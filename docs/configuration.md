@@ -111,6 +111,29 @@ backstop for manifests missed during relay downtime or a restart. Lowering it
 makes npanel notice sooner at the cost of more relay traffic. Changing it
 re-arms the timer immediately.
 
+### `allow_private_blob_servers`
+
+Default `false`. Whether npanel may download blobs from loopback, LAN, and other
+non-public addresses.
+
+Download targets are not npanel's to choose: they come from the manifest's own
+`server` tags, from the author's kind 10063 list, and from whatever those
+servers redirect to. Left unrestricted, publishing a manifest is enough to make
+npanel issue GET requests to anything reachable from the machine it runs on —
+cloud metadata, an admin interface on the LAN, a database's HTTP port — and the
+resulting status codes land in a deploy log the author's operators can read.
+The response body can't leak, since it has to hash to the requested blob or it
+is discarded, but the probe itself is the problem.
+
+So each hop is resolved and refused unless every address it answers with is
+public. Turn this on if your Blossom server is on your own network; the check
+is then skipped entirely, for every source. Note that the check resolves the
+name rather than pinning the connection to the address it checked, so a
+determined DNS-rebinding attack can still get through: don't run npanel
+somewhere a single GET request to a neighbouring service would be a disaster.
+
+Changing this retries every version that isn't ready.
+
 ## Precedence and validation
 
 Runtime settings are read from the database at startup and cached in memory. A

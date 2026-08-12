@@ -3,6 +3,7 @@ import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -16,6 +17,7 @@ interface Draft {
   servers?: string;
   maxFileSize?: string;
   resyncInterval?: string;
+  allowPrivateBlobServers?: boolean;
 }
 
 /**
@@ -43,6 +45,7 @@ export function SettingsPage() {
   const servers = draft.servers ?? current?.blossom_fallback_servers.join('\n') ?? '';
   const maxFileSize = draft.maxFileSize ?? String(Math.round((current?.max_file_size ?? 0) / (1024 * 1024)));
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
+  const allowPrivateBlobServers = draft.allowPrivateBlobServers ?? current?.allow_private_blob_servers ?? false;
 
   const save = async () => {
     try {
@@ -51,6 +54,7 @@ export function SettingsPage() {
         blossom_fallback_servers: lines(servers),
         max_file_size: Math.round(Number(maxFileSize) * 1024 * 1024),
         resync_interval: Number(resyncInterval),
+        allow_private_blob_servers: allowPrivateBlobServers,
       });
 
       setDraft({});
@@ -139,6 +143,32 @@ export function SettingsPage() {
               value={resyncInterval}
               onChange={(event) => setDraft({ ...draft, resyncInterval: event.target.value })}
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Private Blossom servers</CardTitle>
+          <CardDescription>
+            A manifest can name any download server it likes, so by default npanel refuses to fetch
+            blobs from loopback, LAN, and other non-public addresses — otherwise a site author could
+            aim it at whatever is running next to it. Turn this on only if your Blossom server is on
+            your own network.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-3">
+            <Checkbox
+              id="allow-private-blob-servers"
+              checked={allowPrivateBlobServers}
+              onCheckedChange={(checked) =>
+                setDraft({ ...draft, allowPrivateBlobServers: checked === true })
+              }
+            />
+            <Label htmlFor="allow-private-blob-servers" className="font-normal">
+              Allow downloads from private addresses
+            </Label>
           </div>
         </CardContent>
       </Card>
