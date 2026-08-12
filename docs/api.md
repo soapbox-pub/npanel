@@ -10,8 +10,9 @@ is `413`, refused before the signature is checked.
 
 ## Authentication
 
-Every route except `/api/tls-check` requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md)
-auth. Sign a kind `27235` event and send it base64-encoded:
+Every route except `/api/tls-check` and `/api/instance` requires
+[NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
+kind `27235` event and send it base64-encoded:
 
 ```
 Authorization: Nostr <base64(event)>
@@ -47,9 +48,9 @@ Routes marked **admin** below return `403` for staff.
 
 ### `GET /api/tls-check?domain=<hostname>`
 
-The one unauthenticated route, for Caddy's `on_demand_tls ask`. Returns `200`
-with `ok` when the domain is `DASHBOARD_HOST` or an enabled host, and `404`
-otherwise. It reveals only whether a hostname is configured.
+Unauthenticated, for Caddy's `on_demand_tls ask`. Returns `200` with `ok` when
+the domain is `DASHBOARD_HOST` or an enabled host, and `404` otherwise. It
+reveals only whether a hostname is configured.
 
 It is also the one route that answers on any hostname rather than only on
 `DASHBOARD_HOST`, because Caddy asks over the address it proxies to. Keep
@@ -58,6 +59,22 @@ npanel's port reachable only by the proxy — that is what `BIND_ADDRESS` is for
 Approvals are metered by `tls_check_limit_per_host` and `tls_check_limit_total`,
 and once a limit is spent the route answers `429` with a `Retry-After` header.
 Refusals aren't metered, and `DASHBOARD_HOST` is exempt.
+
+## Instance
+
+### `GET /api/instance`
+
+Unauthenticated, for the logged-out homepage, which introduces npanel to
+whoever landed on it and names the person running this copy.
+
+```json
+{ "contact_npub": "npub1...", "dashboard_host": "panel.example.com" }
+```
+
+`contact_npub` is `null` when no admin has set
+[`contact_npub`](configuration.md#contact_npub). Nothing here is private: the
+npub is published to be shown, and the hostname is the one the caller used to
+reach this route.
 
 ## Session
 
@@ -307,7 +324,8 @@ back in if it ever happens anyway.)
     "dns_targets": [],
     "allowed_host_suffixes": [],
     "tls_check_limit_per_host": 60,
-    "tls_check_limit_total": 600
+    "tls_check_limit_total": 600,
+    "contact_npub": ""
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

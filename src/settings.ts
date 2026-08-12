@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { isIP } from "node:net";
 import type { Kysely } from "kysely";
+import { nip19 } from "nostr-tools";
 import { z } from "zod";
 import type { Database } from "./db/schema.ts";
 import { isHostname, normalizeHostname } from "./hostname.ts";
@@ -41,6 +42,14 @@ export interface SettingsValues {
   tls_check_limit_per_host: number;
   /** Certificates `/api/tls-check` will authorize across all hostnames per hour. */
   tls_check_limit_total: number;
+  /**
+   * Whoever runs this instance, shown on the logged-out homepage, or empty to
+   * show nobody.
+   *
+   * npanel is software you host yourself, so a visitor who lands on someone
+   * else's gateway needs a way to tell whose it is.
+   */
+  contact_npub: string;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -109,6 +118,48 @@ const dnsTarget = z
     return hostname;
   });
 
+/**
+ * A person, normalized to an npub.
+ *
+ * Anything that names one is accepted, because an admin will paste whatever
+ * their client copied, but only the npub is kept: an nprofile's relay hints
+ * would go unused — the dashboard reads profiles from its own relays — and
+ * storing one canonical form spares every reader a second format to handle.
+ */
+const contactNpub = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    if (!value) return "";
+
+    const identifier = value.replace(/^(?:web\+)?nostr:/, "");
+
+    if (/^[0-9a-fA-F]{64}$/.test(identifier)) {
+      return nip19.npubEncode(identifier.toLowerCase());
+    }
+
+    let decoded: nip19.DecodedResult;
+    try {
+      decoded = nip19.decode(identifier);
+    } catch {
+      ctx.addIssue({ code: "custom", message: `Not an npub: ${value}` });
+      return z.NEVER;
+    }
+
+    switch (decoded.type) {
+      case "npub":
+        return nip19.npubEncode(decoded.data);
+      case "nprofile":
+        return nip19.npubEncode(decoded.data.pubkey);
+      case "nsec":
+        ctx.addIssue({ code: "custom", message: "That's a private key. Never paste an nsec anywhere." });
+        return z.NEVER;
+      default:
+        ctx.addIssue({ code: "custom", message: `A ${decoded.type} does not name a person. Use an npub.` });
+        return z.NEVER;
+    }
+  });
+
 /** Per-key validation. Values are stored as JSON in the `settings` table. */
 const SCHEMAS = {
   relays: z.array(relayUrl).min(1, "At least one relay is required."),
@@ -131,6 +182,7 @@ const SCHEMAS = {
   allowed_host_suffixes: z.array(hostSuffix),
   tls_check_limit_per_host: z.number().int().min(1).max(10_000),
   tls_check_limit_total: z.number().int().min(1).max(100_000),
+  contact_npub: contactNpub,
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -146,6 +198,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   allowed_host_suffixes: [],
   tls_check_limit_per_host: 60,
   tls_check_limit_total: 600,
+  contact_npub: "",
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

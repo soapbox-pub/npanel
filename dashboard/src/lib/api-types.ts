@@ -80,6 +80,14 @@ export interface Settings {
   allowed_host_suffixes: string[];
   tls_check_limit_per_host: number;
   tls_check_limit_total: number;
+  contact_npub: string;
+}
+
+/** What the logged-out homepage knows about the server it's running on. */
+export interface Instance {
+  /** Whoever runs this instance, or null when no admin has said. */
+  contact_npub: string | null;
+  dashboard_host: string;
 }
 
 export interface AuditEntry {

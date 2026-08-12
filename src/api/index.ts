@@ -20,8 +20,8 @@ const HOUR = 60 * 60 * 1000;
 /**
  * The dashboard's JSON API.
  *
- * Every route except `/api/tls-check` requires NIP-98 auth from a pubkey that
- * exists in the `users` table.
+ * Every route except `/api/tls-check` and `/api/instance` requires NIP-98 auth
+ * from a pubkey that exists in the `users` table.
  */
 export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   const { db, settings, log } = deps;
@@ -101,6 +101,24 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
 
     return c.text("ok");
+  });
+
+  /**
+   * Who runs this instance, for the logged-out homepage.
+   *
+   * Unauthenticated because that page is the one thing here a stranger is
+   * meant to see. npanel is software you host yourself, and someone who lands
+   * on a gateway that isn't theirs should be able to tell whose it is — and
+   * that they could run their own. Nothing it returns is private: the contact
+   * npub is published by an admin precisely to be shown, and the hostname is
+   * the one the visitor already typed.
+   */
+  app.get("/instance", (c) => {
+    const contact = settings.get("contact_npub");
+    return c.json({
+      contact_npub: contact || null,
+      dashboard_host: deps.dashboardHost,
+    });
   });
 
   app.use(

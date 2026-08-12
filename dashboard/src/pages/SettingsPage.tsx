@@ -1,6 +1,7 @@
 import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
 
+import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -9,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
-import { formatBytes } from '@/lib/format';
+import { decodePubkey, formatBytes } from '@/lib/format';
 
 interface Draft {
   relays?: string;
@@ -20,6 +21,7 @@ interface Draft {
   dnsTargets?: string;
   tlsCheckLimitPerHost?: string;
   tlsCheckLimitTotal?: string;
+  contactNpub?: string;
 }
 
 /**
@@ -52,6 +54,7 @@ export function SettingsPage() {
   const dnsTargets = draft.dnsTargets ?? current?.dns_targets.join('\n') ?? '';
   const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
+  const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
 
   const save = async () => {
     try {
@@ -64,6 +67,7 @@ export function SettingsPage() {
         dns_targets: lines(dnsTargets),
         tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
         tls_check_limit_total: Number(tlsCheckLimitTotal),
+        contact_npub: contactNpub.trim(),
       });
 
       setDraft({});
@@ -88,6 +92,29 @@ export function SettingsPage() {
           Applied immediately. Every change is recorded in the audit log.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Public contact</CardTitle>
+          <CardDescription>
+            Whoever runs this instance, shown on the homepage to signed-out visitors so they can
+            tell whose gateway they landed on. An npub, an nprofile, or a hex pubkey — all are
+            stored as an npub. Leave it empty to name nobody.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <Input
+            id="contact-npub"
+            value={contactNpub}
+            onChange={(event) => setDraft({ ...draft, contactNpub: event.target.value })}
+            placeholder="npub1…"
+            autoComplete="off"
+            spellCheck={false}
+            className="font-mono text-sm"
+          />
+          <ContactPreview value={contactNpub} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -254,6 +281,25 @@ export function SettingsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/** Who the pasted identifier turns out to be, before it's saved. */
+function ContactPreview({ value }: { value: string }) {
+  const pubkey = decodePubkey(value);
+
+  if (!value.trim()) {
+    return <p className="text-sm text-muted-foreground">Nobody is named on the homepage.</p>;
+  }
+
+  if (!pubkey) {
+    return <p className="text-sm text-destructive">That isn't an npub.</p>;
+  }
+
+  return (
+    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+      Shown as <PubkeyLabel pubkey={pubkey} className="text-foreground" />
+    </p>
   );
 }
 

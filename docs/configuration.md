@@ -206,6 +206,21 @@ out of npanel itself.
 
 Throttled asks are logged as `tls_check_throttled`.
 
+### `contact_npub`
+
+Default empty. Whoever runs this instance, shown on the logged-out homepage
+alongside a link to their profile.
+
+npanel is meant to be self-hosted, so a stranger who follows a link to a site
+you serve and then wonders what npanel is arrives at a gateway that isn't
+theirs. Naming an operator is what turns that page from an advertisement for
+some anonymous service into "this is *someone's* instance, and you can run your
+own". Left empty, the homepage just says nobody is listed.
+
+Paste an npub, an nprofile, or a hex pubkey; all three are stored as an npub.
+It is read by `GET /api/instance`, which is unauthenticated — this value is
+published to be shown in public, so don't set it to a key you want kept quiet.
+
 ## Precedence and validation
 
 Runtime settings are read from the database at startup and cached in memory. A

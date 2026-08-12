@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { fetchInstance } from '@/lib/api';
 import type { Settings } from '@/lib/api-types';
 
 /** Poll while a deploy could be in progress, so progress bars actually move. */
@@ -20,6 +21,19 @@ export function useMe() {
     queryFn: () => api!.me(),
     enabled: !!api,
     retry: false,
+  });
+}
+
+/**
+ * Who runs this server. Unauthenticated, and so deliberately outside the
+ * pubkey-namespaced key space — the homepage asks for it before anyone signs
+ * in, and the answer is the same for everyone.
+ */
+export function useInstance() {
+  return useQuery({
+    queryKey: ['npanel', 'instance'],
+    queryFn: () => fetchInstance(),
+    staleTime: Infinity,
   });
 }
 

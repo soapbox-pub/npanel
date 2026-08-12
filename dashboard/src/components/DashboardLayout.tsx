@@ -11,9 +11,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useMe } from '@/hooks/useNpanel';
 import { safeNpub } from '@/lib/format';
+import { SOURCE_URL } from '@/lib/links';
 import { cn } from '@/lib/utils';
-
-const SOURCE_URL = 'https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel';
+import { HomePage } from '@/pages/HomePage';
 
 const NAV = [
   { to: '/', label: 'Hostnames', icon: Globe, adminOnly: false, end: true },
@@ -32,9 +32,7 @@ export function DashboardLayout() {
       <TopBar />
 
       {!user ? (
-        <Centered>
-          <SignedOut />
-        </Centered>
+        <HomePage />
       ) : me.isLoading ? (
         <Centered>
           <Skeleton className="h-56 w-full max-w-lg" />
@@ -145,22 +143,6 @@ function SiteFooter() {
         </a>
       </div>
     </footer>
-  );
-}
-
-function SignedOut() {
-  return (
-    <Card className="border-t-2 border-t-primary">
-      <CardHeader>
-        <CardTitle className="text-2xl">Sign in</CardTitle>
-        <CardDescription className="text-base">
-          npanel authenticates with your Nostr key. Sign in to manage your team's hostnames.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <LoginArea />
-      </CardContent>
-    </Card>
   );
 }
 

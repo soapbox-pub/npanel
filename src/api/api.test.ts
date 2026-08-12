@@ -315,6 +315,20 @@ test("audits host changes", async () => {
   assert.deepEqual(actions, ["host.delete", "host.create"]);
 });
 
+test("instance is public, and names whoever runs it", async () => {
+  const { harness, admin } = await setup();
+
+  const before = await harness.request(undefined, "GET", "/api/instance");
+  assert.equal(before.status, 200);
+  assert.deepEqual(await before.json(), { contact_npub: null, dashboard_host: "panel.test" });
+
+  await harness.request(admin, "PUT", "/api/settings", { contact_npub: PUBKEY });
+
+  const after = await harness.request(undefined, "GET", "/api/instance");
+  assert.equal(after.status, 200);
+  assert.equal((await after.json()).contact_npub, NPUB);
+});
+
 test("tls-check answers for configured hosts only", async () => {
   const { harness, admin } = await setup();
 

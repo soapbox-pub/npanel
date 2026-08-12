@@ -6,6 +6,7 @@ import type {
   DnsTarget,
   Host,
   HostVersion,
+  Instance,
   Me,
   NpanelUser,
   ServerStatus,
@@ -170,6 +171,21 @@ export class ApiClient {
   auditLog(limit = 100): Promise<{ entries: AuditEntry[] }> {
     return this.request('GET', `/api/audit-log?limit=${limit}`);
   }
+}
+
+/**
+ * The one endpoint that takes no signature, so the homepage can introduce this
+ * instance to a visitor who has no Nostr key at all — hence a bare function
+ * rather than an {@link ApiClient} method, which would need a signer.
+ */
+export async function fetchInstance(): Promise<Instance> {
+  const response = await fetch(new URL('/api/instance', window.location.origin));
+
+  if (!response.ok) {
+    throw new ApiError(await errorMessage(response), response.status);
+  }
+
+  return (await response.json()) as Instance;
 }
 
 async function errorMessage(response: Response): Promise<string> {

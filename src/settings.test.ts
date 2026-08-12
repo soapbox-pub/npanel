@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { nip19 } from "nostr-tools";
 import { openDatabase } from "./db/index.ts";
 import { DEFAULT_SETTINGS, SettingsService, parseSetting } from "./settings.ts";
 
@@ -63,6 +64,26 @@ test("invalid values are rejected", () => {
   assert.throws(() => parseSetting("max_file_size", 0), /max_file_size/);
   assert.throws(() => parseSetting("resync_interval", 5), /resync_interval/);
   assert.throws(() => parseSetting("blossom_fallback_servers", ["ftp://x.com"]), /http/);
+});
+
+test("the contact is normalized to an npub, whatever names it", () => {
+  const pubkey = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+  const npub = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
+
+  assert.equal(parseSetting("contact_npub", npub), npub);
+  assert.equal(parseSetting("contact_npub", `nostr:${npub}`), npub);
+  assert.equal(parseSetting("contact_npub", pubkey.toUpperCase()), npub);
+  assert.equal(parseSetting("contact_npub", ` ${npub} `), npub);
+  assert.equal(parseSetting("contact_npub", ""), "");
+
+  assert.equal(parseSetting("contact_npub", nip19.nprofileEncode({ pubkey, relays: ["wss://relay.test"] })), npub);
+
+  assert.throws(() => parseSetting("contact_npub", "alex@example.com"), /Not an npub/);
+  assert.throws(() => parseSetting("contact_npub", nip19.noteEncode(pubkey)), /does not name a person/);
+  assert.throws(
+    () => parseSetting("contact_npub", "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5"),
+    /private key/,
+  );
 });
 
 test("urls are normalized", () => {
