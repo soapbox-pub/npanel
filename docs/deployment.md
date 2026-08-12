@@ -174,6 +174,15 @@ on_demand_tls {
 
 Both forms send the same request; use whichever your Caddy accepts.
 
+Caddy has no rate limiting of its own on this path — the `ask` endpoint is meant
+to be the throttle — so npanel meters approvals: 60 per hostname per hour and
+600 overall by default, both editable under Settings. Past that it answers `429`
+and Caddy declines to issue. This matters for hosts whose DNS doesn't actually
+point here: each handshake asks again, each `ok` starts an order that fails
+validation, and anyone can drive that loop by connecting with the name as SNI.
+Refusals cost nothing, and the dashboard hostname is never throttled. See
+[configuration](configuration.md#tls_check_limit_per_host).
+
 ### Other proxies
 
 nginx, HAProxy, and friends work, but you'll be managing certificates yourself
@@ -186,7 +195,9 @@ npanel trusts `X-Forwarded-Host` unconditionally, because it has no way to tell
 a proxy's header from a client's. Your proxy must therefore *set* that header
 rather than pass a client-supplied one through — Caddy and nginx's
 `proxy_set_header` both do — and npanel must not be reachable directly from the
-internet. Bind it to loopback if the proxy is on the same machine.
+internet. It listens on `127.0.0.1` unless you change `BIND_ADDRESS`; if the
+proxy is on another machine, set `BIND_ADDRESS=0.0.0.0` and firewall the port
+to it.
 
 ## Adding a host
 

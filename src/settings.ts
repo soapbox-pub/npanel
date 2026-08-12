@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import type { Kysely } from "kysely";
 import { z } from "zod";
 import type { Database } from "./db/schema.ts";
+import { isHostname, normalizeHostname } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 
 /** Runtime configuration, editable by admins from the dashboard. */
@@ -28,6 +29,18 @@ export interface SettingsValues {
    * Turn it on only to serve from a Blossom server on your own network.
    */
   allow_private_blob_servers: boolean;
+  /**
+   * Domains hostnames may sit under, or empty to allow any hostname.
+   *
+   * Adding a host authorizes a certificate for it, and certificate authorities
+   * meter issuance per registered domain, so this bounds how much of that
+   * budget one person can spend. Existing hosts keep working when it changes.
+   */
+  allowed_host_suffixes: string[];
+  /** Certificates `/api/tls-check` will authorize for one hostname per hour. */
+  tls_check_limit_per_host: number;
+  /** Certificates `/api/tls-check` will authorize across all hostnames per hour. */
+  tls_check_limit_total: number;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -70,6 +83,18 @@ const blossomUrl = z
     return url.toString();
   });
 
+const hostSuffix = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    const suffix = normalizeHostname(value);
+    if (!isHostname(suffix)) {
+      ctx.addIssue({ code: "custom", message: `Not a valid domain: ${value}` });
+      return z.NEVER;
+    }
+    return suffix;
+  });
+
 /** Per-key validation. Values are stored as JSON in the `settings` table. */
 const SCHEMAS = {
   relays: z.array(relayUrl).min(1, "At least one relay is required."),
@@ -81,6 +106,9 @@ const SCHEMAS = {
     .max(8 * 1024 ** 3),
   resync_interval: z.number().int().min(60).max(86400),
   allow_private_blob_servers: z.boolean(),
+  allowed_host_suffixes: z.array(hostSuffix),
+  tls_check_limit_per_host: z.number().int().min(1).max(10_000),
+  tls_check_limit_total: z.number().int().min(1).max(100_000),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -95,6 +123,9 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   max_file_size: 100 * 1024 * 1024,
   resync_interval: 600,
   allow_private_blob_servers: false,
+  allowed_host_suffixes: [],
+  tls_check_limit_per_host: 60,
+  tls_check_limit_total: 600,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

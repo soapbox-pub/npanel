@@ -2,17 +2,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { requireAdmin } from "../auth.ts";
 import type { Host } from "../db/schema.ts";
+import { parseHostname } from "../hostname.ts";
 import { parseNsiteAddress } from "../nsite-address.ts";
 import { activeEvent, newestEvent, siteKey } from "../sites.ts";
-import {
-  type ApiDeps,
-  type ApiEnv,
-  audit,
-  canAccessHost,
-  parseHostname,
-  serializeHost,
-  serializeVersion,
-} from "./context.ts";
+import { type ApiDeps, type ApiEnv, audit, canAccessHost, serializeHost, serializeVersion } from "./context.ts";
 
 const createSchema = z.object({
   hostname: z.string(),
@@ -34,7 +27,7 @@ const grantsSchema = z.object({
 
 /** Routes for the hostname → nsite mappings that are npanel's whole point. */
 export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
-  const { db, sync, log } = deps;
+  const { db, settings, sync, log } = deps;
   const app = new Hono<ApiEnv>();
 
   app.get("/", async (c) => {
@@ -62,7 +55,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     let hostname: string;
     let address: ReturnType<typeof parseNsiteAddress>;
     try {
-      hostname = parseHostname(body.data.hostname);
+      hostname = parseHostname(body.data.hostname, settings.get("allowed_host_suffixes"));
       address = parseNsiteAddress(body.data.address);
     } catch (error) {
       return c.json({ error: message(error) }, 400);
@@ -144,9 +137,12 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     if (body.data.hostname !== undefined) {
       let hostname: string;
       try {
-        hostname = parseHostname(body.data.hostname);
+        hostname = parseHostname(body.data.hostname, settings.get("allowed_host_suffixes"));
       } catch (error) {
         return c.json({ error: message(error) }, 400);
+      }
+      if (hostname === deps.dashboardHost) {
+        return c.json({ error: "That hostname serves the dashboard itself." }, 409);
       }
       if (hostname !== host.hostname) {
         const clash = await db.selectFrom("hosts").select("id").where("hostname", "=", hostname).executeTakeFirst();

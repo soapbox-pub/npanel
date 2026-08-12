@@ -63,6 +63,9 @@ export interface Settings {
   max_file_size: number;
   resync_interval: number;
   allow_private_blob_servers: boolean;
+  allowed_host_suffixes: string[];
+  tls_check_limit_per_host: number;
+  tls_check_limit_total: number;
 }
 
 export interface AuditEntry {

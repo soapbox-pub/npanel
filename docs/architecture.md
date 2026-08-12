@@ -203,5 +203,5 @@ timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
-Nothing in the settings UI requires a restart, which is the point: the four
+Nothing in the settings UI requires a restart, which is the point: the five
 environment variables are the only things that do.

@@ -54,14 +54,15 @@ systemd unit and TLS.
 
 ## Configuration
 
-Four environment variables, and that's the whole file:
+Five environment variables, and that's the whole file:
 
-| Variable         | Default   | Meaning                                      |
-| ---------------- | --------- | -------------------------------------------- |
-| `PORT`           | `3000`    | Port the HTTP server listens on              |
-| `DASHBOARD_HOST` | —         | Hostname that serves the dashboard and API   |
-| `LOG_LEVEL`      | `info`    | `debug`, `info`, `warn`, or `error`          |
-| `DATA_DIR`       | `./data`  | Holds the SQLite database and the blob store |
+| Variable         | Default     | Meaning                                      |
+| ---------------- | ----------- | -------------------------------------------- |
+| `PORT`           | `3000`      | Port the HTTP server listens on              |
+| `BIND_ADDRESS`   | `127.0.0.1` | Address it listens on; only the proxy should reach it |
+| `DASHBOARD_HOST` | —           | Hostname that serves the dashboard and API   |
+| `LOG_LEVEL`      | `info`      | `debug`, `info`, `warn`, or `error`          |
+| `DATA_DIR`       | `./data`    | Holds the SQLite database and the blob store |
 
 Relays, Blossom fallbacks, the file size limit, and the resync interval are
 edited by admins in the dashboard, take effect without a restart, and are

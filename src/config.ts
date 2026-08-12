@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { resolve } from "node:path";
 import type { LogLevel } from "./log.ts";
 
@@ -31,6 +32,26 @@ export class Config {
       throw new Error("PORT must be a valid port number (1-65535).");
     }
     return port;
+  }
+
+  /**
+   * Address the HTTP server listens on.
+   *
+   * Loopback by default, because npanel is meant to be reachable only by the
+   * reverse proxy: it trusts `X-Forwarded-Host` from whoever connects, and
+   * `/api/tls-check` answers without authentication. Set `0.0.0.0` when the
+   * proxy runs on another machine, and firewall the port.
+   */
+  get bindAddress(): string {
+    const value = this.env.get("BIND_ADDRESS");
+    if (!value) {
+      return "127.0.0.1";
+    }
+    const address = value.trim();
+    if (!isIP(address)) {
+      throw new Error("BIND_ADDRESS must be an IP address, eg 127.0.0.1 or 0.0.0.0.");
+    }
+    return address;
   }
 
   /**

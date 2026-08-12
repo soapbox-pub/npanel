@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { nip19 } from "nostr-tools";
 import { type AuthUser, nip98Auth, requireAdmin } from "../auth.ts";
+import { RateLimiter } from "../rate-limit.ts";
 import { DEFAULT_SETTINGS, SETTING_KEYS, type SettingKey } from "../settings.ts";
 import { type ApiDeps, type ApiEnv, audit } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
@@ -13,6 +14,9 @@ export type { ApiDeps } from "./context.ts";
 /** Largest request body the API accepts, in bytes. */
 const MAX_BODY_SIZE = 1024 * 1024;
 
+/** The window both `/api/tls-check` limits are expressed over. */
+const HOUR = 60 * 60 * 1000;
+
 /**
  * The dashboard's JSON API.
  *
@@ -22,6 +26,9 @@ const MAX_BODY_SIZE = 1024 * 1024;
 export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   const { db, settings, log } = deps;
   const app = new Hono<ApiEnv>();
+
+  const tlsChecksPerHost = new RateLimiter();
+  const tlsChecksTotal = new RateLimiter({ maxKeys: 1 });
 
   app.use("*", cors());
 
@@ -43,10 +50,22 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
    * Unauthenticated by necessity — Caddy calls it while deciding whether to
    * request a certificate — and it only ever reveals whether a hostname is
    * configured, which DNS already tells you.
+   *
+   * Caddy asks on every handshake for a name it holds no certificate for, and
+   * treats anything but a 2xx as a refusal, so this endpoint is the only place
+   * issuance can be metered. A host whose DNS never points here answers `ok`
+   * forever while validation keeps failing, and a stranger can drive that loop
+   * by opening TLS connections with that name as SNI.
+   *
+   * Only approvals spend tokens. Metering refusals too would mean anyone
+   * spraying names nobody configured could starve certificates for the names
+   * that are — trading a slow drain for an easy outage.
    */
   app.get("/tls-check", async (c) => {
     const domain = (c.req.query("domain") ?? "").toLowerCase();
 
+    // Exempt: locking admins out of the dashboard because something else
+    // exhausted the budget would be worse than whatever caused it.
     if (domain === deps.dashboardHost) {
       return c.text("ok");
     }
@@ -61,6 +80,24 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
     if (!host) {
       log.debug("tls_check_denied", { domain });
       return c.text("unknown host", 404);
+    }
+
+    const perHost = tlsChecksPerHost.take(domain, {
+      capacity: settings.get("tls_check_limit_per_host"),
+      interval: HOUR,
+    });
+    // Short-circuit deliberately: a host that is already over its own limit
+    // must not go on draining the budget the other hosts share.
+    const overall =
+      perHost &&
+      tlsChecksTotal.take("", {
+        capacity: settings.get("tls_check_limit_total"),
+        interval: HOUR,
+      });
+
+    if (!overall) {
+      log.warn("tls_check_throttled", { domain, scope: perHost ? "total" : "host" });
+      return c.text("rate limited", 429, { "retry-after": "60" });
     }
 
     return c.text("ok");

@@ -129,20 +129,3 @@ export function serializeVersion(row: {
     ready_at: row.ready_at,
   };
 }
-
-/** Hostnames must be resolvable names, not URLs or wildcards. */
-export function parseHostname(input: string): string {
-  const hostname = input.trim().toLowerCase().replace(/\.$/, "");
-
-  if (!hostname) {
-    throw new Error("Enter a hostname.");
-  }
-  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(hostname)) {
-    throw new Error(`Not a valid hostname: ${input.trim()}`);
-  }
-  if (hostname.length > 253) {
-    throw new Error("Hostname is too long.");
-  }
-
-  return hostname;
-}

@@ -361,6 +361,167 @@ test("tls-check answers Caddy, which asks over the loopback address", async () =
   assert.equal((await ask("evil.example.com")).status, 404);
 });
 
+test("tls-check stops authorizing a host that keeps asking", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_per_host: 2 });
+
+  const ask = (domain: string) =>
+    harness.app.fetch(
+      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+    );
+
+  assert.equal((await ask("docs.example.com")).status, 200);
+  assert.equal((await ask("docs.example.com")).status, 200);
+
+  const throttled = await ask("docs.example.com");
+  assert.equal(throttled.status, 429);
+  assert.equal(throttled.headers.get("retry-after"), "60");
+
+  // The dashboard is never throttled: an exhausted budget must not be able to
+  // lock admins out of npanel itself.
+  assert.equal((await ask("panel.test")).status, 200);
+});
+
+test("tls-check refusals do not spend the budget", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_total: 2 });
+
+  const ask = (domain: string) =>
+    harness.app.fetch(
+      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+    );
+
+  // Anyone can make Caddy ask about any name, so if refusals counted, a
+  // stranger could starve certificates for the hosts that are configured.
+  for (let i = 0; i < 20; i++) {
+    assert.equal((await ask(`spray-${i}.example.com`)).status, 404);
+  }
+
+  assert.equal((await ask("docs.example.com")).status, 200);
+});
+
+test("tls-check caps authorizations across all hosts", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "one.example.com", address: NPUB });
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "two.example.com", address: NPUB });
+  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_total: 2 });
+
+  const ask = (domain: string) =>
+    harness.app.fetch(
+      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+    );
+
+  assert.equal((await ask("one.example.com")).status, 200);
+  assert.equal((await ask("two.example.com")).status, 200);
+  assert.equal((await ask("one.example.com")).status, 429);
+});
+
+test("a throttled host does not drain the budget the others share", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "broken.example.com", address: NPUB });
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "fine.example.com", address: NPUB });
+  await harness.request(admin, "PUT", "/api/settings", {
+    tls_check_limit_per_host: 1,
+    tls_check_limit_total: 3,
+  });
+
+  const ask = (domain: string) =>
+    harness.app.fetch(
+      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
+        headers: { host: "127.0.0.1:3000" },
+      }),
+    );
+
+  assert.equal((await ask("broken.example.com")).status, 200);
+
+  // One host stuck in a retry loop would otherwise spend the shared budget on
+  // asks it is already being refused for.
+  for (let i = 0; i < 10; i++) {
+    assert.equal((await ask("broken.example.com")).status, 429);
+  }
+
+  assert.equal((await ask("fine.example.com")).status, 200);
+});
+
+test("renaming a host cannot take over the dashboard hostname", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+
+  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { hostname: "panel.test" });
+
+  assert.equal(renamed.status, 409);
+  assert.match((await renamed.json()).error, /dashboard itself/);
+});
+
+test("hostnames must sit under an allowed domain when one is set", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+
+  await harness.request(admin, "PUT", "/api/settings", { allowed_host_suffixes: ["example.com"] });
+
+  const outside = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "elsewhere.example.org",
+    address: NPUB,
+  });
+  assert.equal(outside.status, 400);
+  assert.match((await outside.json()).error, /outside the domains/);
+
+  // A near-miss must not slip through on a bare string suffix match.
+  const lookalike = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "notexample.com",
+    address: NPUB,
+  });
+  assert.equal(lookalike.status, 400);
+
+  const inside = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "blog.example.com",
+    address: NPUB,
+  });
+  assert.equal(inside.status, 201);
+
+  // The apex itself counts as being under its own suffix.
+  const apex = await harness.request(admin, "POST", "/api/hosts", { hostname: "example.com", address: NPUB });
+  assert.equal(apex.status, 201);
+
+  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, {
+    hostname: "sneaky.example.org",
+  });
+  assert.equal(renamed.status, 400);
+});
+
+test("rejects domains that are not hostnames", async () => {
+  const { harness, admin } = await setup();
+
+  const response = await harness.request(admin, "PUT", "/api/settings", {
+    allowed_host_suffixes: ["https://example.com/"],
+  });
+
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Not a valid domain/);
+});
+
 test("unknown API routes answer with JSON, not the dashboard SPA", async () => {
   const { harness, admin } = await setup();
 

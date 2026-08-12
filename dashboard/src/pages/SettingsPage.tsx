@@ -18,6 +18,9 @@ interface Draft {
   maxFileSize?: string;
   resyncInterval?: string;
   allowPrivateBlobServers?: boolean;
+  allowedHostSuffixes?: string;
+  tlsCheckLimitPerHost?: string;
+  tlsCheckLimitTotal?: string;
 }
 
 /**
@@ -46,6 +49,9 @@ export function SettingsPage() {
   const maxFileSize = draft.maxFileSize ?? String(Math.round((current?.max_file_size ?? 0) / (1024 * 1024)));
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
   const allowPrivateBlobServers = draft.allowPrivateBlobServers ?? current?.allow_private_blob_servers ?? false;
+  const allowedHostSuffixes = draft.allowedHostSuffixes ?? current?.allowed_host_suffixes.join('\n') ?? '';
+  const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
+  const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
 
   const save = async () => {
     try {
@@ -55,6 +61,9 @@ export function SettingsPage() {
         max_file_size: Math.round(Number(maxFileSize) * 1024 * 1024),
         resync_interval: Number(resyncInterval),
         allow_private_blob_servers: allowPrivateBlobServers,
+        allowed_host_suffixes: lines(allowedHostSuffixes),
+        tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
+        tls_check_limit_total: Number(tlsCheckLimitTotal),
       });
 
       setDraft({});
@@ -142,6 +151,62 @@ export function SettingsPage() {
               min={60}
               value={resyncInterval}
               onChange={(event) => setDraft({ ...draft, resyncInterval: event.target.value })}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Allowed domains</CardTitle>
+          <CardDescription>
+            One per line, and a hostname must match one of them or sit under it. Adding a host
+            authorizes a certificate for it, and certificate authorities meter issuance per
+            registered domain — so this limits how much of that budget any one person can spend.
+            Leave empty to allow any hostname. Hosts that already exist keep working.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Textarea
+            value={allowedHostSuffixes}
+            onChange={(event) => setDraft({ ...draft, allowedHostSuffixes: event.target.value })}
+            rows={4}
+            spellCheck={false}
+            className="font-mono text-sm"
+            placeholder="example.com"
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Certificate authorization</CardTitle>
+          <CardDescription>
+            How many certificates npanel will approve per hour when your proxy asks, per hostname
+            and in total. A host whose DNS doesn't point here would otherwise retry forever and
+            exhaust your certificate authority's issuance limits. The dashboard hostname is always
+            approved.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor="tls-check-limit-per-host">Per hostname, each hour</Label>
+            <Input
+              id="tls-check-limit-per-host"
+              type="number"
+              min={1}
+              value={tlsCheckLimitPerHost}
+              onChange={(event) => setDraft({ ...draft, tlsCheckLimitPerHost: event.target.value })}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="tls-check-limit-total">Across all hostnames, each hour</Label>
+            <Input
+              id="tls-check-limit-total"
+              type="number"
+              min={1}
+              value={tlsCheckLimitTotal}
+              onChange={(event) => setDraft({ ...draft, tlsCheckLimitTotal: event.target.value })}
             />
           </div>
         </CardContent>

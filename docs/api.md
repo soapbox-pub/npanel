@@ -53,7 +53,11 @@ otherwise. It reveals only whether a hostname is configured.
 
 It is also the one route that answers on any hostname rather than only on
 `DASHBOARD_HOST`, because Caddy asks over the address it proxies to. Keep
-npanel's port reachable only by the proxy.
+npanel's port reachable only by the proxy — that is what `BIND_ADDRESS` is for.
+
+Approvals are metered by `tls_check_limit_per_host` and `tls_check_limit_total`,
+and once a limit is spent the route answers `429` with a `Retry-After` header.
+Refusals aren't metered, and `DASHBOARD_HOST` is exempt.
 
 ## Session
 
@@ -120,8 +124,10 @@ flight or after one fails.
 those. It's stored decomposed into pubkey, kind, and identifier.
 
 `201` with `{ "host": {...} }`. `409` if the hostname is already configured or
-is `DASHBOARD_HOST`. A staff user who creates a host is granted it
-automatically, so they aren't locked out of their own work.
+is `DASHBOARD_HOST`. `400` if it doesn't sit under one of
+`allowed_host_suffixes`, when that setting is non-empty. A staff user who
+creates a host is granted it automatically, so they aren't locked out of their
+own work.
 
 ### `GET /api/hosts/:id`
 
@@ -145,6 +151,9 @@ Set `pinned_event_id` to an event id to freeze the host on that version, or
 different site is `400`; pinning one that isn't fully downloaded is `409`.
 
 Changing `address` clears any pin, since it belonged to the old site.
+
+`hostname` is validated exactly as on create: `409` if it's already configured
+or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`.
 
 ### `DELETE /api/hosts/:id`
 
@@ -272,7 +281,10 @@ back in if it ever happens anyway.)
     "blossom_fallback_servers": [],
     "max_file_size": 104857600,
     "resync_interval": 600,
-    "allow_private_blob_servers": false
+    "allow_private_blob_servers": false,
+    "allowed_host_suffixes": [],
+    "tls_check_limit_per_host": 60,
+    "tls_check_limit_total": 600
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

@@ -37,6 +37,7 @@ const app = createApp({
 });
 
 log.info("started", {
+  bind_address: config.bindAddress,
   port: config.port,
   dashboard_host: config.dashboardHost,
   data_dir: config.dataDir,
@@ -61,5 +62,6 @@ async function shutdown(): Promise<void> {
 
 export default {
   port: config.port,
+  hostname: config.bindAddress,
   fetch: app.fetch,
 };

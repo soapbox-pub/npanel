@@ -14,7 +14,9 @@ looks the way it does.
 src/                    server (Bun/Node, Hono, Kysely)
   server.ts             entry point; wires everything together
   app.ts                Host-based routing: dashboard vs nsite
-  config.ts             the four environment variables
+  config.ts             the five environment variables
+  hostname.ts           hostname validation, shared with settings
+  rate-limit.ts         token buckets, used to meter certificate authorization
   settings.ts           runtime settings, DB-backed and live-reloading
   nsite-address.ts      address parsing; also imported by the dashboard
   manifest.ts           manifest event parsing
@@ -51,8 +53,9 @@ Node here is managed by asdf, so `node` only resolves in a directory with a
 
 ## Configuration
 
-Only four things are environment variables: `PORT`, `DASHBOARD_HOST`,
-`LOG_LEVEL`, `DATA_DIR`. Everything else belongs in the `settings` table so
+Only five things are environment variables: `PORT`, `BIND_ADDRESS`,
+`DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else belongs in the
+`settings` table so
 admins can change it from the dashboard without a restart.
 
 When adding a setting: add the key to `SettingsValues`, a zod schema to
