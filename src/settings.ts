@@ -25,8 +25,8 @@ export interface SettingsValues {
    * How many times a version is deployed before npanel stops for now — 1
    * disables retrying.
    *
-   * Blobs already on disk are kept between attempts, so each one resumes where
-   * the last left off rather than starting over.
+   * Attempts back off, and blobs already on disk are kept between them, so each
+   * one resumes where the last left off rather than starting over.
    */
   deploy_attempts: number;
   /** Seconds between full manifest re-fetches from relays. */

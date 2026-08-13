@@ -107,7 +107,8 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const settings = await SettingsService.load(db);
   const blobs = new BlobStore(join(dir, "blobs"));
   const log = new Logger("error");
-  const sync = new SyncWorker({ db, blobs, nostr: opts.nostr ?? fakeNostr(), settings, log });
+  // No test should sit through a retry's backoff.
+  const sync = new SyncWorker({ db, blobs, nostr: opts.nostr ?? fakeNostr(), settings, log, retryBackoff: 0 });
   const dns = new DnsTargets({
     dashboardHost: DASHBOARD_HOST,
     settings,

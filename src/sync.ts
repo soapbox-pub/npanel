@@ -15,12 +15,24 @@ const BLOB_CONCURRENCY = 4;
 /** Deploy log entries kept per version. Older entries are pruned. */
 const DEPLOY_LOG_LIMIT = 500;
 
+/** Wait before a second attempt at a deploy, in ms. It doubles after that. */
+const RETRY_BACKOFF = 5_000;
+
 export interface SyncWorkerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
   nostr: NostrService;
   settings: SettingsService;
   log: Logger;
+  /** Overrides {@link RETRY_BACKOFF}, so tests don't have to wait one out. */
+  retryBackoff?: number;
+}
+
+/** A version waiting its turn to deploy. */
+interface QueuedDeploy {
+  eventId: string;
+  /** Epoch ms before which it must not be attempted, for a retry's backoff. */
+  after: number;
 }
 
 /**
@@ -43,16 +55,18 @@ export class SyncWorker {
   private readonly nostr: NostrService;
   private readonly settings: SettingsService;
   private readonly log: Logger;
+  private readonly retryBackoff: number;
 
   private controller = new AbortController();
   private subscription: AbortController | undefined;
   private resyncTimer: ReturnType<typeof setInterval> | undefined;
   private unsubscribeSettings: (() => void) | undefined;
 
-  private queue: string[] = [];
-  private queued = new Set<string>();
+  private queue: QueuedDeploy[] = [];
   /** Attempts already spent on a version, while it is being retried. */
   private attempts = new Map<string, number>();
+  /** Cuts short the wait for the next retry, when there's work to do sooner. */
+  private wake: (() => void) | undefined;
   private pumping: Promise<void> | undefined;
   private resyncing: Promise<void> | undefined;
   private resyncAgain = false;
@@ -64,6 +78,7 @@ export class SyncWorker {
     this.nostr = deps.nostr;
     this.settings = deps.settings;
     this.log = deps.log;
+    this.retryBackoff = deps.retryBackoff ?? RETRY_BACKOFF;
   }
 
   /** Begin syncing. Resolves once the initial resync has been kicked off. */
@@ -325,26 +340,43 @@ export class SyncWorker {
    */
   private enqueue(eventId: string): void {
     this.attempts.delete(eventId);
-    this.queueDeploy(eventId);
+    this.queueDeploy(eventId, 0);
   }
 
-  private queueDeploy(eventId: string): void {
-    if (this.queued.has(eventId)) return;
+  /** Queue a version, to be deployed no earlier than `after` (epoch ms). */
+  private queueDeploy(eventId: string, after: number): void {
+    const pending = this.queue.find((entry) => entry.eventId === eventId);
 
-    this.queued.add(eventId);
-    this.queue.push(eventId);
+    if (pending) {
+      // A fresh reason to deploy overtakes a retry still waiting out its backoff.
+      pending.after = Math.min(pending.after, after);
+    } else {
+      this.queue.push({ eventId, after });
+    }
+
+    this.wake?.();
 
     this.pumping ??= this.pump().finally(() => {
       this.pumping = undefined;
     });
   }
 
-  /** Deploy queued versions one at a time. */
+  /**
+   * Deploy queued versions one at a time.
+   *
+   * A version waiting out a retry's backoff holds up nothing: whatever is ready
+   * to deploy goes first, and only an otherwise empty queue actually waits.
+   */
   private async pump(): Promise<void> {
     while (this.running) {
-      const eventId = this.queue.shift();
-      if (!eventId) return;
-      this.queued.delete(eventId);
+      const eventId = this.takeReady();
+
+      if (eventId === undefined) {
+        const wait = this.nextWait();
+        if (wait === undefined) return;
+        await this.waitFor(wait);
+        continue;
+      }
 
       try {
         await this.deploy(eventId);
@@ -359,6 +391,44 @@ export class SyncWorker {
         await this.fail(eventId, `Deploy failed: ${message(error)}`);
       }
     }
+  }
+
+  /** Take the first queued version whose wait is over, if any. */
+  private takeReady(): string | undefined {
+    const index = this.queue.findIndex((entry) => entry.after <= Date.now());
+    if (index === -1) return undefined;
+
+    return this.queue.splice(index, 1)[0].eventId;
+  }
+
+  /** How long until the earliest queued version may deploy, in ms. */
+  private nextWait(): number | undefined {
+    if (!this.queue.length) return undefined;
+
+    const soonest = Math.min(...this.queue.map((entry) => entry.after));
+    return Math.max(0, soonest - Date.now());
+  }
+
+  /** Wait, unless something is queued sooner or the worker stops first. */
+  private waitFor(ms: number): Promise<void> {
+    const { signal } = this.controller;
+    if (signal.aborted) return Promise.resolve();
+
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", done);
+        this.wake = undefined;
+        resolve();
+      };
+
+      const timer = setTimeout(done, ms);
+      // Don't hold the process open for a deploy that's only waiting.
+      timer.unref?.();
+
+      signal.addEventListener("abort", done, { once: true });
+      this.wake = done;
+    });
   }
 
   /**
@@ -498,6 +568,10 @@ export class SyncWorker {
    * version it already has — and a retry resumes rather than restarts, because
    * the blobs of earlier attempts are still on disk.
    *
+   * Each retry waits twice as long as the last. Deploys fail because something
+   * on the other side is unavailable, and asking again in the same second
+   * rarely changes that.
+   *
    * Attempts are counted per run, not for the lifetime of the version. Once a
    * run is spent the resync timer still re-queues the version later, which is
    * what lets a site recover on its own when the servers holding its blobs come
@@ -514,17 +588,23 @@ export class SyncWorker {
       this.attempts.delete(eventId);
     }
 
+    const backoff = this.retryBackoff * 2 ** (attempt - 1);
+
     let explanation = reason;
     if (limit > 1) {
-      const next = again ? "Trying again." : "The next sync will try again.";
+      const next = again ? `Trying again in ${duration(backoff)}.` : "The next sync will try again.";
       explanation = `${terminate(reason)} Attempt ${attempt} of ${limit}. ${next}`;
     }
 
     await this.finish(eventId, "failed", explanation);
 
     if (again) {
-      await this.writeDeployLog(eventId, "info", "deploy_retrying", { attempt: attempt + 1, of: limit });
-      this.queueDeploy(eventId);
+      await this.writeDeployLog(eventId, "info", "deploy_retrying", {
+        attempt: attempt + 1,
+        of: limit,
+        wait_ms: backoff,
+      });
+      this.queueDeploy(eventId, Date.now() + backoff);
     }
   }
 
@@ -660,6 +740,12 @@ export class SyncWorker {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A wait, as someone reading about it would say it. */
+function duration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  return seconds === 1 ? "a second" : `${seconds} seconds`;
 }
 
 /** End a sentence, so another can be appended to it. */

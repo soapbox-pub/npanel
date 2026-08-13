@@ -114,8 +114,11 @@ replaces a working site — the previous version keeps serving. A brand-new host
 with no ready version returns `503` with a `Retry-After` instead of a broken
 page.
 
-A deploy that fails is tried again — `deploy_attempts` times, three by default —
-before npanel leaves it to the resync timer. Retries are free of any special
+A deploy that fails is tried again — `deploy_attempts` times, three by default,
+waiting five seconds and then ten — before npanel leaves it to the resync timer.
+The queue orders versions by when they may next be attempted, so a version
+waiting out its backoff never delays one that is ready to go, and only an
+otherwise empty queue actually sleeps. Retries are free of any special
 bookkeeping because the blob store is content-addressed: whatever an attempt
 managed to download is still there, so the next one asks only for what is
 missing. The attempt count lives in memory and covers one run, so a resync or a

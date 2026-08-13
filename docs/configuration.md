@@ -130,6 +130,11 @@ already on disk, so only what is still missing is fetched again. The version
 stays `failed` in between, and its host goes on serving whatever version it
 already had.
 
+Attempts are spaced out — five seconds, then ten, doubling each time — because a
+deploy usually fails over something that is unavailable rather than something
+that is momentarily busy. A version sitting out its wait holds up nothing: other
+versions deploy while it waits.
+
 Attempts are counted per run, not for the lifetime of a version. Once a run is
 spent, `resync_interval` still brings the version back — which is what lets a
 site recover on its own when a Blossom server holding its blobs comes back hours

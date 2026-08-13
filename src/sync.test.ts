@@ -66,8 +66,11 @@ async function blossom(files: Record<string, string>, opts: { failFirst?: number
   return { url: `http://127.0.0.1:${address.port}/`, requests };
 }
 
-function manifest(files: Record<string, string>, opts: { servers?: string[]; createdAt?: number } = {}): NostrEvent {
-  const tags: string[][] = [["d", "docs"]];
+function manifest(
+  files: Record<string, string>,
+  opts: { servers?: string[]; createdAt?: number; identifier?: string } = {},
+): NostrEvent {
+  const tags: string[][] = [["d", opts.identifier ?? "docs"]];
   for (const [path, content] of Object.entries(files)) {
     tags.push(["path", path, sha256(content)]);
   }
@@ -105,7 +108,7 @@ function fakeNostr(): NostrService {
   } as unknown as NostrService;
 }
 
-async function harness() {
+async function harness(opts: { retryBackoff?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "npanel-sync-"));
   const db: Kysely<Database> = await openDatabase(":memory:");
   // The test Blossom servers listen on loopback, which is exactly what the
@@ -115,7 +118,15 @@ async function harness() {
   // The default fallbacks are real Blossom servers; no test may touch them.
   await settings.update({ blossom_fallback_servers: [] }, PUBKEY);
   const log = new Logger("error");
-  const worker = new SyncWorker({ db, blobs, nostr: fakeNostr(), settings, log });
+  // Retries are instant unless a test is about the backoff itself.
+  const worker = new SyncWorker({
+    db,
+    blobs,
+    nostr: fakeNostr(),
+    settings,
+    log,
+    retryBackoff: opts.retryBackoff ?? 0,
+  });
 
   cleanups.push(async () => {
     await worker.stop();
@@ -123,13 +134,22 @@ async function harness() {
     await rm(dir, { recursive: true, force: true });
   });
 
+  await addHost(db, "docs");
+
+  await worker.start();
+
+  return { db, blobs, settings, worker };
+}
+
+/** Point a hostname at one of PUBKEY's sites. */
+async function addHost(db: Kysely<Database>, identifier: string): Promise<void> {
   await db
     .insertInto("hosts")
     .values({
-      hostname: "docs.example.com",
+      hostname: `${identifier}.example.com`,
       pubkey: PUBKEY,
       kind: NAMED_SITE_KIND,
-      identifier: "docs",
+      identifier,
       pinned_event_id: null,
       enabled: 1,
       created_by: PUBKEY,
@@ -137,10 +157,18 @@ async function harness() {
       updated_at: 1,
     })
     .execute();
+}
 
-  await worker.start();
+/** Poll until `check` passes, failing the test if it never does. */
+async function eventually(check: () => Promise<boolean>, message: string): Promise<void> {
+  const deadline = Date.now() + 2000;
 
-  return { db, blobs, settings, worker };
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  assert.fail(message);
 }
 
 test("downloads every blob before a version becomes servable", async () => {
@@ -257,6 +285,65 @@ test("gives up after the configured number of attempts", async () => {
 
   const logs = await db.selectFrom("deploy_log").selectAll().execute();
   assert.equal(logs.filter((entry) => entry.msg === "deploy_retrying").length, 1);
+});
+
+test("waits before trying again", async () => {
+  const files = { "/index.html": "nowhere to be found" };
+  const server = await blossom({});
+
+  const { db, settings, worker } = await harness({ retryBackoff: 100 });
+  await settings.update({ deploy_attempts: 2 }, PUBKEY);
+
+  const started = Date.now();
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  assert.equal(server.requests.length, 2);
+  assert.ok(Date.now() - started >= 100, "the second attempt waited out the backoff");
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "failed");
+});
+
+test("a retry waiting out its backoff holds up no other site", async () => {
+  const files = { "/index.html": "a site that works" };
+  const server = await blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
+
+  // Long enough that the test can only pass if the queue steps over the retry.
+  const { db, settings, worker } = await harness({ retryBackoff: 60_000 });
+  await settings.update({ deploy_attempts: 2 }, PUBKEY);
+  await addHost(db, "blog");
+
+  await worker.ingest(manifest({ "/index.html": "nowhere to be found" }, { servers: [server.url] }));
+  const blog = manifest(files, { servers: [server.url], identifier: "blog" });
+  await worker.ingest(blog);
+
+  await eventually(async () => {
+    const row = await db.selectFrom("site_events").selectAll().where("event_id", "=", blog.id).executeTakeFirst();
+    return row?.status === "ready";
+  }, "the second site never deployed");
+
+  const waiting = await db
+    .selectFrom("site_events")
+    .selectAll()
+    .where("event_id", "!=", blog.id)
+    .executeTakeFirstOrThrow();
+  assert.equal(waiting.status, "failed", "while the first site is still waiting to be retried");
+});
+
+test("shutdown doesn't wait out a pending retry", async () => {
+  const server = await blossom({});
+
+  const { worker } = await harness({ retryBackoff: 60_000 });
+
+  await worker.ingest(manifest({ "/index.html": "nowhere to be found" }, { servers: [server.url] }));
+  await eventually(async () => server.requests.length === 1, "the first attempt never ran");
+
+  const started = Date.now();
+  await worker.stop();
+  await worker.whenIdle();
+
+  assert.ok(Date.now() - started < 1000, "stopping abandons the backoff instead of sitting through it");
 });
 
 test("does not retry when attempts are set to one", async () => {

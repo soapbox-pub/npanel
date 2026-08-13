@@ -195,7 +195,8 @@ export function SettingsPage() {
             />
             <p className="text-sm text-muted-foreground">
               How many times a failed deploy is tried before npanel waits for the next resync. Each
-              attempt keeps the files already downloaded. Set it to 1 to never retry.
+              attempt waits twice as long as the last, and keeps the files already downloaded. Set
+              it to 1 to never retry.
             </p>
           </div>
         </CardContent>
