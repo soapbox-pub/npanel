@@ -33,11 +33,21 @@ function sha256(value: string): string {
 }
 
 /** A Blossom-ish server serving `files` keyed by hash. */
-async function blossom(files: Record<string, string>) {
+async function blossom(files: Record<string, string>, opts: { failFirst?: number } = {}) {
   const requests: string[] = [];
+  let failures = opts.failFirst ?? 0;
+
   const server: Server = createServer((req, res: ServerResponse) => {
     const hash = (req.url ?? "/").slice(1);
     requests.push(hash);
+
+    if (failures > 0) {
+      failures--;
+      res.statusCode = 500;
+      res.end("try again");
+      return;
+    }
+
     const body = files[hash];
     if (body === undefined) {
       res.statusCode = 404;
@@ -201,6 +211,69 @@ test("a version whose blobs are unavailable fails and does not replace the live 
   assert.ok(logs.some((entry) => entry.msg === "blob_download_failed"));
   assert.ok(logs.some((entry) => entry.msg === "blob_unavailable"));
   assert.ok(logs.some((entry) => entry.msg === "deploy_failed"));
+});
+
+test("retries a failed deploy, keeping what the last attempt downloaded", async () => {
+  const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };
+  const server = await blossom(
+    {
+      [sha256(files["/index.html"])]: files["/index.html"],
+      [sha256(files["/style.css"])]: files["/style.css"],
+    },
+    { failFirst: 1 },
+  );
+
+  const { db, worker } = await harness();
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "ready");
+  assert.equal(row.error, null);
+
+  assert.equal(server.requests.length, 3, "the second attempt only re-fetched the blob that failed");
+
+  const logs = await db.selectFrom("deploy_log").selectAll().execute();
+  assert.ok(logs.some((entry) => entry.msg === "deploy_retrying"));
+});
+
+test("gives up after the configured number of attempts", async () => {
+  const files = { "/index.html": "nowhere to be found" };
+  const server = await blossom({});
+
+  const { db, settings, worker } = await harness();
+  await settings.update({ deploy_attempts: 2 }, PUBKEY);
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  const hash = sha256(files["/index.html"]);
+  assert.deepEqual(server.requests, [hash, hash], "two attempts, no more");
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /Attempt 2 of 2\. The next sync will try again\./);
+
+  const logs = await db.selectFrom("deploy_log").selectAll().execute();
+  assert.equal(logs.filter((entry) => entry.msg === "deploy_retrying").length, 1);
+});
+
+test("does not retry when attempts are set to one", async () => {
+  const files = { "/index.html": "nowhere to be found" };
+  const server = await blossom({});
+
+  const { db, settings, worker } = await harness();
+  await settings.update({ deploy_attempts: 1 }, PUBKEY);
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  assert.deepEqual(server.requests, [sha256(files["/index.html"])]);
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "failed");
+  assert.doesNotMatch(row.error ?? "", /Attempt/, "one attempt needs no counting");
 });
 
 test("explains itself when there is nowhere to download from", async () => {

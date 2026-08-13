@@ -75,6 +75,7 @@ export interface Settings {
   relays: string[];
   blossom_fallback_servers: string[];
   max_file_size: number;
+  deploy_attempts: number;
   resync_interval: number;
   dns_targets: string[];
   allowed_host_suffixes: string[];

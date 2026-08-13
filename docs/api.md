@@ -320,6 +320,7 @@ back in if it ever happens anyway.)
     "relays": ["wss://relay.ditto.pub"],
     "blossom_fallback_servers": ["https://blossom.ditto.pub/"],
     "max_file_size": 104857600,
+    "deploy_attempts": 3,
     "resync_interval": 600,
     "dns_targets": [],
     "allowed_host_suffixes": [],

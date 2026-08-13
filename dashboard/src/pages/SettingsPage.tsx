@@ -16,6 +16,7 @@ interface Draft {
   relays?: string;
   servers?: string;
   maxFileSize?: string;
+  deployAttempts?: string;
   resyncInterval?: string;
   allowedHostSuffixes?: string;
   dnsTargets?: string;
@@ -49,6 +50,7 @@ export function SettingsPage() {
   const relays = draft.relays ?? current?.relays.join('\n') ?? '';
   const servers = draft.servers ?? current?.blossom_fallback_servers.join('\n') ?? '';
   const maxFileSize = draft.maxFileSize ?? String(Math.round((current?.max_file_size ?? 0) / (1024 * 1024)));
+  const deployAttempts = draft.deployAttempts ?? String(current?.deploy_attempts ?? '');
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
   const allowedHostSuffixes = draft.allowedHostSuffixes ?? current?.allowed_host_suffixes.join('\n') ?? '';
   const dnsTargets = draft.dnsTargets ?? current?.dns_targets.join('\n') ?? '';
@@ -62,6 +64,7 @@ export function SettingsPage() {
         relays: lines(relays),
         blossom_fallback_servers: lines(servers),
         max_file_size: Math.round(Number(maxFileSize) * 1024 * 1024),
+        deploy_attempts: Number(deployAttempts),
         resync_interval: Number(resyncInterval),
         allowed_host_suffixes: lines(allowedHostSuffixes),
         dns_targets: lines(dnsTargets),
@@ -179,6 +182,21 @@ export function SettingsPage() {
               value={resyncInterval}
               onChange={(event) => setDraft({ ...draft, resyncInterval: event.target.value })}
             />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="deploy-attempts">Deploy attempts</Label>
+            <Input
+              id="deploy-attempts"
+              type="number"
+              min={1}
+              max={10}
+              value={deployAttempts}
+              onChange={(event) => setDraft({ ...draft, deployAttempts: event.target.value })}
+            />
+            <p className="text-sm text-muted-foreground">
+              How many times a failed deploy is tried before npanel waits for the next resync. Each
+              attempt keeps the files already downloaded. Set it to 1 to never retry.
+            </p>
           </div>
         </CardContent>
       </Card>

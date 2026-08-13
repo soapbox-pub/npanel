@@ -51,6 +51,8 @@ export class SyncWorker {
 
   private queue: string[] = [];
   private queued = new Set<string>();
+  /** Attempts already spent on a version, while it is being retried. */
+  private attempts = new Map<string, number>();
   private pumping: Promise<void> | undefined;
   private resyncing: Promise<void> | undefined;
   private resyncAgain = false;
@@ -114,6 +116,7 @@ export class SyncWorker {
     this.controller.abort();
 
     await this.pumping?.catch(() => {});
+    this.attempts.clear();
     await this.nostr.close();
 
     this.log.info("sync_stopped");
@@ -314,7 +317,18 @@ export class SyncWorker {
     }
   }
 
+  /**
+   * Queue a version for deployment, with a fresh run of attempts.
+   *
+   * Everything that calls this — a new manifest, a resync, a settings change —
+   * is a reason to believe a deploy that gave up earlier could now succeed.
+   */
   private enqueue(eventId: string): void {
+    this.attempts.delete(eventId);
+    this.queueDeploy(eventId);
+  }
+
+  private queueDeploy(eventId: string): void {
     if (this.queued.has(eventId)) return;
 
     this.queued.add(eventId);
@@ -342,7 +356,7 @@ export class SyncWorker {
           return;
         }
         this.log.error("deploy_crashed", { event_id: eventId, ...errFields(error) });
-        await this.finish(eventId, "failed", `Deploy failed: ${message(error)}`);
+        await this.fail(eventId, `Deploy failed: ${message(error)}`);
       }
     }
   }
@@ -411,7 +425,7 @@ export class SyncWorker {
       const reason =
         "No Blossom servers to download from. The manifest has no server tags and the author has no kind 10063 list — add fallback servers in Settings.";
       await this.writeDeployLog(eventId, "error", "no_blob_servers", { missing: missing.length });
-      await this.finish(eventId, "failed", reason);
+      await this.fail(eventId, reason);
       return;
     }
 
@@ -432,7 +446,7 @@ export class SyncWorker {
     if (failed.length) {
       const sample = failed.slice(0, 3).join(", ");
       const reason = `${failed.length} of ${hashes.length} blobs could not be downloaded from ${servers.length} server(s): ${sample}${failed.length > 3 ? ", …" : ""}`;
-      await this.finish(eventId, "failed", reason);
+      await this.fail(eventId, reason);
       return;
     }
 
@@ -478,6 +492,43 @@ export class SyncWorker {
   }
 
   /**
+   * Record a failed deploy, and queue another attempt if any are left.
+   *
+   * The version stays `failed` in the meantime — a host goes on serving the
+   * version it already has — and a retry resumes rather than restarts, because
+   * the blobs of earlier attempts are still on disk.
+   *
+   * Attempts are counted per run, not for the lifetime of the version. Once a
+   * run is spent the resync timer still re-queues the version later, which is
+   * what lets a site recover on its own when the servers holding its blobs come
+   * back hours after the deploy that needed them.
+   */
+  private async fail(eventId: string, reason: string): Promise<void> {
+    const attempt = (this.attempts.get(eventId) ?? 0) + 1;
+    const limit = this.settings.get("deploy_attempts");
+    const again = attempt < limit && this.running;
+
+    if (again) {
+      this.attempts.set(eventId, attempt);
+    } else {
+      this.attempts.delete(eventId);
+    }
+
+    let explanation = reason;
+    if (limit > 1) {
+      const next = again ? "Trying again." : "The next sync will try again.";
+      explanation = `${terminate(reason)} Attempt ${attempt} of ${limit}. ${next}`;
+    }
+
+    await this.finish(eventId, "failed", explanation);
+
+    if (again) {
+      await this.writeDeployLog(eventId, "info", "deploy_retrying", { attempt: attempt + 1, of: limit });
+      this.queueDeploy(eventId);
+    }
+  }
+
+  /**
    * Leave an interrupted deploy incomplete, so the next sync resumes it.
    *
    * A version only ever leaves `pending`/`fetching_blobs` when every blob is
@@ -485,6 +536,8 @@ export class SyncWorker {
    * state nothing retries.
    */
   private async interrupt(eventId: string, remaining: number): Promise<void> {
+    this.attempts.delete(eventId);
+
     await this.db
       .updateTable("site_events")
       .set({
@@ -555,6 +608,7 @@ export class SyncWorker {
       .execute();
 
     if (status === "ready") {
+      this.attempts.delete(eventId);
       this.log.info("deploy_ready", { event_id: eventId });
       await this.writeDeployLog(eventId, "info", "deploy_ready");
     } else {
@@ -606,4 +660,9 @@ export class SyncWorker {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** End a sentence, so another can be appended to it. */
+function terminate(text: string): string {
+  return /[.!?…]$/.test(text) ? text : `${text}.`;
 }

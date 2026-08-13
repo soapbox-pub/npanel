@@ -120,6 +120,21 @@ will download. A blob that exceeds it is aborted mid-stream and the version
 fails with the reason recorded in its deploy log. Raising the limit retries
 incomplete versions.
 
+### `deploy_attempts`
+
+Default `3`, allowed range 1–10. How many times a version is deployed before
+npanel stops trying for now. `1` never retries.
+
+A retry resumes rather than restarts: blobs downloaded by an earlier attempt are
+already on disk, so only what is still missing is fetched again. The version
+stays `failed` in between, and its host goes on serving whatever version it
+already had.
+
+Attempts are counted per run, not for the lifetime of a version. Once a run is
+spent, `resync_interval` still brings the version back — which is what lets a
+site recover on its own when a Blossom server holding its blobs comes back hours
+later.
+
 ### `resync_interval`
 
 Default `600` seconds, allowed range 60–86400. How often npanel re-fetches every

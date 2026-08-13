@@ -114,6 +114,14 @@ replaces a working site — the previous version keeps serving. A brand-new host
 with no ready version returns `503` with a `Retry-After` instead of a broken
 page.
 
+A deploy that fails is tried again — `deploy_attempts` times, three by default —
+before npanel leaves it to the resync timer. Retries are free of any special
+bookkeeping because the blob store is content-addressed: whatever an attempt
+managed to download is still there, so the next one asks only for what is
+missing. The attempt count lives in memory and covers one run, so a resync or a
+settings change starts a fresh one; that is what lets a site recover by itself
+when the server holding its blobs comes back hours later.
+
 The invariant survives shutdown, too. A deploy that stops with blobs it never
 attempted is put back to `pending` rather than being marked ready or failed —
 ready would serve a site with missing files and nothing retries a ready

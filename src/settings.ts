@@ -21,6 +21,14 @@ export interface SettingsValues {
   blossom_fallback_servers: string[];
   /** Largest single blob npanel will download, in bytes. */
   max_file_size: number;
+  /**
+   * How many times a version is deployed before npanel stops for now — 1
+   * disables retrying.
+   *
+   * Blobs already on disk are kept between attempts, so each one resumes where
+   * the last left off rather than starting over.
+   */
+  deploy_attempts: number;
   /** Seconds between full manifest re-fetches from relays. */
   resync_interval: number;
   /**
@@ -169,6 +177,7 @@ const SCHEMAS = {
     .int()
     .positive()
     .max(8 * 1024 ** 3),
+  deploy_attempts: z.number().int().min(1).max(10),
   resync_interval: z.number().int().min(60).max(86400),
   // A CNAME may not coexist with any other record for the same name, so a
   // hostname target has to stand alone — advertising it beside an A record
@@ -193,6 +202,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
     "https://blossom.primal.net/",
   ],
   max_file_size: 100 * 1024 * 1024,
+  deploy_attempts: 3,
   resync_interval: 600,
   dns_targets: [],
   allowed_host_suffixes: [],
