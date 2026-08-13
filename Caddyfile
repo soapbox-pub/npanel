@@ -23,6 +23,7 @@
 
 # The dashboard. Its certificate is issued at startup like a normal site.
 panel.example.com {
+	encode zstd gzip
 	reverse_proxy 127.0.0.1:3000
 }
 
@@ -31,5 +32,12 @@ https:// {
 	tls {
 		on_demand
 	}
+
+	# npanel serves blobs exactly as they were uploaded and never compresses
+	# them, so without this an nsite ships its HTML and JS bundles raw —
+	# megabytes where a few hundred kilobytes would do. Caddy's defaults
+	# already skip types that are compressed already, like images and video.
+	encode zstd gzip
+
 	reverse_proxy 127.0.0.1:3000
 }

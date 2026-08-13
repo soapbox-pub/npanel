@@ -140,6 +140,7 @@ npanel provides the authorization endpoint Caddy needs. Copy the sample
 }
 
 panel.example.com {
+	encode zstd gzip
 	reverse_proxy 127.0.0.1:3000
 }
 
@@ -147,9 +148,16 @@ https:// {
 	tls {
 		on_demand
 	}
+	encode zstd gzip
 	reverse_proxy 127.0.0.1:3000
 }
 ```
+
+`encode` is not optional in practice. npanel serves every blob exactly as it was
+uploaded and never compresses anything, so without it a site's HTML and JS go
+out raw — for a typical SPA bundle that is several megabytes instead of a few
+hundred kilobytes. Caddy's defaults already skip types that are compressed
+already, like images and video.
 
 Caddy calls `/api/tls-check?domain=<name>` before issuing any certificate.
 npanel answers `200` for the dashboard hostname and for every enabled host, and
