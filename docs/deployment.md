@@ -4,6 +4,10 @@ A production npanel is three pieces: DNS pointing at your box, npanel itself
 running as a service on a local port, and a reverse proxy terminating TLS in
 front of it.
 
+DNS is the same either way. For the other two, pick one path: [Docker
+Compose](#docker-compose), which brings up npanel and Caddy together, or
+sections 2–5, which install from a checkout under systemd.
+
 ## 1. DNS
 
 Point every hostname you plan to serve at the box:
@@ -27,6 +31,96 @@ The dashboard shows staff exactly which records to create, working them out from
 what the dashboard hostname itself resolves to. If that inference is wrong for
 your setup — a CDN in front, or a CNAME you'd rather everyone used — set
 [`dns_targets`](configuration.md#dns_targets).
+
+## Docker Compose
+
+This replaces sections 2–5: `compose.yaml` runs npanel from an image built out
+of the repository, with Caddy in front of it for TLS.
+
+```sh
+git clone <your-repo-url> npanel
+cd npanel
+
+cp .env.example .env
+$EDITOR .env          # DASHBOARD_HOST is the only one that applies here
+
+docker compose up -d
+```
+
+Compose reads `DASHBOARD_HOST` from `.env` and gives it to both containers —
+npanel to route on, Caddy as the name of the dashboard's site. It refuses to
+start without it. The other variables in that file don't apply, because the
+image fixes them: `PORT` is 3000, `BIND_ADDRESS` is `0.0.0.0`, and `DATA_DIR` is
+`/data` on a named volume. `LOG_LEVEL` is honoured if you set it.
+
+`0.0.0.0` looks like the opposite of the advice in
+[configuration](configuration.md#bind_address), and is only safe because of what
+compose does *not* do: nothing publishes npanel's port, so it is reachable only
+by Caddy over the project's internal network. Loopback inside the container
+would mean reachable by nothing at all. Keep it that way — npanel trusts
+`X-Forwarded-Host` from whoever connects and answers `/api/tls-check` without
+authentication.
+
+Then bootstrap the first admin, as in [section 3](#3-bootstrap-the-first-admin),
+inside the running container:
+
+```sh
+docker compose exec npanel bun run make-admin npub1yourkeyhere
+```
+
+`prune-blobs` runs the same way. Both are safe against a running server: the
+database is in WAL mode.
+
+Logs are the same JSON lines on stdout:
+
+```sh
+docker compose logs -f npanel | jq
+```
+
+Certificates work exactly as [section 5](#5-tls-with-caddy) describes — the
+mounted `Caddyfile` is the same sample file, with `NPANEL_UPSTREAM` set to
+`npanel:3000` instead of its loopback default.
+
+### Using your own proxy
+
+If you already run a proxy, or terminate TLS somewhere else, drop the `caddy`
+service and publish npanel where only that proxy can reach it — loopback if it
+runs on the host:
+
+```yaml
+services:
+  npanel:
+    ports:
+      - "127.0.0.1:3000:3000"
+```
+
+[Other proxies](#other-proxies) covers the one header it has to set.
+
+### Upgrading the containers
+
+```sh
+git pull
+docker compose up -d --build
+```
+
+Migrations run at startup, so back up the database first.
+
+### The volumes
+
+`npanel-data` is `DATA_DIR`: the database and the blob store. `caddy-data` holds
+the certificates and the ACME account key — losing it means re-issuing every
+certificate, which Let's Encrypt rate limits, so it is worth backing up even
+though it rebuilds itself.
+
+The image has no `sqlite3` binary, so take the backup from
+[Backups](#backups) with a throwaway container that does. It's safe while npanel
+is running:
+
+```sh
+docker run --rm -v npanel_npanel-data:/data -v "$PWD:/backup" alpine:3 sh -c \
+  'apk add --no-cache sqlite >/dev/null && \
+   sqlite3 /data/npanel.sqlite3 ".backup /backup/npanel-$(date +%F).sqlite3"'
+```
 
 ## 2. Install and build
 
@@ -130,18 +224,21 @@ TLS itself.
 The wrinkle is that staff add hostnames at runtime, so the set of certificates
 isn't known when the proxy starts. Caddy solves this with on-demand TLS, and
 npanel provides the authorization endpoint Caddy needs. Copy the sample
-`Caddyfile` from the repository root and change `panel.example.com`:
+`Caddyfile` from the repository root and replace `panel.example.com` — it is
+written as `{$DASHBOARD_HOST:panel.example.com}` so that the same file can be
+mounted into the Caddy container, but nothing stops you from writing your
+hostname there directly:
 
 ```caddy
 {
 	on_demand_tls {
-		ask http://127.0.0.1:3000/api/tls-check
+		ask http://{$NPANEL_UPSTREAM:127.0.0.1:3000}/api/tls-check
 	}
 }
 
-panel.example.com {
+{$DASHBOARD_HOST:panel.example.com} {
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:3000
+	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }
 
 https:// {
@@ -149,7 +246,7 @@ https:// {
 		on_demand
 	}
 	encode zstd gzip
-	reverse_proxy 127.0.0.1:3000
+	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }
 ```
 
@@ -236,6 +333,9 @@ can catch a write in progress:
 sqlite3 /var/lib/npanel/npanel.sqlite3 ".backup '/backup/npanel-$(date +%F).sqlite3'"
 ```
 
+On Docker the same call runs in a throwaway container against the volume — see
+[The volumes](#the-volumes).
+
 To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
 named by hash, so incremental syncs are cheap.
 
@@ -250,7 +350,8 @@ sudo -u npanel bun run dashboard:build
 sudo systemctl restart npanel
 ```
 
-Migrations run automatically at startup. Back up the database first.
+Migrations run automatically at startup. Back up the database first. On Docker
+this is [`docker compose up -d --build`](#upgrading-the-containers) instead.
 
 ## Reclaiming disk space
 
@@ -261,6 +362,8 @@ deploys often this adds up.
 sudo -u npanel bun run prune-blobs --keep 10 --dry-run
 sudo -u npanel bun run prune-blobs --keep 10
 ```
+
+On Docker, `docker compose exec npanel bun run prune-blobs --keep 10`.
 
 `--keep N` forgets all but the newest N versions of each site, then deletes
 every blob no remaining version references. The version a host is currently
@@ -274,7 +377,8 @@ history you'd roll back to, so keep more than you think you need.
 
 **The dashboard returns 503 "The dashboard has not been built."** Run
 `bun run dashboard:build`. The server logs `dashboard_not_built` once with the
-directory it looked in.
+directory it looked in. The image builds it, so on Docker this means the
+container is running a stale image — `docker compose up -d --build`.
 
 **A site returns 503 "This site has not finished deploying yet."** No version is
 ready. Check the version list and its deploy log in the dashboard.

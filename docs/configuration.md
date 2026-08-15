@@ -14,6 +14,10 @@ without a restart, and are recorded in the audit log.
 
 Copy `.env.example` to `.env` and edit it. Bun loads `.env` automatically.
 
+On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
+compose, which passes them to the containers; the image fixes the other three.
+See [deployment](deployment.md#docker-compose).
+
 ### `PORT`
 
 Default `3000`. The port the HTTP server binds. Your reverse proxy forwards
@@ -31,6 +35,10 @@ directly, either of those is a hole.
 
 Set `0.0.0.0` when the proxy runs on another machine or in another container,
 and firewall the port to it.
+
+The Docker image sets `0.0.0.0` for that reason — a container's loopback is
+reachable by nothing else, not even the proxy beside it — and `compose.yaml`
+takes the place of the firewall by never publishing the port.
 
 ### `DASHBOARD_HOST`
 

@@ -22,7 +22,24 @@ when the relays and Blossom servers it came from are down.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included
 
-## Quick start
+Or just Docker, if you'd rather not install either.
+
+## Quick start with Docker
+
+`compose.yaml` runs npanel and a Caddy that gets a certificate for every
+hostname your staff add:
+
+```sh
+cp .env.example .env
+$EDITOR .env          # set DASHBOARD_HOST
+
+docker compose up -d
+docker compose exec npanel bun run make-admin npub1yourkeyhere
+```
+
+Point DNS at the box first — certificates are issued on the first visit.
+
+## Quick start from source
 
 ```sh
 cd npanel
@@ -48,8 +65,8 @@ sudo systemctl reload caddy
 
 Visit your dashboard domain, log in with a Nostr extension, and add a site.
 
-See [docs/deployment.md](docs/deployment.md) for a real production setup with a
-systemd unit and TLS.
+See [docs/deployment.md](docs/deployment.md) for a real production setup, either
+way — DNS, TLS, backups, and a systemd unit.
 
 ## Configuration
 
@@ -69,7 +86,7 @@ recorded in the audit log. See [docs/configuration.md](docs/configuration.md).
 
 ## Documentation
 
-- [Deployment](docs/deployment.md) — systemd, TLS, backups, upgrades
+- [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups, upgrades
 - [Configuration](docs/configuration.md) — env vars and runtime settings
 - [Architecture](docs/architecture.md) — how sync, storage, and serving work
 - [API](docs/api.md) — the JSON API behind the dashboard

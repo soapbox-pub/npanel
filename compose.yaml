@@ -1,0 +1,60 @@
+# npanel and a reverse proxy, which is the whole of a production install.
+#
+#   cp .env.example .env      # set DASHBOARD_HOST
+#   $EDITOR .env
+#   docker compose up -d
+#   docker compose exec npanel bun run make-admin npub1yourkeyhere
+#
+# Caddy gets a certificate for every hostname staff add, asking npanel first
+# whether that hostname is configured. See docs/deployment.md.
+
+name: npanel
+
+services:
+  npanel:
+    build: .
+    image: npanel
+    restart: unless-stopped
+    # Deliberately no `ports`: npanel trusts X-Forwarded-Host from whoever
+    # connects and answers /api/tls-check without auth, so only the proxy may
+    # reach it. Publishing 3000 here would expose both.
+    expose:
+      - "3000"
+    environment:
+      # The public hostname of the dashboard. Required — it decides which
+      # requests are the dashboard rather than an nsite, and NIP-98 logins are
+      # checked against it.
+      DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # The database and the blob store. This is the volume to back up.
+      - npanel-data:/data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      # Caddy asks npanel before issuing any certificate, and proxies to it.
+      # Waiting avoids serving 502s and denying certificates during startup.
+      npanel:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}
+      # The sample Caddyfile defaults to loopback, for a proxy installed on the
+      # host. Here npanel is a container on this network.
+      NPANEL_UPSTREAM: npanel:3000
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this means re-issuing every
+      # certificate, which Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  npanel-data:
+  caddy-data:
+  caddy-config:

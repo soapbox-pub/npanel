@@ -1,0 +1,24 @@
+# Installed inside the image, for the image's own platform.
+node_modules/
+dashboard/node_modules/
+
+# Built inside the image.
+dashboard/dist/
+
+# Host state and secrets, which must never end up in a layer: Bun loads .env
+# from the working directory, so a copied one would silently override the
+# environment compose passes in.
+.env
+.env.*
+!.env.example
+data/
+
+.git/
+.github/
+.agents/
+.ai/
+docs/
+*.md
+Dockerfile
+.dockerignore
+compose.yaml
