@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { type Server, type ServerResponse, createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
 import { after, test } from "node:test";
 import { type BlobDownloadError, BlobStore } from "./blobs.ts";
 import { isPublicUrl } from "./net.ts";
+import { serve } from "./test/serve.ts";
 
 const dirs: string[] = [];
 
@@ -29,18 +29,6 @@ after(async () => {
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-/** Serve fixed responses on a random port; returns the base URL. */
-async function serve(handler: (url: string, res: ServerResponse) => void) {
-  const server: Server = createServer((req, res) => handler(req.url ?? "/", res));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (typeof address === "string" || !address) throw new Error("no address");
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
 }
 
 test("puts, finds, and reads back a blob", async () => {
@@ -80,7 +68,7 @@ test("reads byte ranges", async () => {
 test("downloads and verifies a blob", async () => {
   const blobs = await store();
   const hash = sha256("downloaded");
-  const server = await serve((_url, res) => res.end("downloaded"));
+  const server = serve(() => new Response("downloaded"));
 
   try {
     const size = await blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024 });
@@ -94,7 +82,7 @@ test("downloads and verifies a blob", async () => {
 test("a lying server leaves nothing behind", async () => {
   const blobs = await store();
   const hash = sha256("expected");
-  const server = await serve((_url, res) => res.end("something else"));
+  const server = serve(() => new Response("something else"));
 
   try {
     await assert.rejects(
@@ -113,10 +101,7 @@ test("a lying server leaves nothing behind", async () => {
 test("surfaces HTTP failures with their status", async () => {
   const blobs = await store();
   const hash = sha256("missing");
-  const server = await serve((_url, res) => {
-    res.statusCode = 404;
-    res.end("nope");
-  });
+  const server = serve(() => new Response("nope", { status: 404 }));
 
   try {
     await assert.rejects(
@@ -137,10 +122,7 @@ test("refuses blobs larger than the limit, declared or not", async () => {
   const body = "x".repeat(4096);
   const hash = sha256(body);
 
-  const declared = await serve((_url, res) => {
-    res.setHeader("content-length", String(body.length));
-    res.end(body);
-  });
+  const declared = serve(() => new Response(body, { headers: { "content-length": String(body.length) } }));
   try {
     await assert.rejects(
       () => blobs.download(`${declared.url}/${hash}`, hash, { maxSize: 100 }),
@@ -154,11 +136,20 @@ test("refuses blobs larger than the limit, declared or not", async () => {
   }
 
   // Chunked response: no content-length, so the cap has to bite mid-stream.
-  const chunked = await serve((_url, res) => {
-    res.setHeader("transfer-encoding", "chunked");
-    res.write(body.slice(0, 2048));
-    res.end(body.slice(2048));
-  });
+  // A streamed body declares no length, so only the running total can catch it.
+  const chunked = serve(
+    () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(encoder.encode(body.slice(0, 2048)));
+            controller.enqueue(encoder.encode(body.slice(2048)));
+            controller.close();
+          },
+        }),
+      ),
+  );
   try {
     await assert.rejects(
       () => blobs.download(`${chunked.url}/${hash}`, hash, { maxSize: 100 }),
@@ -190,7 +181,7 @@ test("reports network failures instead of throwing raw fetch errors", async () =
 test("refuses to fetch anything that is not a public address", async () => {
   const blobs = await store(isPublicUrl);
   const hash = sha256("internal");
-  const server = await serve((_url, res) => res.end("internal"));
+  const server = serve(() => new Response("internal"));
 
   try {
     for (const url of [`${server.url}/${hash}`, `http://169.254.169.254/${hash}`, `http://[::1]/${hash}`]) {
@@ -226,12 +217,8 @@ test("refuses non-http schemes", async () => {
 test("a redirect cannot smuggle a download past the address check", async () => {
   const hash = sha256("redirected");
 
-  const target = await serve((_url, res) => res.end("redirected"));
-  const redirector = await serve((_url, res) => {
-    res.statusCode = 302;
-    res.setHeader("location", `${target.url}/${hash}`);
-    res.end();
-  });
+  const target = serve(() => new Response("redirected"));
+  const redirector = serve(() => new Response(null, { status: 302, headers: { location: `${target.url}/${hash}` } }));
   const targetPort = new URL(target.url).port;
 
   try {
@@ -261,11 +248,7 @@ test("gives up on a redirect loop", async () => {
   const blobs = await store();
   const hash = sha256("loop");
 
-  const server = await serve((url, res) => {
-    res.statusCode = 302;
-    res.setHeader("location", url);
-    res.end();
-  });
+  const server = serve((request) => new Response(null, { status: 302, headers: { location: request.url } }));
 
   try {
     await assert.rejects(

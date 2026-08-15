@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { type Server, type ServerResponse, createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
@@ -18,6 +17,7 @@ import { NAMED_SITE_KIND } from "./nsite-address.ts";
 import { SettingsService } from "./settings.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
 import { SyncWorker } from "./sync.ts";
+import { serve } from "./test/serve.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -33,37 +33,28 @@ function sha256(value: string): string {
 }
 
 /** A Blossom-ish server serving `files` keyed by hash. */
-async function blossom(files: Record<string, string>, opts: { failFirst?: number } = {}) {
+function blossom(files: Record<string, string>, opts: { failFirst?: number } = {}) {
   const requests: string[] = [];
   let failures = opts.failFirst ?? 0;
 
-  const server: Server = createServer((req, res: ServerResponse) => {
-    const hash = (req.url ?? "/").slice(1);
+  const server = serve((request) => {
+    const hash = new URL(request.url).pathname.slice(1);
     requests.push(hash);
 
     if (failures > 0) {
       failures--;
-      res.statusCode = 500;
-      res.end("try again");
-      return;
+      return new Response("try again", { status: 500 });
     }
 
     const body = files[hash];
-    if (body === undefined) {
-      res.statusCode = 404;
-      res.end("not found");
-      return;
-    }
-    res.end(body);
+    if (body === undefined) return new Response("not found", { status: 404 });
+
+    return new Response(body);
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (typeof address === "string" || !address) throw new Error("no address");
+  cleanups.push(() => server.close());
 
-  cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
-
-  return { url: `http://127.0.0.1:${address.port}/`, requests };
+  return { url: `${server.url}/`, requests };
 }
 
 function manifest(
@@ -173,7 +164,7 @@ async function eventually(check: () => Promise<boolean>, message: string): Promi
 
 test("downloads every blob before a version becomes servable", async () => {
   const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };
-  const server = await blossom({
+  const server = blossom({
     [sha256(files["/index.html"])]: files["/index.html"],
     [sha256(files["/style.css"])]: files["/style.css"],
   });
@@ -207,7 +198,7 @@ test("downloads every blob before a version becomes servable", async () => {
 
 test("a version whose blobs are unavailable fails and does not replace the live one", async () => {
   const working = { "/index.html": "v1" };
-  const server = await blossom({ [sha256(working["/index.html"])]: working["/index.html"] });
+  const server = blossom({ [sha256(working["/index.html"])]: working["/index.html"] });
 
   const { db, worker } = await harness();
 
@@ -243,7 +234,7 @@ test("a version whose blobs are unavailable fails and does not replace the live 
 
 test("retries a failed deploy, keeping what the last attempt downloaded", async () => {
   const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };
-  const server = await blossom(
+  const server = blossom(
     {
       [sha256(files["/index.html"])]: files["/index.html"],
       [sha256(files["/style.css"])]: files["/style.css"],
@@ -268,7 +259,7 @@ test("retries a failed deploy, keeping what the last attempt downloaded", async 
 
 test("gives up after the configured number of attempts", async () => {
   const files = { "/index.html": "nowhere to be found" };
-  const server = await blossom({});
+  const server = blossom({});
 
   const { db, settings, worker } = await harness();
   await settings.update({ deploy_attempts: 2 }, PUBKEY);
@@ -289,7 +280,7 @@ test("gives up after the configured number of attempts", async () => {
 
 test("waits before trying again", async () => {
   const files = { "/index.html": "nowhere to be found" };
-  const server = await blossom({});
+  const server = blossom({});
 
   const { db, settings, worker } = await harness({ retryBackoff: 100 });
   await settings.update({ deploy_attempts: 2 }, PUBKEY);
@@ -307,7 +298,7 @@ test("waits before trying again", async () => {
 
 test("a retry waiting out its backoff holds up no other site", async () => {
   const files = { "/index.html": "a site that works" };
-  const server = await blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
+  const server = blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
 
   // Long enough that the test can only pass if the queue steps over the retry.
   const { db, settings, worker } = await harness({ retryBackoff: 60_000 });
@@ -332,7 +323,7 @@ test("a retry waiting out its backoff holds up no other site", async () => {
 });
 
 test("shutdown doesn't wait out a pending retry", async () => {
-  const server = await blossom({});
+  const server = blossom({});
 
   const { worker } = await harness({ retryBackoff: 60_000 });
 
@@ -348,7 +339,7 @@ test("shutdown doesn't wait out a pending retry", async () => {
 
 test("does not retry when attempts are set to one", async () => {
   const files = { "/index.html": "nowhere to be found" };
-  const server = await blossom({});
+  const server = blossom({});
 
   const { db, settings, worker } = await harness();
   await settings.update({ deploy_attempts: 1 }, PUBKEY);
@@ -380,7 +371,7 @@ test("explains itself when there is nowhere to download from", async () => {
 
 test("falls back to the configured Blossom servers when a manifest names none", async () => {
   const files = { "/index.html": "fallback" };
-  const server = await blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
+  const server = blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
 
   const { db, settings, worker } = await harness();
   await settings.update({ blossom_fallback_servers: [server.url] }, PUBKEY);
@@ -418,7 +409,7 @@ test("ignores manifests for sites no host points at", async () => {
 test("skips blobs that are already stored", async () => {
   const files = { "/index.html": "cached" };
   const hash = sha256(files["/index.html"]);
-  const server = await blossom({});
+  const server = blossom({});
 
   const { db, blobs, worker } = await harness();
   await blobs.put(hash, new TextEncoder().encode(files["/index.html"]));
@@ -438,21 +429,13 @@ test("a deploy interrupted by shutdown is never marked ready", async () => {
     files[`/file-${i}.txt`] = `content ${i}`;
   }
 
-  // A server that accepts requests and never answers them.
-  const held: ServerResponse[] = [];
-  const server: Server = createServer((_req, res) => {
-    held.push(res);
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (typeof address === "string" || !address) throw new Error("no address");
-  cleanups.push(async () => {
-    for (const res of held) res.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  });
+  // A server that accepts requests and never answers them: the promise the
+  // handler returns is never resolved.
+  const server = serve(() => new Promise<Response>(() => {}));
+  cleanups.push(() => server.close());
 
   const { db, blobs, worker } = await harness();
-  const event = manifest(files, { servers: [`http://127.0.0.1:${address.port}/`] });
+  const event = manifest(files, { servers: [`${server.url}/`] });
 
   await worker.ingest(event);
   await new Promise((resolve) => setTimeout(resolve, 50));
