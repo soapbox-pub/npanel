@@ -10,6 +10,7 @@ import type {
   Me,
   NpanelUser,
   PublicSite,
+  SiteCard,
   ServerStatus,
   Settings,
   SiteFile,
@@ -197,14 +198,14 @@ export async function fetchInstance(): Promise<Instance> {
  * Empty unless an admin turned the public list on, so the homepage can call it
  * unconditionally and simply render nothing.
  */
-export async function fetchSites(): Promise<{ sites: PublicSite[] }> {
+export async function fetchSites(): Promise<{ sites: SiteCard[] }> {
   const response = await fetch(new URL('/api/sites', window.location.origin));
 
   if (!response.ok) {
     throw new ApiError(await errorMessage(response), response.status);
   }
 
-  return (await response.json()) as { sites: PublicSite[] };
+  return (await response.json()) as { sites: SiteCard[] };
 }
 
 async function errorMessage(response: Response): Promise<string> {

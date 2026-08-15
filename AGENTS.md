@@ -24,6 +24,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   sync.ts               the sync worker: subscribe, resync, deploy
   blobs.ts              content-addressed filesystem store
   sites.ts              queries over stored versions
+  site-preview.ts       link-preview metadata, read from a site's own index.html
   serve-site.ts         serving an nsite request
   dashboard.ts          serving the built SPA
   auth.ts               NIP-98

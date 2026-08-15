@@ -82,13 +82,29 @@ Unauthenticated. The sites this gateway will admit to serving, for the
 logged-out homepage.
 
 ```json
-{ "sites": [{ "hostname": "example.org" }] }
+{
+  "sites": [
+    {
+      "hostname": "example.org",
+      "title": "The Docs",
+      "description": "Everything about the thing.",
+      "image": "https://example.org/cover.png"
+    }
+  ]
+}
 ```
 
 `sites` is empty unless an admin turned
 [`public_site_list`](configuration.md#public_site_list) on, and never includes a
-host that is disabled or marked `hidden`. Names only — nothing about which nsite
-a site points at, or who runs it.
+host that is disabled or marked `hidden`. Nothing here says which nsite a site
+points at, or who runs it.
+
+`title`, `description`, and `image` are the site's own Open Graph, Twitter, or
+`<title>` metadata, read from the copy of its `index.html` npanel already
+serves — no crawling, and no request leaves the box. Each is `null` when the
+page doesn't say: a site with nothing deployed yet is still listed, as a bare
+hostname. `image` is always an absolute `https` URL, resolved against the site's
+own hostname, since a relative `og:image` belongs to the site npanel serves.
 
 ## Session
 

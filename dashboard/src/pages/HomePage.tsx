@@ -1,6 +1,6 @@
 import { formatNsiteAddress, ROOT_SITE_KIND } from '@shared/nsite-address';
 import { useSeoMeta } from '@unhead/react';
-import { ExternalLink, Lock } from 'lucide-react';
+import { ExternalLink, Globe, Lock } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -16,6 +16,7 @@ import { useAuthor } from '@/hooks/useAuthor';
 import { useInstance, usePublicSites } from '@/hooks/useNpanel';
 import { decodePubkey, shorten } from '@/lib/format';
 import { profileUrl, SOURCE_URL } from '@/lib/links';
+import type { SiteCard } from '@/lib/api-types';
 import { cn } from '@/lib/utils';
 
 /**
@@ -157,20 +158,63 @@ function ServedSites() {
         </h2>
         <span className="font-mono text-xs text-muted-foreground">{sites.data.length}</span>
       </div>
-      <ul className="grid gap-2 px-6 py-4 sm:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3 md:p-6">
         {sites.data.map((site) => (
-          <li key={site.hostname} className="flex min-w-0 items-center gap-1.5">
-            <a
-              href={`https://${site.hostname}`}
-              className="truncate font-mono text-sm hover:text-primary hover:underline"
-            >
-              {site.hostname}
-            </a>
-            <ExternalLink className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+          <li key={site.hostname}>
+            <SiteCardLink site={site} />
           </li>
         ))}
       </ul>
     </Card>
+  );
+}
+
+/**
+ * One site, as a link preview.
+ *
+ * The title, blurb and image are the site's own — the same Open Graph tags it
+ * would show if someone pasted the link into a chat app. npanel reads them from
+ * the copy of the page it already serves, so a listed site looks like itself
+ * rather than like a row in a table.
+ */
+function SiteCardLink({ site }: { site: SiteCard }) {
+  const [broken, setBroken] = useState(false);
+  const image = broken ? null : site.image;
+
+  return (
+    <a
+      href={`https://${site.hostname}`}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="group block h-full overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-hidden"
+    >
+      {image ? (
+        <img
+          src={image}
+          alt=""
+          loading="lazy"
+          onError={() => setBroken(true)}
+          className="aspect-video w-full bg-muted object-cover"
+        />
+      ) : (
+        <div className="flex aspect-video w-full items-center justify-center bg-muted" aria-hidden>
+          <Globe className="size-8 text-muted-foreground/40" />
+        </div>
+      )}
+
+      <div className="space-y-1 p-3">
+        <p className="truncate text-sm font-medium group-hover:text-primary">
+          {site.title ?? site.hostname}
+        </p>
+        {site.description && (
+          <p className="line-clamp-2 text-xs text-muted-foreground">{site.description}</p>
+        )}
+        <p className="flex items-center gap-1.5 pt-0.5 font-mono text-[11px] text-muted-foreground">
+          <span className="truncate">{site.hostname}</span>
+          <ExternalLink className="size-3 shrink-0" aria-hidden />
+        </p>
+      </div>
+    </a>
   );
 }
 

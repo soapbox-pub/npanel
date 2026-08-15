@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { after, test } from "node:test";
 import { nip19 } from "nostr-tools";
 import { NAMED_SITE_KIND, ROOT_SITE_KIND } from "../nsite-address.ts";
@@ -25,6 +26,10 @@ async function setup() {
 }
 
 const PUBKEY = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+
+function hostnames(sites: { hostname: string }[]): string[] {
+  return sites.map((site) => site.hostname);
+}
 const NPUB = nip19.npubEncode(PUBKEY);
 
 test("rejects unauthenticated and unknown users", async () => {
@@ -341,7 +346,7 @@ test("lists no sites publicly until an admin says so", async () => {
   await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
 
   const open = await harness.request(undefined, "GET", "/api/sites");
-  assert.deepEqual((await open.json()).sites, [{ hostname: "docs.example.com" }]);
+  assert.deepEqual(hostnames((await open.json()).sites), ["docs.example.com"]);
 });
 
 test("the public list leaves out hidden and disabled sites", async () => {
@@ -370,11 +375,80 @@ test("the public list leaves out hidden and disabled sites", async () => {
   assert.equal(host.hidden, false);
 
   const sites = await harness.request(undefined, "GET", "/api/sites");
-  assert.deepEqual((await sites.json()).sites, [{ hostname: "docs.example.com" }]);
+  assert.deepEqual(hostnames((await sites.json()).sites), ["docs.example.com"]);
 
   // Hiding a site takes it off the list without taking it offline.
   await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { hidden: true });
-  assert.deepEqual((await (await harness.request(undefined, "GET", "/api/sites")).json()).sites, []);
+  assert.deepEqual(hostnames((await (await harness.request(undefined, "GET", "/api/sites")).json()).sites), []);
+});
+
+test("a listed site describes itself with its own page metadata", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "bare.example.com", address: NPUB });
+
+  const index = `<html><head>
+    <title>Ignored when Open Graph says otherwise</title>
+    <meta property="og:title" content="The Docs">
+    <meta property="og:description" content="Everything about the thing.">
+    <meta property="og:image" content="/cover.png">
+  </head></html>`;
+  const sha256 = createHash("sha256").update(index).digest("hex");
+
+  await harness.db
+    .insertInto("site_events")
+    .values({
+      event_id: "c".repeat(64),
+      pubkey: PUBKEY,
+      kind: ROOT_SITE_KIND,
+      identifier: "",
+      created_at: 1000,
+      event: "{}",
+      status: "ready",
+      files_total: 1,
+      files_ready: 1,
+      error: null,
+      fetched_at: 1,
+      ready_at: 1,
+    })
+    .execute();
+  await harness.db
+    .insertInto("site_files")
+    .values({ event_id: "c".repeat(64), path: "/index.html", sha256 })
+    .execute();
+  await harness.blobs.put(sha256, new TextEncoder().encode(index));
+
+  const { sites } = await (await harness.request(undefined, "GET", "/api/sites")).json();
+
+  // Both hosts point at the same site, so both get the same card — and the
+  // relative image resolves to whichever hostname is serving it.
+  assert.deepEqual(sites, [
+    {
+      hostname: "bare.example.com",
+      title: "The Docs",
+      description: "Everything about the thing.",
+      image: "https://bare.example.com/cover.png",
+    },
+    {
+      hostname: "docs.example.com",
+      title: "The Docs",
+      description: "Everything about the thing.",
+      image: "https://docs.example.com/cover.png",
+    },
+  ]);
+});
+
+test("a site with nothing deployed is still listed", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "soon.example.com", address: NPUB });
+
+  const { sites } = await (await harness.request(undefined, "GET", "/api/sites")).json();
+
+  assert.deepEqual(sites, [{ hostname: "soon.example.com", title: null, description: null, image: null }]);
 });
 
 test("staff are told what else the gateway serves, once the list is public", async () => {

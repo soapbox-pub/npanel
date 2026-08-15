@@ -247,6 +247,11 @@ Default `false`. Whether npanel will name the sites it serves to people who
 can't manage them: a list on the logged-out homepage, and a *Also on this
 gateway* panel for staff, showing the sites they have no grant for.
 
+Each listed site is shown as a link preview — the title, blurb, and image its
+own landing page carries — read from the copy npanel already has on disk rather
+than by crawling anything. A site that publishes no metadata is listed as a bare
+name.
+
 Off by default because which sites a gateway serves is often the private part of
 a private deployment — a team's staging domains, a client's site before launch.
 Turning it on publishes nothing but the domain names themselves, which DNS

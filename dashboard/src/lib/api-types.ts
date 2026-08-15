@@ -92,6 +92,14 @@ export interface PublicSite {
   hostname: string;
 }
 
+/** A public site with the preview its own landing page asks readers to show. */
+export interface SiteCard extends PublicSite {
+  title: string | null;
+  description: string | null;
+  /** Absolute https URL, or null. */
+  image: string | null;
+}
+
 /** What the logged-out homepage knows about the server it's running on. */
 export interface Instance {
   /** Whoever runs this instance, or null when no admin has said. */

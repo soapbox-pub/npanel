@@ -6,7 +6,8 @@ import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
 import type { SettingsService } from "../settings.ts";
-import { activeEvent, newestEvent } from "../sites.ts";
+import type { SitePreview, SitePreviews } from "../site-preview.ts";
+import { activeEvent, newestEvent, resolveSitePath } from "../sites.ts";
 import type { SyncWorker } from "../sync.ts";
 
 export interface ApiDeps {
@@ -40,8 +41,11 @@ export interface SiteView {
   hostname: string;
 }
 
+/** A site with the preview its own `index.html` asks link readers to show. */
+export interface SiteCard extends SiteView, SitePreview {}
+
 /**
- * The sites npanel will name to someone who can't manage them — a stranger on
+ * The hosts npanel will name to someone who can't manage them — a stranger on
  * the homepage, or a staff user without a grant.
  *
  * Empty unless an admin turned `public_site_list` on, since which sites a
@@ -49,18 +53,46 @@ export interface SiteView {
  * host is left out because it answers 404, and a hidden one because that is
  * what the flag is for.
  */
-export async function listedSites(db: Kysely<Database>, settings: SettingsService): Promise<SiteView[]> {
+export async function listedHosts(db: Kysely<Database>, settings: SettingsService): Promise<Host[]> {
   if (!settings.get("public_site_list")) return [];
 
-  const rows = await db
+  return await db
     .selectFrom("hosts")
-    .select("hostname")
+    .selectAll()
     .where("enabled", "=", 1)
     .where("hidden", "=", 0)
     .orderBy("hostname")
     .execute();
+}
 
-  return rows.map((row) => ({ hostname: row.hostname }));
+/** {@link listedHosts}, reduced to the names, for callers that show a list. */
+export async function listedSites(db: Kysely<Database>, settings: SettingsService): Promise<SiteView[]> {
+  const hosts = await listedHosts(db, settings);
+  return hosts.map((host) => ({ hostname: host.hostname }));
+}
+
+/**
+ * A listed host with its preview, read from the copy of `index.html` npanel
+ * already has on disk.
+ *
+ * Nothing is fetched: the document being described is one this server serves,
+ * so the metadata is right there in the blob store. A site with no ready
+ * version, or one whose landing page carries no metadata, is still listed —
+ * just as a bare name.
+ */
+export async function siteCard(db: Kysely<Database>, previews: SitePreviews, host: Host): Promise<SiteCard> {
+  const empty = { hostname: host.hostname, title: null, description: null, image: null };
+
+  const version = await activeEvent(db, host);
+  if (!version) return empty;
+
+  const index = await resolveSitePath(db, version.event_id, "/");
+  if (!index || index.is404) return empty;
+
+  return {
+    hostname: host.hostname,
+    ...(await previews.get(index.sha256, new URL(`https://${host.hostname}/`))),
+  };
 }
 
 /** Record an administrative change. */

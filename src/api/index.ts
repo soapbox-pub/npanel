@@ -5,7 +5,8 @@ import { nip19 } from "nostr-tools";
 import { type AuthUser, nip98Auth, requireAdmin } from "../auth.ts";
 import { RateLimiter } from "../rate-limit.ts";
 import { DEFAULT_SETTINGS, SETTING_KEYS, type SettingKey } from "../settings.ts";
-import { type ApiDeps, type ApiEnv, audit, listedSites } from "./context.ts";
+import { SitePreviews } from "../site-preview.ts";
+import { type ApiDeps, type ApiEnv, audit, listedHosts, siteCard } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
 import { userRoutes } from "./users.ts";
 
@@ -29,6 +30,7 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
   const tlsChecksPerHost = new RateLimiter();
   const tlsChecksTotal = new RateLimiter({ maxKeys: 1 });
+  const previews = new SitePreviews(deps.blobs);
 
   app.use("*", cors());
 
@@ -127,9 +129,17 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
    * Unauthenticated, and empty unless an admin turned `public_site_list` on:
    * a gateway that lists nothing is indistinguishable from one that serves
    * nothing, which is the point of the setting being off by default.
+   *
+   * Each site carries the preview its own landing page asks link readers to
+   * show. That costs nothing: `index.html` is already on this disk, so the
+   * metadata is read locally rather than crawled, and parsed documents are
+   * cached by their hash.
    */
   app.get("/sites", async (c) => {
-    return c.json({ sites: await listedSites(db, settings) });
+    const hosts = await listedHosts(db, settings);
+    const sites = await Promise.all(hosts.map((host) => siteCard(db, previews, host)));
+
+    return c.json({ sites });
   });
 
   app.use(
