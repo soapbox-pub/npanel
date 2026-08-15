@@ -185,13 +185,16 @@ export function HostDetailPage() {
           <CardTitle className="text-base">Visibility</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
+          {/* The switch reads as "listed", not as "hidden": a site is listed
+              unless someone says otherwise, and a toggle sitting off while the
+              label says Listed would contradict itself. */}
           <label className="flex items-center gap-3 text-sm">
             <Switch
-              checked={data.hidden}
-              onCheckedChange={(hidden) =>
+              checked={!data.hidden}
+              onCheckedChange={(listed) =>
                 run(
-                  () => updateHost.mutateAsync({ id: data.id, hidden }),
-                  hidden ? 'Site is now unlisted' : 'Site is now listed',
+                  () => updateHost.mutateAsync({ id: data.id, hidden: !listed }),
+                  listed ? 'Site is now listed' : 'Site is now unlisted',
                 )
               }
             />
