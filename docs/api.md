@@ -10,8 +10,7 @@ is `413`, refused before the signature is checked.
 
 ## Authentication
 
-Every route except `/api/tls-check`, `/api/instance`, and `/api/sites`
-requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
+Every route except `/api/instance` and `/api/sites` requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
 kind `27235` event and send it base64-encoded:
 
 ```
@@ -46,19 +45,19 @@ Routes marked **admin** below return `403` for staff.
 
 ## Certificates
 
-### `GET /api/tls-check?domain=<hostname>`
+Certificate authorization for the reverse proxy is **not part of this API**. It
+answers on its own port, `TLS_CHECK_PORT`, because the proxy asks with no
+hostname npanel could route on — see
+[deployment](deployment.md#5-tls-with-caddy).
 
-Unauthenticated, for Caddy's `on_demand_tls ask`. Returns `200` with `ok` when
-the domain is `DASHBOARD_HOST` or an enabled host, and `404` otherwise. It
-reveals only whether a hostname is configured.
+```
+GET http://127.0.0.1:3001/tls-check?domain=<hostname>
+```
 
-It is also the one route that answers on any hostname rather than only on
-`DASHBOARD_HOST`, because Caddy asks over the address it proxies to. Keep
-npanel's port reachable only by the proxy — that is what `BIND_ADDRESS` is for.
-
-Approvals are metered by `tls_check_limit_per_host` and `tls_check_limit_total`,
-and once a limit is spent the route answers `429` with a `Retry-After` header.
-Refusals aren't metered, and `DASHBOARD_HOST` is exempt.
+`200` with `ok` when the domain is `DASHBOARD_HOST` or an enabled host, `404`
+otherwise, and `429` with a `Retry-After` once `tls_check_limit_per_host` or
+`tls_check_limit_total` is spent. Refusals aren't metered, and `DASHBOARD_HOST`
+is exempt. Nothing else is served on that port.
 
 ## Instance
 

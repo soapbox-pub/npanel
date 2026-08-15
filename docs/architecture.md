@@ -17,8 +17,10 @@ background worker that keeps local storage in sync with Nostr.
                     │                     │                    │
                     ▼                     │                    │
                  SQLite ◄──── sync worker ┘                    │
-                                  │                            │
-                    relays (manifests) ── Blossom (blobs) ─────┘
+                    ▲             │                            │
+                    │ relays (manifests) ── Blossom (blobs) ───┘
+                    │
+                    └─ npanel :3001 ◄── proxy: may this name have a certificate?
 ```
 
 ## Request routing
@@ -34,10 +36,16 @@ of an FQDN are stripped and the name is lowercased (`requestHostname`,
 `src/app.ts`). npanel cannot distinguish a proxy's `X-Forwarded-Host` from a
 client's, so it must not be exposed directly.
 
-`/api/tls-check` is the one exception to the hostname rule. Caddy asks it with
-a plain request to the address it proxies to — `Host: 127.0.0.1:3000` — so
-routing it by hostname would serve it as an unconfigured nsite and deny every
-certificate.
+Nothing is exempt from that rule, which is why certificate authorization is not
+on this listener at all. Caddy's `on_demand_tls ask` is a plain request to the
+address it proxies to, carrying no hostname npanel could route on: as a path
+here it would have to answer on every hostname npanel serves, putting a
+certificate-issuing decision on the public internet where a stranger could spend
+a real host's hourly budget. So it gets a listener of its own on
+`TLS_CHECK_PORT`, serving one path and nothing else (`src/tls-check.ts`). It
+calls `Bun.serve` directly rather than going through Hono and the default export
+in `src/server.ts`, which is what the runtime serves: one route needs no router,
+and a second port has to be bound by hand.
 
 A site only answers `GET` and `HEAD`; anything else is a `405`.
 

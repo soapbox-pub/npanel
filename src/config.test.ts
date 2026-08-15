@@ -16,6 +16,22 @@ test("port defaults to 3000 and rejects garbage", () => {
   assert.throws(() => config({ PORT: "70000" }).port, /PORT/);
 });
 
+test("tlsCheckPort defaults to 3001 and cannot collide with PORT", () => {
+  assert.equal(config({}).tlsCheckPort, 3001);
+  assert.equal(config({ TLS_CHECK_PORT: "9001" }).tlsCheckPort, 9001);
+  assert.throws(() => config({ TLS_CHECK_PORT: "nope" }).tlsCheckPort, /TLS_CHECK_PORT/);
+  assert.throws(() => config({ TLS_CHECK_PORT: "0" }).tlsCheckPort, /TLS_CHECK_PORT/);
+
+  // Two listeners, so the second bind would fail with an EADDRINUSE that says
+  // nothing about which setting caused it.
+  assert.throws(() => config({ TLS_CHECK_PORT: "3000" }).tlsCheckPort, /different from PORT/);
+  assert.throws(() => config({ PORT: "8080", TLS_CHECK_PORT: "8080" }).tlsCheckPort, /different from PORT/);
+
+  // The default gets no exemption: PORT=3001 collides with it.
+  assert.throws(() => config({ PORT: "3001" }).tlsCheckPort, /different from PORT/);
+  assert.equal(config({ PORT: "3001", TLS_CHECK_PORT: "3002" }).tlsCheckPort, 3002);
+});
+
 test("dashboardHost is required and normalized", () => {
   assert.throws(() => config({}).dashboardHost, /DASHBOARD_HOST/);
   assert.equal(config({ DASHBOARD_HOST: "Panel.Example.com" }).dashboardHost, "panel.example.com");

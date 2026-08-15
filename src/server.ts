@@ -10,6 +10,7 @@ import { Logger, errFields } from "./log.ts";
 import { NostrService } from "./nostr.ts";
 import { SettingsService } from "./settings.ts";
 import { SyncWorker } from "./sync.ts";
+import { startTlsCheckServer } from "./tls-check.ts";
 
 const config = new Config({
   get(key) {
@@ -28,6 +29,13 @@ const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log 
 
 await sync.start();
 
+// A second listener, on its own port, so the proxy can ask which hostnames may
+// have a certificate without that question being answerable from the internet.
+const tlsCheck = startTlsCheckServer(
+  { db, settings, log, dashboardHost: config.dashboardHost },
+  { port: config.tlsCheckPort, address: config.bindAddress },
+);
+
 const app = createApp({
   db,
   settings,
@@ -42,6 +50,7 @@ const app = createApp({
 log.info("started", {
   bind_address: config.bindAddress,
   port: config.port,
+  tls_check_port: config.tlsCheckPort,
   dashboard_host: config.dashboardHost,
   data_dir: config.dataDir,
 });
@@ -55,6 +64,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 async function shutdown(): Promise<void> {
   try {
+    await tlsCheck.stop();
     await sync.stop();
     await db.destroy();
   } catch (error) {

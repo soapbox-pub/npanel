@@ -14,7 +14,7 @@ looks the way it does.
 src/                    server (Bun/Node, Hono, Kysely)
   server.ts             entry point; wires everything together
   app.ts                Host-based routing: dashboard vs nsite
-  config.ts             the five environment variables
+  config.ts             the six environment variables
   hostname.ts           hostname validation, shared with settings
   rate-limit.ts         token buckets, used to meter certificate authorization
   settings.ts           runtime settings, DB-backed and live-reloading
@@ -22,6 +22,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   manifest.ts           manifest event parsing
   nostr.ts              relay pool, relay/server list caches
   sync.ts               the sync worker: subscribe, resync, deploy
+  tls-check.ts          certificate authorization, on its own port
   blobs.ts              content-addressed filesystem store
   sites.ts              queries over stored versions
   site-preview.ts       link-preview metadata, read from a site's own index.html
@@ -44,7 +45,18 @@ Node, and Deno.
 - **Use `node:` imports for builtins.** `import { readFile } from "node:fs/promises"`,
   `import process from "node:process"`.
 - **Never use Bun or Deno globals** — no `Bun.file`, no `Deno.readFile`, no
-  `Bun.env`.
+  `Bun.env` — with the single exception of serving HTTP, below.
+- **Never use `node:http`.** Not in `src`, not in tests. Serving HTTP is the one
+  place where the runtime-specific API is strongly preferred: Bun implements
+  `node:http` as a shim over its own server, and its stream-based request model
+  is a second, worse HTTP world alongside the `Request`/`Response` objects the
+  rest of the code already passes around. It buys portability nobody collects,
+  since a Node or Deno deployment replaces the listener anyway.
+
+  Use the default export from `src/server.ts` where one listener is enough, and
+  `Bun.serve` where a second port has to be bound (`src/tls-check.ts`). Type it
+  with a narrow `declare const Bun` covering only the API that file uses, so
+  `tsc` still rejects every other Bun global.
 - SQLite goes through the adaptive dialect in `src/db/sqlite.ts`, which picks
   `bun:sqlite` or `node:sqlite` at runtime. **Do not add `better-sqlite3`** — it
   crashes Bun's NAPI implementation.
@@ -55,9 +67,9 @@ through Bun, and nothing in the repo needs Node or npm installed.
 
 ## Configuration
 
-Only five things are environment variables: `PORT`, `BIND_ADDRESS`,
-`DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else belongs in the
-`settings` table so
+Only six things are environment variables: `PORT`, `BIND_ADDRESS`,
+`TLS_CHECK_PORT`, `DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else
+belongs in the `settings` table so
 admins can change it from the dashboard without a restart.
 
 When adding a setting: add the key to `SettingsValues`, a zod schema to

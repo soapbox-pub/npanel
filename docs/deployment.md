@@ -50,16 +50,17 @@ docker compose up -d
 Compose reads `DASHBOARD_HOST` from `.env` and gives it to both containers —
 npanel to route on, Caddy as the name of the dashboard's site. It refuses to
 start without it. The other variables in that file don't apply, because the
-image fixes them: `PORT` is 3000, `BIND_ADDRESS` is `0.0.0.0`, and `DATA_DIR` is
-`/data` on a named volume. `LOG_LEVEL` is honoured if you set it.
+image fixes them: `PORT` is 3000, `TLS_CHECK_PORT` is 3001, `BIND_ADDRESS` is
+`0.0.0.0`, and `DATA_DIR` is `/data` on a named volume. `LOG_LEVEL` is honoured
+if you set it.
 
 `0.0.0.0` looks like the opposite of the advice in
 [configuration](configuration.md#bind_address), and is only safe because of what
-compose does *not* do: nothing publishes npanel's port, so it is reachable only
-by Caddy over the project's internal network. Loopback inside the container
-would mean reachable by nothing at all. Keep it that way — npanel trusts
-`X-Forwarded-Host` from whoever connects and answers `/api/tls-check` without
-authentication.
+compose does *not* do: nothing publishes either port, so both are reachable only
+by Caddy over the project's internal network. Loopback inside the container would
+mean reachable by nothing at all. Keep it that way — npanel trusts
+`X-Forwarded-Host` from whoever connects, and 3001 authorizes certificates for
+anyone who asks.
 
 Then bootstrap the first admin, as in [section 3](#3-bootstrap-the-first-admin),
 inside the running container:
@@ -78,8 +79,8 @@ docker compose logs -f npanel | jq
 ```
 
 Certificates work exactly as [section 5](#5-tls-with-caddy) describes — the
-mounted `Caddyfile` is the same sample file, with `NPANEL_UPSTREAM` set to
-`npanel:3000` instead of its loopback default.
+mounted `Caddyfile` is the same sample file, with `NPANEL_UPSTREAM` and
+`NPANEL_TLS_CHECK` pointing at the container instead of at loopback.
 
 ### Using your own proxy
 
@@ -92,7 +93,12 @@ services:
   npanel:
     ports:
       - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3001:3001" # only if your proxy asks about certificates
 ```
+
+Leave the second line out unless the proxy does on-demand TLS. Nothing else
+needs that port, and a proxy with a wildcard or manually issued certificate
+never asks.
 
 [Other proxies](#other-proxies) covers the one header it has to set.
 
@@ -223,7 +229,8 @@ TLS itself.
 
 The wrinkle is that staff add hostnames at runtime, so the set of certificates
 isn't known when the proxy starts. Caddy solves this with on-demand TLS, and
-npanel provides the authorization endpoint Caddy needs. Copy the sample
+npanel provides the authorization endpoint Caddy needs — on `TLS_CHECK_PORT`,
+which is a second listener, not a route on the public one. Copy the sample
 `Caddyfile` from the repository root and replace `panel.example.com` — it is
 written as `{$DASHBOARD_HOST:panel.example.com}` so that the same file can be
 mounted into the Caddy container, but nothing stops you from writing your
@@ -232,7 +239,7 @@ hostname there directly:
 ```caddy
 {
 	on_demand_tls {
-		ask http://{$NPANEL_UPSTREAM:127.0.0.1:3000}/api/tls-check
+		ask http://{$NPANEL_TLS_CHECK:127.0.0.1:3001}/tls-check
 	}
 }
 
@@ -256,29 +263,30 @@ out raw — for a typical SPA bundle that is several megabytes instead of a few
 hundred kilobytes. Caddy's defaults already skip types that are compressed
 already, like images and video.
 
-Caddy calls `/api/tls-check?domain=<name>` before issuing any certificate.
-npanel answers `200` for the dashboard hostname and for every enabled host, and
-`404` for anything else. **Do not run on-demand TLS without the `ask`
-directive**: anyone who points a domain at your IP could otherwise drive
-certificate issuance on your behalf and get you rate-limited by Let's Encrypt.
+Caddy calls `/tls-check?domain=<name>` before issuing any certificate. npanel
+answers `200` for the dashboard hostname and for every enabled host, and `404`
+for anything else. **Do not run on-demand TLS without the `ask` directive**:
+anyone who points a domain at your IP could otherwise drive certificate issuance
+on your behalf and get you rate-limited by Let's Encrypt.
 
-That endpoint is the one unauthenticated route in the API, necessarily so — it
-only reveals whether a hostname is configured, which DNS already tells you.
+Note the port: `3001`, not the `3000` everything else is proxied to. That
+endpoint has to answer a request Caddy makes to the address it proxies to, with
+no hostname in it that npanel could route on — so it cannot live on the public
+listener, where it would have to answer on every site npanel serves. Published
+like that, anyone could drive approvals for one of your hosts until its hourly
+budget was gone and Caddy started refusing to renew. On its own port nothing
+routes to it, and only the proxy can ask.
 
-It is also the one route exempt from npanel's `Host` routing. Caddy asks with a
-plain `GET` to the address it proxies to, so the request arrives with
-`Host: 127.0.0.1:3000` rather than the dashboard hostname; were it routed like
-everything else it would be served as an unconfigured nsite, answer `404`, and
-quietly deny every certificate. Because of that exemption `/api/tls-check`
-answers on any hostname npanel serves — keep it on a port only the proxy can
-reach, as the sample configuration does.
+It is unauthenticated, necessarily so, and reveals only whether a hostname is
+configured — which DNS already tells you. **Keep `TLS_CHECK_PORT` reachable only
+by the proxy**, as `BIND_ADDRESS` does by default. Nothing else is served there.
 
 Caddy has deprecated the `ask` sub-directive in favour of the `permission`
 module. Newer versions accept:
 
 ```caddy
 on_demand_tls {
-	permission http http://127.0.0.1:3000/api/tls-check
+	permission http http://127.0.0.1:3001/tls-check
 }
 ```
 
@@ -396,4 +404,6 @@ valid but the pubkey isn't a user. Add it from the Users page, or bootstrap with
 
 **Caddy won't issue a certificate.** Confirm DNS resolves to the box, the host
 exists in the dashboard and is enabled, and that
-`curl 'http://127.0.0.1:3000/api/tls-check?domain=example.org'` returns `ok`.
+`curl 'http://127.0.0.1:3001/tls-check?domain=example.org'` returns `ok`. A
+`Caddyfile` still pointing `ask` at `:3000/api/tls-check` gets a `404` for every
+name and denies them all — that endpoint moved to its own port.

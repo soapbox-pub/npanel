@@ -55,6 +55,26 @@ export class Config {
   }
 
   /**
+   * Port serving certificate authorization for the reverse proxy, on the same
+   * address as {@link Config.bindAddress}.
+   *
+   * Separate from the public port because Caddy's `ask` request carries no
+   * hostname npanel could route on, so answering it there would mean answering
+   * on every nsite — see {@link file://./tls-check.ts}.
+   */
+  get tlsCheckPort(): number {
+    const value = this.env.get("TLS_CHECK_PORT");
+    const port = value ? Number.parseInt(value, 10) : 3001;
+    if (Number.isNaN(port) || port < 1 || port > 65535) {
+      throw new Error("TLS_CHECK_PORT must be a valid port number (1-65535).");
+    }
+    if (port === this.port) {
+      throw new Error("TLS_CHECK_PORT must be different from PORT.");
+    }
+    return port;
+  }
+
+  /**
    * Hostname serving the dashboard and JSON API. Requests with any other
    * `Host` header are served as nsites.
    */

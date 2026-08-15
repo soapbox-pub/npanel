@@ -5,9 +5,9 @@
 # certificate for a site can't be known when Caddy starts — so this uses
 # on-demand TLS, with npanel itself deciding which names deserve a certificate.
 #
-# The two placeholders below take their defaults from a Caddy installed on the
-# same host as npanel. compose.yaml sets them as environment variables instead,
-# so the same file works for a container install; edit them in place if you'd
+# The placeholders below take their defaults from a Caddy installed on the same
+# host as npanel. compose.yaml sets them as environment variables instead, so
+# the same file works for a container install; edit them in place if you'd
 # rather not use environment variables at all.
 
 {
@@ -16,11 +16,13 @@
 	# Without this guard, anyone pointing a domain at the box could make Caddy
 	# request certificates on their behalf.
 	#
-	# The request arrives with npanel's own address as the Host header, so
-	# /api/tls-check is exempt from npanel's hostname routing. Newer Caddy
-	# versions spell this `permission http http://.../api/tls-check`.
+	# The request arrives with no hostname npanel could route on, so this is a
+	# second port rather than a path on the one below — answering it on the
+	# public listener would mean answering it on every site npanel serves, and
+	# a stranger could then spend a configured host's certificate budget. Newer
+	# Caddy versions spell this `permission http http://.../tls-check`.
 	on_demand_tls {
-		ask http://{$NPANEL_UPSTREAM:127.0.0.1:3000}/api/tls-check
+		ask http://{$NPANEL_TLS_CHECK:127.0.0.1:3001}/tls-check
 	}
 
 	# email you@example.com

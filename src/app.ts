@@ -11,17 +11,12 @@ export interface AppDeps extends ApiDeps {
 }
 
 /**
- * Certificate authorization endpoint, exempt from `Host` routing.
+ * The whole public HTTP surface, routed by `Host`: the dashboard hostname
+ * serves the API and the dashboard SPA, every other hostname serves an nsite.
  *
- * Caddy's on-demand TLS `ask` is a plain GET to the address it proxies to, so
- * the request arrives with `Host: 127.0.0.1:3000` and would otherwise be
- * served as an (unconfigured, 404) nsite — which denies every certificate.
- */
-const TLS_CHECK_PATH = "/api/tls-check";
-
-/**
- * The whole HTTP surface, routed by `Host`: the dashboard hostname serves the
- * API and the dashboard SPA, every other hostname serves an nsite.
+ * Nothing here is exempt from that rule. Certificate authorization for the
+ * proxy needs to answer requests that carry no hostname to route on, so it
+ * listens on its own port instead — see {@link file://./tls-check.ts}.
  */
 export function createApp(deps: AppDeps): Hono {
   const { log } = deps;
@@ -37,7 +32,7 @@ export function createApp(deps: AppDeps): Hono {
   app.use("*", async (c, next) => {
     const hostname = requestHostname(c.req.raw);
 
-    if (hostname !== deps.dashboardHost && c.req.path !== TLS_CHECK_PATH) {
+    if (hostname !== deps.dashboardHost) {
       return await serveSite(c.req.raw, hostname);
     }
 

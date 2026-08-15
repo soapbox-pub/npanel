@@ -490,144 +490,23 @@ test("staff are told what else the gateway serves, once the list is public", asy
   assert.deepEqual(hidden.other_sites, []);
 });
 
-test("tls-check answers for configured hosts only", async () => {
+test("certificate authorization is not on the public API", async () => {
   const { harness, admin } = await setup();
 
   await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
 
-  const unknown = await harness.app.fetch(
-    new Request("http://127.0.0.1/api/tls-check?domain=evil.example.com", {
-      headers: { host: "panel.test" },
-    }),
-  );
-  assert.equal(unknown.status, 404);
+  // It answers on a listener of its own (src/tls-check.test.ts). Were it here
+  // it would have to answer on every nsite hostname too, because Caddy asks
+  // with no hostname to route on — which would let a stranger spend the
+  // certificate budget of a host that is configured.
+  const onDashboard = await harness.request(admin, "GET", "/api/tls-check?domain=docs.example.com");
+  assert.equal(onDashboard.status, 404);
+  assert.equal((await onDashboard.json()).error, "No such API route.");
 
-  const known = await harness.app.fetch(
-    new Request("http://127.0.0.1/api/tls-check?domain=docs.example.com", {
-      headers: { host: "panel.test" },
-    }),
-  );
-  assert.equal(known.status, 200);
-
-  const dashboard = await harness.app.fetch(
-    new Request("http://127.0.0.1/api/tls-check?domain=panel.test", {
-      headers: { host: "panel.test" },
-    }),
-  );
-  assert.equal(dashboard.status, 200);
-});
-
-test("tls-check answers Caddy, which asks over the loopback address", async () => {
-  const { harness, admin } = await setup();
-
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
-
-  // Exactly what Caddy's on-demand TLS `ask` sends: a plain GET to the address
-  // it proxies to, so `Host` is the loopback address, not the dashboard.
-  const ask = (domain: string) =>
-    harness.app.fetch(
-      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
-        headers: { host: "127.0.0.1:3000" },
-      }),
-    );
-
-  assert.equal((await ask("docs.example.com")).status, 200);
-  assert.equal((await ask("panel.test")).status, 200);
-  assert.equal((await ask("evil.example.com")).status, 404);
-});
-
-test("tls-check stops authorizing a host that keeps asking", async () => {
-  const { harness, admin } = await setup();
-
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
-  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_per_host: 2 });
-
-  const ask = (domain: string) =>
-    harness.app.fetch(
-      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
-        headers: { host: "127.0.0.1:3000" },
-      }),
-    );
-
-  assert.equal((await ask("docs.example.com")).status, 200);
-  assert.equal((await ask("docs.example.com")).status, 200);
-
-  const throttled = await ask("docs.example.com");
-  assert.equal(throttled.status, 429);
-  assert.equal(throttled.headers.get("retry-after"), "60");
-
-  // The dashboard is never throttled: an exhausted budget must not be able to
-  // lock admins out of npanel itself.
-  assert.equal((await ask("panel.test")).status, 200);
-});
-
-test("tls-check refusals do not spend the budget", async () => {
-  const { harness, admin } = await setup();
-
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
-  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_total: 2 });
-
-  const ask = (domain: string) =>
-    harness.app.fetch(
-      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
-        headers: { host: "127.0.0.1:3000" },
-      }),
-    );
-
-  // Anyone can make Caddy ask about any name, so if refusals counted, a
-  // stranger could starve certificates for the hosts that are configured.
-  for (let i = 0; i < 20; i++) {
-    assert.equal((await ask(`spray-${i}.example.com`)).status, 404);
-  }
-
-  assert.equal((await ask("docs.example.com")).status, 200);
-});
-
-test("tls-check caps authorizations across all hosts", async () => {
-  const { harness, admin } = await setup();
-
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "one.example.com", address: NPUB });
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "two.example.com", address: NPUB });
-  await harness.request(admin, "PUT", "/api/settings", { tls_check_limit_total: 2 });
-
-  const ask = (domain: string) =>
-    harness.app.fetch(
-      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
-        headers: { host: "127.0.0.1:3000" },
-      }),
-    );
-
-  assert.equal((await ask("one.example.com")).status, 200);
-  assert.equal((await ask("two.example.com")).status, 200);
-  assert.equal((await ask("one.example.com")).status, 429);
-});
-
-test("a throttled host does not drain the budget the others share", async () => {
-  const { harness, admin } = await setup();
-
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "broken.example.com", address: NPUB });
-  await harness.request(admin, "POST", "/api/hosts", { hostname: "fine.example.com", address: NPUB });
-  await harness.request(admin, "PUT", "/api/settings", {
-    tls_check_limit_per_host: 1,
-    tls_check_limit_total: 3,
-  });
-
-  const ask = (domain: string) =>
-    harness.app.fetch(
-      new Request(`http://127.0.0.1:3000/api/tls-check?domain=${domain}`, {
-        headers: { host: "127.0.0.1:3000" },
-      }),
-    );
-
-  assert.equal((await ask("broken.example.com")).status, 200);
-
-  // One host stuck in a retry loop would otherwise spend the shared budget on
-  // asks it is already being refused for.
-  for (let i = 0; i < 10; i++) {
-    assert.equal((await ask("broken.example.com")).status, 429);
-  }
-
-  assert.equal((await ask("fine.example.com")).status, 200);
+  // On a site's own hostname the path is just a path: this is the site server
+  // answering for a host with nothing deployed yet, not an authorization.
+  const onSite = await harness.site("docs.example.com", "/api/tls-check?domain=docs.example.com");
+  assert.equal(onSite.status, 503);
 });
 
 test("renaming a host cannot take over the dashboard hostname", async () => {

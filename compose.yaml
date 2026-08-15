@@ -15,11 +15,12 @@ services:
     build: .
     image: npanel
     restart: unless-stopped
-    # Deliberately no `ports`: npanel trusts X-Forwarded-Host from whoever
-    # connects and answers /api/tls-check without auth, so only the proxy may
-    # reach it. Publishing 3000 here would expose both.
+    # Deliberately no `ports`: both listeners exist for the proxy alone. npanel
+    # trusts X-Forwarded-Host from whoever connects, and 3001 authorizes
+    # certificates without asking who wants to know.
     expose:
       - "3000"
+      - "3001"
     environment:
       # The public hostname of the dashboard. Required — it decides which
       # requests are the dashboard rather than an nsite, and NIP-98 logins are
@@ -45,8 +46,10 @@ services:
     environment:
       DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}
       # The sample Caddyfile defaults to loopback, for a proxy installed on the
-      # host. Here npanel is a container on this network.
+      # host. Here npanel is a container on this network, and its certificate
+      # authorization answers on a second port.
       NPANEL_UPSTREAM: npanel:3000
+      NPANEL_TLS_CHECK: npanel:3001
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificates and ACME account keys. Losing this means re-issuing every

@@ -48,6 +48,10 @@ COPY --from=dashboard /app/dashboard/dist ./dashboard/dist
 ENV BIND_ADDRESS=0.0.0.0
 ENV PORT=3000
 
+# Certificate authorization for the proxy, on a port of its own so that it is
+# not reachable through any hostname npanel serves.
+ENV TLS_CHECK_PORT=3001
+
 # The database and the blob store. Mount a volume here or the configuration
 # lives only as long as the container does; compose.yaml declares one.
 # Pre-created so a fresh volume inherits an owner the server can write as.
@@ -56,12 +60,15 @@ RUN mkdir -p /data && chown bun:bun /data
 
 USER bun
 
-EXPOSE 3000
+EXPOSE 3000 3001
 
-# /api/tls-check is exempt from Host routing and never rate limited for the
-# dashboard hostname, which makes it the one route reachable over loopback
-# without auth. A 200 here means the database opened and the router is up.
+# Both listeners, since either one being down is a broken gateway: /api/instance
+# is unauthenticated but served only on the dashboard hostname, hence the Host
+# header, and answering it means the database opened; the second call proves the
+# proxy can still get certificates authorized. The dashboard hostname is never
+# metered, so this spends no part of the issuance budget.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/api/tls-check?domain=${DASHBOARD_HOST}"
+  CMD wget -q -O /dev/null --header "host: ${DASHBOARD_HOST}" "http://127.0.0.1:${PORT}/api/instance" && \
+      wget -q -O /dev/null "http://127.0.0.1:${TLS_CHECK_PORT}/tls-check?domain=${DASHBOARD_HOST}"
 
 CMD ["bun", "run", "src/server.ts"]

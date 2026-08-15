@@ -4,7 +4,7 @@ npanel splits configuration in two.
 
 **Environment variables** cover things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are five of them, and they require a restart.
+set wrong. There are six of them, and they require a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
@@ -15,7 +15,7 @@ without a restart, and are recorded in the audit log.
 Copy `.env.example` to `.env` and edit it. Bun loads `.env` automatically.
 
 On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
-compose, which passes them to the containers; the image fixes the other three.
+compose, which passes them to the containers; the image fixes the other four.
 See [deployment](deployment.md#docker-compose).
 
 ### `PORT`
@@ -36,9 +36,30 @@ directly, either of those is a hole.
 Set `0.0.0.0` when the proxy runs on another machine or in another container,
 and firewall the port to it.
 
-The Docker image sets `0.0.0.0` for that reason — a container's loopback is
+Both listeners bind here: the public one on `PORT` and certificate
+authorization on [`TLS_CHECK_PORT`](#tls_check_port).
+
+The Docker image sets `0.0.0.0` for the reason above — a container's loopback is
 reachable by nothing else, not even the proxy beside it — and `compose.yaml`
-takes the place of the firewall by never publishing the port.
+takes the place of the firewall by never publishing either port.
+
+### `TLS_CHECK_PORT`
+
+Default `3001`. The port that answers your reverse proxy's certificate
+authorization requests — Caddy's `on_demand_tls ask` — on the same address as
+`PORT`. Must be a valid port, and must differ from `PORT`, or startup fails
+rather than leaving you to decode an `EADDRINUSE`.
+
+It is a second listener because the request has nowhere to say which hostname it
+is about: Caddy makes a plain `GET` to the address it proxies to, so npanel
+cannot route it by `Host` the way it routes everything else. On the public port
+the endpoint would therefore have to answer on *every* hostname npanel serves,
+which puts it on the internet — and anyone could then drive approvals for a
+configured host until the hourly budget below was spent, denying certificates to
+the sites that need them.
+
+Nothing else is served there, and it must be reachable only by the proxy. See
+[deployment](deployment.md#5-tls-with-caddy).
 
 ### `DASHBOARD_HOST`
 
