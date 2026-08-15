@@ -35,6 +35,7 @@ src/                    server (Bun/Node, Hono, Kysely)
 scripts/                make-admin.ts, prune-blobs.ts
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api
+DEPLOY.md               runbook for the soapbox instance on venus.vps
 ```
 
 ## Runtimes

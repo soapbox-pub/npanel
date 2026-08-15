@@ -342,7 +342,14 @@ sqlite3 /var/lib/npanel/npanel.sqlite3 ".backup '/backup/npanel-$(date +%F).sqli
 ```
 
 On Docker the same call runs in a throwaway container against the volume — see
-[The volumes](#the-volumes).
+[The volumes](#the-volumes). Where there is no `sqlite3` binary at all, Bun can
+take the same online backup with `VACUUM INTO`:
+
+```sh
+bun -e "import { Database } from 'bun:sqlite';
+  new Database('/var/lib/npanel/npanel.sqlite3', { readonly: true })
+    .exec(\"VACUUM INTO '/backup/npanel.sqlite3'\")"
+```
 
 To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
 named by hash, so incremental syncs are cheap.
