@@ -154,6 +154,7 @@ A host object:
   "enabled": true,
   "hidden": false,
   "redirect_www": true,
+  "spa": false,
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -196,7 +197,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -224,6 +225,7 @@ Any subset of:
   "enabled": false,
   "hidden": true,
   "redirect_www": true,
+  "spa": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -244,6 +246,14 @@ requests exactly as before.
 when `www.<hostname>` is configured as a host of its own. Setting it on a
 subdomain is accepted and does nothing, so a later rename doesn't silently
 leave `www` unserved.
+
+`spa` decides what a path the site has no file for returns, and defaults to
+off. Off, it's a `404`, carrying the site's own `/404.html` if it published
+one. On, a *document* request — a path with no extension, or one ending
+`.html` — gets the site's shell (`/404.html` if present, else `/index.html`)
+with a `200`, so a client-side router can decide what the page is. Requests for
+anything else still `404` either way: a script or stylesheet that answers `200`
+with a page of HTML doesn't render the site, it fails somewhere harder to read.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -454,4 +464,6 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 
 Range requests are supported. A `503` with `Retry-After` means no version is
 ready yet; a `404` means the hostname isn't configured, or the path isn't in the
-version and the site has no `/404.html`.
+version — served as the site's `/404.html` when it has one. On a host with `spa`
+set, a document path that isn't in the version is a `200` carrying the site's
+shell instead.

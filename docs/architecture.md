@@ -176,7 +176,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
@@ -202,9 +202,23 @@ nothing.
 active version, resolve the path, stream the blob.
 
 Path resolution mirrors what static hosts do: exact match, then `index.html` for
-extensionless paths, then the site's own `/404.html` (served with a real `404`
-status). Resolution reads `site_files`, never a manifest event — serving a file
-never parses Nostr.
+extensionless paths, then the site's own `/404.html`. Resolution reads
+`site_files`, never a manifest event — serving a file never parses Nostr.
+
+That last step is where a single-page app parts ways with a static site, so it
+is a per-host flag rather than a guess. By default a path the site has no file
+for is a `404`, carrying `/404.html` if the site published one — the honest
+answer, and the one crawlers, uptime checks and `curl -f` are entitled to. With
+`spa` set, a *document* request (no extension, or `.html`) instead gets the
+site's shell under a `200`: `/404.html` first, because NIP-5A names it as the
+fallback path and an nsyte build publishes its shell there for exactly that
+reason, then `/index.html`, for a build that expects the `try_files` every
+other static host does. Requests for anything else keep their `404` in both
+modes — a script or stylesheet answered with a page of HTML and a `200` doesn't
+render the site, it turns a plain missing file into a parse error somewhere
+else. The flag is off for every existing host and every new one: folding `www`
+into a domain preserves what a response means and can default on, while turning
+a `404` into a `200` does not.
 
 Responses carry an `ETag` of the blob hash (so conditional requests are free and
 exact), `Last-Modified` from the event's `created_at` — capped at when npanel

@@ -27,6 +27,8 @@ export interface Host {
   hidden: boolean;
   /** Whether `www.<hostname>` redirects here. Only acts on a root domain. */
   redirect_www: boolean;
+  /** Whether unknown document paths serve the site's shell instead of a 404. */
+  spa: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -44,6 +46,7 @@ export interface HostPatch {
   enabled?: boolean;
   hidden?: boolean;
   redirect_www?: boolean;
+  spa?: boolean;
   pinned_event_id?: string | null;
 }
 

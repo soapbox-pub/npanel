@@ -23,6 +23,8 @@ const createSchema = z.object({
   hidden: z.boolean().optional(),
   /** Fold `www` into the domain. On unless asked otherwise. */
   redirect_www: z.boolean().optional(),
+  /** Serve the site's shell for paths it has no file for. Off by default. */
+  spa: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -31,6 +33,7 @@ const updateSchema = z.object({
   enabled: z.boolean().optional(),
   hidden: z.boolean().optional(),
   redirect_www: z.boolean().optional(),
+  spa: z.boolean().optional(),
   /** Event id to pin, or null to follow the newest ready version. */
   pinned_event_id: z.string().nullable().optional(),
 });
@@ -106,6 +109,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         enabled: 1,
         hidden: body.data.hidden ? 1 : 0,
         redirect_www: body.data.redirect_www === false ? 0 : 1,
+        spa: body.data.spa ? 1 : 0,
         created_by: user.pubkey,
         created_at: now,
         updated_at: now,
@@ -200,6 +204,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     if (body.data.redirect_www !== undefined) {
       patch.redirect_www = body.data.redirect_www ? 1 : 0;
+    }
+
+    if (body.data.spa !== undefined) {
+      patch.spa = body.data.spa ? 1 : 0;
     }
 
     if (body.data.pinned_event_id !== undefined && body.data.address === undefined) {
@@ -472,6 +480,7 @@ function hostSummary(host: Host) {
     enabled: host.enabled,
     hidden: host.hidden,
     redirect_www: host.redirect_www,
+    spa: host.spa,
     pinned_event_id: host.pinned_event_id,
   };
 }

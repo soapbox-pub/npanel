@@ -86,8 +86,10 @@ export async function siteCard(db: Kysely<Database>, previews: SitePreviews, hos
   const version = await activeEvent(db, host);
   if (!version) return empty;
 
-  const index = await resolveSitePath(db, version.event_id, "/");
-  if (!index || index.is404) return empty;
+  // With the SPA flag on, the shell the site would serve for `/` is the page
+  // being described, wherever it is published.
+  const index = await resolveSitePath(db, version.event_id, "/", { spa: host.spa === 1 });
+  if (!index || index.status !== 200) return empty;
 
   return {
     hostname: host.hostname,
@@ -130,6 +132,8 @@ export interface HostView {
   hidden: boolean;
   /** Whether `www.<hostname>` redirects here. Only acts on a root domain. */
   redirect_www: boolean;
+  /** Whether unknown document paths serve the site's shell instead of a 404. */
+  spa: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -166,6 +170,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     enabled: host.enabled === 1,
     hidden: host.hidden === 1,
     redirect_www: host.redirect_www === 1,
+    spa: host.spa === 1,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
     created_at: host.created_at,

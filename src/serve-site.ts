@@ -103,7 +103,7 @@ export function createSiteServer(deps: SiteServerDeps) {
     }
 
     const url = new URL(request.url);
-    const file = await resolveSitePath(db, version.event_id, url.pathname);
+    const file = await resolveSitePath(db, version.event_id, url.pathname, { spa: host.spa === 1 });
 
     if (!file) {
       log.debug("site_path_missing", { hostname, path: url.pathname });
@@ -142,7 +142,7 @@ export function createSiteServer(deps: SiteServerDeps) {
       return new Response(null, { status: 416, headers });
     }
 
-    const status = file.is404 ? 404 : range ? 206 : 200;
+    const status = file.status === 404 ? 404 : range ? 206 : 200;
 
     if (range) {
       headers.set("content-range", `bytes ${range.start}-${range.end}/${size}`);

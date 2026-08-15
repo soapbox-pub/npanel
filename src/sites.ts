@@ -78,23 +78,49 @@ export async function newestEvent(db: Kysely<Database>, address: NsiteAddress): 
 export interface ResolvedFile {
   path: string;
   sha256: string;
-  is404: boolean;
+  /** What to serve it as: a file the site really has, or its not-found page. */
+  status: 200 | 404;
 }
 
 /**
- * Resolve a request path within a stored version.
+ * Extensions a fallback page may stand in for.
  *
- * Mirrors {@link resolveManifestPath}, but reads the path map from the
- * database so serving a file never parses a manifest event.
+ * Everything else is an asset the document named, and an asset is worth
+ * failing loudly: a stylesheet or a script that answers `200` with a page of
+ * HTML doesn't render the site, it produces a parse error somewhere else
+ * entirely.
+ */
+const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
+
+/**
+ * Resolve a request path within a stored version: exact match, then
+ * `index.html` for extensionless paths, then the site's own `/404.html`.
+ *
+ * Reads the path map from the database, so serving a file never parses a
+ * manifest event.
+ *
+ * `spa` turns the last step into a client-side router's entry point rather
+ * than a dead end. A single-page app owns paths that exist only in its own
+ * routing table, so for a document request npanel hands back the site's shell
+ * under a `200`: `/404.html` first, since NIP-5A names it as *the* fallback
+ * path and an nsyte build publishes its shell there for exactly that reason,
+ * and `/index.html` for a build that expects the `try_files` other static
+ * hosts do. Asset requests are untouched, and so is every host without the
+ * flag — a `404` is still the honest answer for a file a site doesn't have.
  */
 export async function resolveSitePath(
   db: Kysely<Database>,
   eventId: string,
   requestPath: string,
+  options: { spa?: boolean } = {},
 ): Promise<ResolvedFile | undefined> {
   const normalized = join("/", decodePath(requestPath));
   const indexPath = extname(normalized) === "" ? join(normalized, "index.html") : undefined;
-  const candidates = [normalized, indexPath, "/404.html"].filter((path): path is string => path !== undefined);
+  const shell = options.spa && DOCUMENT_EXTENSIONS.has(extname(normalized).toLowerCase());
+
+  const candidates = [normalized, indexPath, "/404.html", shell ? "/index.html" : undefined].filter(
+    (path): path is string => path !== undefined,
+  );
 
   const rows = await db
     .selectFrom("site_files")
@@ -106,15 +132,22 @@ export async function resolveSitePath(
   const found = new Map(rows.map((row) => [row.path, row.sha256]));
 
   const exact = found.get(normalized);
-  if (exact) return { path: normalized, sha256: exact, is404: false };
+  if (exact) return { path: normalized, sha256: exact, status: 200 };
 
   if (indexPath) {
     const index = found.get(indexPath);
-    if (index) return { path: indexPath, sha256: index, is404: false };
+    if (index) return { path: indexPath, sha256: index, status: 200 };
   }
 
+  const fallback = shell ? 200 : 404;
+
   const notFound = found.get("/404.html");
-  if (notFound) return { path: "/404.html", sha256: notFound, is404: true };
+  if (notFound) return { path: "/404.html", sha256: notFound, status: fallback };
+
+  if (shell) {
+    const index = found.get("/index.html");
+    if (index) return { path: "/index.html", sha256: index, status: 200 };
+  }
 
   return undefined;
 }

@@ -24,7 +24,7 @@ interface VersionOpts {
 }
 
 /** A harness with one host and, optionally, some deployed versions. */
-async function setup(opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: string } = {}) {
+async function setup(opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: string; spa?: boolean } = {}) {
   const harness = await createHarness();
   harnesses.push(harness);
 
@@ -37,6 +37,7 @@ async function setup(opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: 
       identifier: "",
       pinned_event_id: opts.pin ?? null,
       enabled: opts.enabled === false ? 0 : 1,
+      spa: opts.spa ? 1 : 0,
       created_by: PUBKEY,
       created_at: 1,
       updated_at: 1,
@@ -341,6 +342,59 @@ test("returns a plain 404 when the site has no 404 page", async () => {
   });
 
   const response = await harness.site("docs.example.com", "/missing.html");
+  assert.equal(response.status, 404);
+  assert.match(await response.text(), /Not found/);
+});
+
+test("an SPA host serves its shell for a path the site has no file for", async () => {
+  const { harness } = await setup({
+    spa: true,
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "shell" } }],
+  });
+
+  for (const path of ["/about", "/users/alex", "/about.html"]) {
+    const response = await harness.site("docs.example.com", path);
+    assert.equal(response.status, 200, path);
+    assert.equal(await response.text(), "shell");
+  }
+});
+
+test("an SPA host prefers the shell the site published as 404.html", async () => {
+  const { harness } = await setup({
+    spa: true,
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "index", "/404.html": "shell" } }],
+  });
+
+  const deep = await harness.site("docs.example.com", "/about");
+  assert.equal(deep.status, 200);
+  assert.equal(await deep.text(), "shell");
+
+  // The root is still a real file, not a fallback.
+  const root = await harness.site("docs.example.com", "/");
+  assert.equal(root.status, 200);
+  assert.equal(await root.text(), "index");
+});
+
+test("an SPA host still 404s a missing asset", async () => {
+  const { harness } = await setup({
+    spa: true,
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "shell", "/404.html": "shell" } }],
+  });
+
+  // Answering these with the shell and a 200 would replace a missing file with
+  // a syntax error in the browser.
+  for (const path of ["/assets/app.js", "/assets/app.css", "/logo.png"]) {
+    const response = await harness.site("docs.example.com", path);
+    assert.equal(response.status, 404, path);
+  }
+});
+
+test("a host without the SPA flag 404s a deep link", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "shell" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/about");
   assert.equal(response.status, 404);
   assert.match(await response.text(), /Not found/);
 });

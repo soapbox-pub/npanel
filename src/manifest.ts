@@ -1,4 +1,4 @@
-import { extname, join } from "node:path/posix";
+import { join } from "node:path/posix";
 import type { NostrEvent } from "@nostrify/nostrify";
 import { NAMED_SITE_KIND, type NsiteAddress, ROOT_SITE_KIND, SITE_KINDS } from "./nsite-address.ts";
 
@@ -35,38 +35,6 @@ export function getManifestPaths(event: NostrEvent): Map<string, string> {
   }
 
   return paths;
-}
-
-export interface ManifestPathMatch {
-  path: string;
-  sha256: string;
-  /** True when the request fell through to the site's `/404.html`. */
-  is404: boolean;
-}
-
-/**
- * Resolve a request path against a manifest's file map: exact match first,
- * then `index.html` for extensionless paths, then the site's `/404.html`.
- */
-export function resolveManifestPath(
-  paths: ReadonlyMap<string, string>,
-  requestPath: string,
-): ManifestPathMatch | undefined {
-  const normalized = join("/", decodePath(requestPath));
-
-  const exact = paths.get(normalized);
-  if (exact) return { path: normalized, sha256: exact, is404: false };
-
-  if (extname(normalized) === "") {
-    const indexPath = join(normalized, "index.html");
-    const index = paths.get(indexPath);
-    if (index) return { path: indexPath, sha256: index, is404: false };
-  }
-
-  const notFound = paths.get("/404.html");
-  if (notFound) return { path: "/404.html", sha256: notFound, is404: true };
-
-  return undefined;
 }
 
 /** Relay hints embedded in a manifest. */
@@ -119,15 +87,6 @@ export function parseServerList(event: NostrEvent): string[] {
 
 function getTagValue(event: NostrEvent, name: string): string | undefined {
   return event.tags.find((tag) => tag[0] === name)?.[1];
-}
-
-/** Percent-decode a request path, tolerating malformed escapes. */
-function decodePath(path: string): string {
-  try {
-    return decodeURIComponent(path);
-  } catch {
-    return path;
-  }
 }
 
 export { NAMED_SITE_KIND, ROOT_SITE_KIND };

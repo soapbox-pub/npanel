@@ -9,7 +9,6 @@ import {
   manifestAddress,
   parseRelayList,
   parseServerList,
-  resolveManifestPath,
 } from "./manifest.ts";
 import { NAMED_SITE_KIND, ROOT_SITE_KIND } from "./nsite-address.ts";
 
@@ -69,51 +68,6 @@ test("builds the path map, normalizing paths and skipping bad hashes", () => {
   assert.equal(paths.has("/missing-hash.html"), false);
   assert.equal(paths.has("/ignored.html"), false);
   assert.equal(paths.size, 2);
-});
-
-test("resolves exact paths, index fallbacks, and 404s", () => {
-  const paths = new Map([
-    ["/index.html", HASH_A],
-    ["/blog/index.html", HASH_B],
-    ["/404.html", HASH_C],
-  ]);
-
-  assert.deepEqual(resolveManifestPath(paths, "/index.html"), {
-    path: "/index.html",
-    sha256: HASH_A,
-    is404: false,
-  });
-  assert.deepEqual(resolveManifestPath(paths, "/"), {
-    path: "/index.html",
-    sha256: HASH_A,
-    is404: false,
-  });
-  assert.deepEqual(resolveManifestPath(paths, "/blog"), {
-    path: "/blog/index.html",
-    sha256: HASH_B,
-    is404: false,
-  });
-  assert.deepEqual(resolveManifestPath(paths, "/nope.html"), {
-    path: "/404.html",
-    sha256: HASH_C,
-    is404: true,
-  });
-});
-
-test("resolution normalizes traversal and percent-encoding", () => {
-  const paths = new Map([
-    ["/index.html", HASH_A],
-    ["/my file.txt", HASH_B],
-  ]);
-
-  assert.equal(resolveManifestPath(paths, "/../../index.html")?.sha256, HASH_A);
-  assert.equal(resolveManifestPath(paths, "/blog/../index.html")?.sha256, HASH_A);
-  assert.equal(resolveManifestPath(paths, "/my%20file.txt")?.sha256, HASH_B);
-  assert.equal(resolveManifestPath(paths, "/bad%zz"), undefined);
-});
-
-test("returns undefined when there is no match and no 404 page", () => {
-  assert.equal(resolveManifestPath(new Map([["/index.html", HASH_A]]), "/nope.html"), undefined);
 });
 
 test("reads relay and server hints", () => {

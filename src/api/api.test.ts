@@ -430,6 +430,30 @@ test("www redirects unless the request says otherwise", async () => {
   assert.equal((await sub.json()).host.redirect_www, true);
 });
 
+test("the SPA flag is off unless asked for", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+  assert.equal(host.spa, false, "turning a 404 into a 200 is nobody's default");
+
+  const on = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { spa: true });
+  assert.equal((await on.json()).host.spa, true);
+
+  const off = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { spa: false });
+  assert.equal((await off.json()).host.spa, false);
+
+  const upfront = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "app.example.com",
+    address: NPUB,
+    spa: true,
+  });
+  assert.equal((await upfront.json()).host.spa, true);
+});
+
 test("a listed site describes itself with its own page metadata", async () => {
   const { harness, admin } = await setup();
 

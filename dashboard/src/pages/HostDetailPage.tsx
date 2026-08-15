@@ -235,6 +235,31 @@ export function HostDetailPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Routing</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.spa}
+                  onCheckedChange={(spa) =>
+                    patch(
+                      { spa },
+                      spa ? 'Serving as a single-page app' : 'Serving as a static site',
+                    )
+                  }
+                />
+                Single-page app
+              </label>
+              <p className="text-sm text-muted-foreground">
+                {data.spa
+                  ? "A path this site has no file for serves its shell — 404.html, or index.html — with a 200, so the app's own router decides what the page is. Missing images, scripts and stylesheets still return 404."
+                  : 'A path this site has no file for returns 404, showing its own 404.html if it published one. Turn this on for a site that routes in the browser, or its deep links will be 404s.'}
+              </p>
+            </CardContent>
+          </Card>
+
           <Card className="border-destructive/40">
             <CardHeader>
               <CardTitle className="text-base text-destructive">Danger zone</CardTitle>

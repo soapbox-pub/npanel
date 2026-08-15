@@ -49,6 +49,8 @@ export interface HostsTable {
   hidden: Generated<number>;
   /** 0/1. Send `www.<hostname>` here instead, when `hostname` is a root domain. */
   redirect_www: Generated<number>;
+  /** 0/1. Serve the site's shell with a 200 for paths it has no file for. */
+  spa: Generated<number>;
   created_by: string;
   created_at: number;
   updated_at: number;

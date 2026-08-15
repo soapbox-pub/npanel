@@ -115,6 +115,14 @@ const MIGRATIONS: Migration[] = [
     name: "004_hosts_redirect_www",
     statements: ["ALTER TABLE hosts ADD COLUMN redirect_www INTEGER NOT NULL DEFAULT 1"],
   },
+  {
+    // Off for existing hosts, and for new ones. Unlike the www redirect, which
+    // preserves what a response means, this changes a "you asked for something
+    // that isn't here" into a "here you go" — not something to hand a site
+    // whose owner never asked for it.
+    name: "005_hosts_spa",
+    statements: ["ALTER TABLE hosts ADD COLUMN spa INTEGER NOT NULL DEFAULT 0"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */
