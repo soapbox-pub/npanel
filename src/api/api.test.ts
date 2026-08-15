@@ -80,7 +80,7 @@ test("rejects bad hostnames, bad addresses, and duplicates", async () => {
     address: NPUB,
   });
   assert.equal(badHost.status, 400);
-  assert.match((await badHost.json()).error, /valid hostname/);
+  assert.match((await badHost.json()).error, /valid domain/);
 
   const badAddress = await harness.request(admin, "POST", "/api/hosts", {
     hostname: "docs.example.com",
@@ -327,6 +327,93 @@ test("instance is public, and names whoever runs it", async () => {
   const after = await harness.request(undefined, "GET", "/api/instance");
   assert.equal(after.status, 200);
   assert.equal((await after.json()).contact_npub, NPUB);
+});
+
+test("lists no sites publicly until an admin says so", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  const closed = await harness.request(undefined, "GET", "/api/sites");
+  assert.equal(closed.status, 200);
+  assert.deepEqual(await closed.json(), { sites: [] });
+
+  await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
+
+  const open = await harness.request(undefined, "GET", "/api/sites");
+  assert.deepEqual((await open.json()).sites, [{ hostname: "docs.example.com" }]);
+});
+
+test("the public list leaves out hidden and disabled sites", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
+
+  const secret = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "secret.example.com",
+    address: NPUB,
+    hidden: true,
+  });
+  assert.equal((await secret.json()).host.hidden, true);
+
+  const off = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "off.example.com",
+    address: NPUB,
+  });
+  await harness.request(admin, "PATCH", `/api/hosts/${(await off.json()).host.id}`, { enabled: false });
+
+  const shown = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await shown.json()).host;
+  assert.equal(host.hidden, false);
+
+  const sites = await harness.request(undefined, "GET", "/api/sites");
+  assert.deepEqual((await sites.json()).sites, [{ hostname: "docs.example.com" }]);
+
+  // Hiding a site takes it off the list without taking it offline.
+  await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { hidden: true });
+  assert.deepEqual((await (await harness.request(undefined, "GET", "/api/sites")).json()).sites, []);
+});
+
+test("staff are told what else the gateway serves, once the list is public", async () => {
+  const { harness, admin, staff } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "elsewhere.example.com",
+    address: NPUB,
+  });
+  const other = (await created.json()).host;
+
+  const mine = await harness.request(staff, "POST", "/api/hosts", {
+    hostname: "mine.example.com",
+    address: NPUB,
+  });
+  assert.equal(mine.status, 201);
+
+  const closed = await harness.request(staff, "GET", "/api/hosts");
+  const before = await closed.json();
+  assert.deepEqual(
+    before.hosts.map((host: { hostname: string }) => host.hostname),
+    ["mine.example.com"],
+  );
+  assert.deepEqual(before.other_sites, []);
+
+  await harness.request(admin, "PUT", "/api/settings", { public_site_list: true });
+
+  const open = await (await harness.request(staff, "GET", "/api/hosts")).json();
+  // Only the site they can't manage: their own is already in `hosts`.
+  assert.deepEqual(open.other_sites, [{ hostname: "elsewhere.example.com" }]);
+  assert.equal(open.hosts.length, 1);
+
+  // Naming a site is not access to it.
+  assert.equal((await harness.request(staff, "GET", `/api/hosts/${other.id}`)).status, 403);
+
+  await harness.request(admin, "PATCH", `/api/hosts/${other.id}`, { hidden: true });
+
+  const hidden = await (await harness.request(staff, "GET", "/api/hosts")).json();
+  assert.deepEqual(hidden.other_sites, []);
 });
 
 test("tls-check answers for configured hosts only", async () => {

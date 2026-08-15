@@ -1,6 +1,6 @@
 import { formatNsiteAddress, ROOT_SITE_KIND } from '@shared/nsite-address';
 import { useSeoMeta } from '@unhead/react';
-import { Lock } from 'lucide-react';
+import { ExternalLink, Lock } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthor } from '@/hooks/useAuthor';
-import { useInstance } from '@/hooks/useNpanel';
+import { useInstance, usePublicSites } from '@/hooks/useNpanel';
 import { decodePubkey, shorten } from '@/lib/format';
 import { profileUrl, SOURCE_URL } from '@/lib/links';
 import { cn } from '@/lib/utils';
@@ -44,7 +44,7 @@ const DEFAULT_DOMAIN = 'docs.example.com';
  * admit that it is *an* instance and say who runs it, walk through what the
  * software actually does, and point at the source so they can run their own.
  * It demonstrates rather than describes — the walkthrough is the real UI, and
- * the hostname in it is theirs to change.
+ * the domain in it is theirs to change.
  */
 export function HomePage() {
   useSeoMeta({
@@ -60,6 +60,7 @@ export function HomePage() {
     <main className="grid-canvas flex-1">
       <div className="mx-auto max-w-5xl space-y-12 px-4 py-8 md:px-8 md:py-12">
         <InstanceBanner />
+        <ServedSites />
         <Walkthrough domain={domain} hostname={hostname} onHostname={setHostname} />
         <SelfHost />
       </div>
@@ -133,6 +134,43 @@ function Operator({ npub }: { npub: string }) {
         </span>
       </span>
     </a>
+  );
+}
+
+/**
+ * The sites this gateway serves, when its admins have chosen to say.
+ *
+ * Renders nothing at all otherwise — an empty "no sites listed" panel would
+ * only advertise that there is something being kept quiet, and a gateway that
+ * doesn't publish its list should look exactly like one with nothing on it.
+ */
+function ServedSites() {
+  const sites = usePublicSites();
+
+  if (!sites.data?.length) return null;
+
+  return (
+    <Card className="gap-0 overflow-hidden py-0">
+      <div className="flex items-center justify-between gap-3 border-b bg-muted/50 px-6 py-2.5">
+        <h2 className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
+          Served from here
+        </h2>
+        <span className="font-mono text-xs text-muted-foreground">{sites.data.length}</span>
+      </div>
+      <ul className="grid gap-2 px-6 py-4 sm:grid-cols-2 lg:grid-cols-3">
+        {sites.data.map((site) => (
+          <li key={site.hostname} className="flex min-w-0 items-center gap-1.5">
+            <a
+              href={`https://${site.hostname}`}
+              className="truncate font-mono text-sm hover:text-primary hover:underline"
+            >
+              {site.hostname}
+            </a>
+            <ExternalLink className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 
@@ -229,7 +267,7 @@ function Terminal() {
       </div>
       <p className="text-xs text-muted-foreground">
         Any nsite publishing tool does this. The site now exists on Nostr, addressed by its author's
-        key — no server, no hostname, nothing to point at yet.
+        key — no server, no domain, nothing to point at yet.
       </p>
     </div>
   );
@@ -277,7 +315,7 @@ function Mapping({ hostname, onHostname }: { hostname: string; onHostname(value:
     <div className="space-y-3">
       <div className="space-y-1.5">
         <Label htmlFor="demo-hostname" className="text-xs">
-          Hostname
+          Domain
         </Label>
         <Input
           id="demo-hostname"
@@ -296,7 +334,7 @@ function Mapping({ hostname, onHostname }: { hostname: string; onHostname(value:
 
       <div className="space-y-1.5">
         <Label htmlFor="demo-site" className="text-xs">
-          Site
+          nsite
         </Label>
         <Input id="demo-site" value={EXAMPLE_NPUB} readOnly className="font-mono text-sm" />
 
@@ -306,7 +344,7 @@ function Mapping({ hostname, onHostname }: { hostname: string; onHostname(value:
             <span className="min-w-0 truncate font-mono">{shorten(EXAMPLE_NPUB)}</span>
           </div>
           <div className="flex gap-2">
-            <span className="w-12 shrink-0 text-muted-foreground">Site</span>
+            <span className="w-12 shrink-0 text-muted-foreground">nsite</span>
             <span>Root site</span>
           </div>
           <p className="break-all font-mono text-[11px] text-muted-foreground">{EXAMPLE_ADDRESS}</p>
@@ -315,7 +353,7 @@ function Mapping({ hostname, onHostname }: { hostname: string; onHostname(value:
 
       {/* A picture of the button, not the button: there is nothing to submit. */}
       <div aria-hidden className={cn(buttonVariants(), 'pointer-events-none w-full')}>
-        Add hostname
+        Add site
       </div>
     </div>
   );

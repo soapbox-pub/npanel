@@ -10,8 +10,8 @@ is `413`, refused before the signature is checked.
 
 ## Authentication
 
-Every route except `/api/tls-check` and `/api/instance` requires
-[NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
+Every route except `/api/tls-check`, `/api/instance`, and `/api/sites`
+requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
 kind `27235` event and send it base64-encoded:
 
 ```
@@ -76,6 +76,20 @@ whoever landed on it and names the person running this copy.
 npub is published to be shown, and the hostname is the one the caller used to
 reach this route.
 
+### `GET /api/sites`
+
+Unauthenticated. The sites this gateway will admit to serving, for the
+logged-out homepage.
+
+```json
+{ "sites": [{ "hostname": "example.org" }] }
+```
+
+`sites` is empty unless an admin turned
+[`public_site_list`](configuration.md#public_site_list) on, and never includes a
+host that is disabled or marked `hidden`. Names only — nothing about which nsite
+a site points at, or who runs it.
+
 ## Session
 
 ### `GET /api/me`
@@ -121,6 +135,7 @@ A host object:
   "address": "35128:<hex>:docs",
   "naddr": "naddr1...",
   "enabled": true,
+  "hidden": false,
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -151,12 +166,19 @@ flight or after one fails.
 
 ### `GET /api/hosts`
 
-`{ "hosts": [...] }`, ordered by hostname. Staff see only their granted hosts.
+```json
+{ "hosts": [...], "other_sites": [{ "hostname": "example.org" }] }
+```
+
+`hosts` is ordered by hostname; staff see only the hosts granted to them.
+`other_sites` names what else the gateway serves, on exactly the terms
+`/api/sites` does — so it is empty when `public_site_list` is off, and always
+empty for an admin, whose `hosts` already holds everything.
 
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1..." }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -182,6 +204,7 @@ Any subset of:
   "hostname": "new.example.org",
   "address": "naddr1...",
   "enabled": false,
+  "hidden": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -191,6 +214,10 @@ Set `pinned_event_id` to an event id to freeze the host on that version, or
 different site is `400`; pinning one that isn't fully downloaded is `409`.
 
 Changing `address` clears any pin, since it belonged to the old site.
+
+`hidden` keeps the site out of `/api/sites` and out of other users'
+`other_sites`. It changes nothing about serving it: an unlisted site answers
+requests exactly as before.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`.
@@ -326,7 +353,8 @@ back in if it ever happens anyway.)
     "allowed_host_suffixes": [],
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600,
-    "contact_npub": ""
+    "contact_npub": "",
+    "public_site_list": false
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

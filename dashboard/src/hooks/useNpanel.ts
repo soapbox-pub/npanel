@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { fetchInstance } from '@/lib/api';
+import { fetchInstance, fetchSites } from '@/lib/api';
 import type { Settings } from '@/lib/api-types';
 
 /** Poll while a deploy could be in progress, so progress bars actually move. */
@@ -66,9 +66,20 @@ export function useHosts() {
 
   return useQuery({
     queryKey: useKey('hosts'),
-    queryFn: async () => (await api!.hosts()).hosts,
+    queryFn: () => api!.hosts(),
     enabled: !!api,
     refetchInterval: LIVE_INTERVAL,
+  });
+}
+
+/**
+ * The sites this gateway will admit to serving. Unauthenticated, like
+ * {@link useInstance}, because the homepage asks before anyone signs in.
+ */
+export function usePublicSites() {
+  return useQuery({
+    queryKey: ['npanel', 'sites'],
+    queryFn: async () => (await fetchSites()).sites,
   });
 }
 
@@ -165,7 +176,7 @@ export function useCreateHost() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (input: { hostname: string; address: string }) => api!.createHost(input),
+    mutationFn: (input: { hostname: string; address: string; hidden?: boolean }) => api!.createHost(input),
     onSuccess: invalidate,
   });
 }
@@ -180,6 +191,7 @@ export function useUpdateHost() {
       hostname?: string;
       address?: string;
       enabled?: boolean;
+      hidden?: boolean;
       pinned_event_id?: string | null;
     }) => {
       const { id, ...patch } = input;

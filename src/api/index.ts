@@ -5,7 +5,7 @@ import { nip19 } from "nostr-tools";
 import { type AuthUser, nip98Auth, requireAdmin } from "../auth.ts";
 import { RateLimiter } from "../rate-limit.ts";
 import { DEFAULT_SETTINGS, SETTING_KEYS, type SettingKey } from "../settings.ts";
-import { type ApiDeps, type ApiEnv, audit } from "./context.ts";
+import { type ApiDeps, type ApiEnv, audit, listedSites } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
 import { userRoutes } from "./users.ts";
 
@@ -20,8 +20,8 @@ const HOUR = 60 * 60 * 1000;
 /**
  * The dashboard's JSON API.
  *
- * Every route except `/api/tls-check` and `/api/instance` requires NIP-98 auth
- * from a pubkey that exists in the `users` table.
+ * Every route except `/api/tls-check`, `/api/instance` and `/api/sites`
+ * requires NIP-98 auth from a pubkey that exists in the `users` table.
  */
 export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   const { db, settings, log } = deps;
@@ -119,6 +119,17 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
       contact_npub: contact || null,
       dashboard_host: deps.dashboardHost,
     });
+  });
+
+  /**
+   * The sites this gateway serves, for the logged-out homepage.
+   *
+   * Unauthenticated, and empty unless an admin turned `public_site_list` on:
+   * a gateway that lists nothing is indistinguishable from one that serves
+   * nothing, which is the point of the setting being off by default.
+   */
+  app.get("/sites", async (c) => {
+    return c.json({ sites: await listedSites(db, settings) });
   });
 
   app.use(

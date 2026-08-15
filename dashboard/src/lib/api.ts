@@ -9,6 +9,7 @@ import type {
   Instance,
   Me,
   NpanelUser,
+  PublicSite,
   ServerStatus,
   Settings,
   SiteFile,
@@ -84,7 +85,8 @@ export class ApiClient {
     return this.request('GET', '/api/dns');
   }
 
-  hosts(): Promise<{ hosts: Host[] }> {
+  /** Sites this user manages, plus the ones they may only be told the name of. */
+  hosts(): Promise<{ hosts: Host[]; other_sites: PublicSite[] }> {
     return this.request('GET', '/api/hosts');
   }
 
@@ -92,7 +94,7 @@ export class ApiClient {
     return this.request('GET', `/api/hosts/${id}`);
   }
 
-  createHost(input: { hostname: string; address: string }): Promise<{ host: Host }> {
+  createHost(input: { hostname: string; address: string; hidden?: boolean }): Promise<{ host: Host }> {
     return this.request('POST', '/api/hosts', input);
   }
 
@@ -102,6 +104,7 @@ export class ApiClient {
       hostname?: string;
       address?: string;
       enabled?: boolean;
+      hidden?: boolean;
       pinned_event_id?: string | null;
     },
   ): Promise<{ host: Host }> {
@@ -186,6 +189,22 @@ export async function fetchInstance(): Promise<Instance> {
   }
 
   return (await response.json()) as Instance;
+}
+
+/**
+ * The sites this gateway serves, as far as a stranger is allowed to know.
+ *
+ * Empty unless an admin turned the public list on, so the homepage can call it
+ * unconditionally and simply render nothing.
+ */
+export async function fetchSites(): Promise<{ sites: PublicSite[] }> {
+  const response = await fetch(new URL('/api/sites', window.location.origin));
+
+  if (!response.ok) {
+    throw new ApiError(await errorMessage(response), response.status);
+  }
+
+  return (await response.json()) as { sites: PublicSite[] };
 }
 
 async function errorMessage(response: Response): Promise<string> {

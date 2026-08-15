@@ -23,6 +23,8 @@ export interface Host {
   address: string;
   naddr: string;
   enabled: boolean;
+  /** Kept off the public list, and out of sight of staff without access. */
+  hidden: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -82,6 +84,12 @@ export interface Settings {
   tls_check_limit_per_host: number;
   tls_check_limit_total: number;
   contact_npub: string;
+  public_site_list: boolean;
+}
+
+/** A site as it appears to someone who can't manage it. */
+export interface PublicSite {
+  hostname: string;
 }
 
 /** What the logged-out homepage knows about the server it's running on. */

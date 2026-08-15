@@ -12,7 +12,7 @@ export function ServerInfo() {
 
   const rows: [string, string][] = status.data
     ? [
-        ['Hostnames', String(status.data.hosts)],
+        ['Sites', String(status.data.hosts)],
         ['Deployed', String(status.data.ready_versions)],
         ['Blobs', String(status.data.blobs)],
         ['On disk', formatBytes(status.data.blob_bytes)],

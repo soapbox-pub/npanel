@@ -51,7 +51,7 @@ export function createSiteServer(deps: SiteServerDeps) {
 
     if (!host || host.enabled !== 1) {
       log.debug("site_unknown_host", { hostname });
-      return text(404, "This hostname is not configured.");
+      return text(404, "This domain is not configured.");
     }
 
     const version = await activeEvent(db, host);

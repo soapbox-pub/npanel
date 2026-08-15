@@ -45,6 +45,8 @@ export interface HostsTable {
   /** Event id to serve, or null to always serve the newest ready version. */
   pinned_event_id: string | null;
   enabled: number;
+  /** 0/1. Kept out of the public list, and out of sight of staff without a grant. */
+  hidden: Generated<number>;
   created_by: string;
   created_at: number;
   updated_at: number;

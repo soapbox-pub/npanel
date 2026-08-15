@@ -19,7 +19,7 @@ interface AddressInputProps {
  * nprofile, naddr, an `a` tag, an nsite subdomain label, or a full nsite URL —
  * showing the single canonical form that will be stored.
  */
-export function AddressInput({ value, onChange, parsed, label = 'Site', id = 'address' }: AddressInputProps) {
+export function AddressInput({ value, onChange, parsed, label = 'nsite', id = 'address' }: AddressInputProps) {
   return (
     <div className="space-y-2">
       <Label htmlFor={id}>{label}</Label>
@@ -41,7 +41,7 @@ export function AddressInput({ value, onChange, parsed, label = 'Site', id = 'ad
             <PubkeyLabel pubkey={parsed.address.pubkey} />
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Site</span>
+            <span className="text-muted-foreground">nsite</span>
             <span>
               {parsed.address.kind === NAMED_SITE_KIND
                 ? `Named site "${parsed.address.identifier}"`

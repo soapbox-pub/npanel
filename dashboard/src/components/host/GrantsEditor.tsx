@@ -9,9 +9,9 @@ import { useGrants, useSetGrants, useUsers } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 
 /**
- * Who may manage this hostname.
+ * Who may manage this site.
  *
- * Admins always have access; staff see only the hostnames granted to them, so
+ * Admins always have access; staff see only the sites granted to them, so
  * this list is what makes a staff account useful.
  */
 export function GrantsEditor({ hostId }: { hostId: number }) {
@@ -77,7 +77,7 @@ export function GrantsEditor({ hostId }: { hostId: number }) {
 
       {!!admins.length && (
         <p className="text-xs text-muted-foreground">
-          Admins ({admins.length}) can manage every hostname and are not listed here.
+          Admins ({admins.length}) can manage every site and are not listed here.
         </p>
       )}
 

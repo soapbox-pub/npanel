@@ -29,7 +29,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 
-/** Everything about one hostname: what it points at, its versions, its access. */
+/** Everything about one site: what it points at, its versions, its access. */
 export function HostDetailPage() {
   const params = useParams();
   const hostId = Number(params.id);
@@ -54,7 +54,7 @@ export function HostDetailPage() {
       <div className="space-y-4">
         <BackLink />
         <p className="text-sm text-destructive">
-          {host.error instanceof Error ? host.error.message : 'Host not found.'}
+          {host.error instanceof Error ? host.error.message : 'Site not found.'}
         </p>
       </div>
     );
@@ -182,6 +182,30 @@ export function HostDetailPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Visibility</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <label className="flex items-center gap-3 text-sm">
+            <Switch
+              checked={data.hidden}
+              onCheckedChange={(hidden) =>
+                run(
+                  () => updateHost.mutateAsync({ id: data.id, hidden }),
+                  hidden ? 'Site is now unlisted' : 'Site is now listed',
+                )
+              }
+            />
+            {data.hidden ? 'Unlisted' : 'Listed'}
+          </label>
+          <p className="text-sm text-muted-foreground">
+            An unlisted site is left out of the list on the homepage, and out of sight of staff who
+            can't manage it. It changes nothing about who can visit the site itself.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle className="text-base">Danger zone</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center justify-between gap-4">
@@ -191,7 +215,7 @@ export function HostDetailPage() {
               onCheckedChange={(enabled) =>
                 run(
                   () => updateHost.mutateAsync({ id: data.id, enabled }),
-                  enabled ? 'Hostname enabled' : 'Hostname disabled',
+                  enabled ? 'Site enabled' : 'Site disabled',
                 )
               }
             />
@@ -201,14 +225,14 @@ export function HostDetailPage() {
           <AlertDialog>
             <AlertDialogTrigger asChild>
               <Button variant="destructive" size="sm">
-                Delete hostname
+                Delete site
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete {data.hostname}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  The hostname stops being served. Downloaded files stay on disk until you prune them.
+                  The site stops being served. Downloaded files stay on disk until you prune them.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -218,7 +242,7 @@ export function HostDetailPage() {
                     run(async () => {
                       await deleteHost.mutateAsync(data.id);
                       navigate('/');
-                    }, 'Hostname deleted')
+                    }, 'Site deleted')
                   }
                 >
                   Delete
@@ -236,7 +260,7 @@ function BackLink() {
   return (
     <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
       <ArrowLeft className="h-4 w-4" />
-      All hostnames
+      All sites
     </Link>
   );
 }

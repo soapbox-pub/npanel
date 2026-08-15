@@ -45,7 +45,7 @@ export function UsersPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
         <p className="text-sm text-muted-foreground">
-          Admins manage everything. Staff only see the hostnames granted to them.
+          Admins manage everything. Staff only see the sites granted to them.
         </p>
       </div>
 
@@ -98,7 +98,7 @@ export function UsersPage() {
                 <TableHead>User</TableHead>
                 <TableHead>npub</TableHead>
                 <TableHead>Role</TableHead>
-                <TableHead>Hostnames</TableHead>
+                <TableHead>Sites</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>

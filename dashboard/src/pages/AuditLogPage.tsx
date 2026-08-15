@@ -18,7 +18,7 @@ export function AuditLogPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Audit log</h1>
         <p className="text-sm text-muted-foreground">
-          Settings, user, and hostname changes, with who made them.
+          Settings, user, and site changes, with who made them.
         </p>
       </div>
 

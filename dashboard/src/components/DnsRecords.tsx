@@ -8,9 +8,9 @@ import { useToast } from '@/hooks/useToast';
 import type { DnsRecord } from '@/lib/api-types';
 
 /**
- * The DNS records a hostname needs before this gateway can answer for it.
+ * The DNS records a domain needs before this gateway can answer for it.
  *
- * Shown while staff are typing the hostname, because that is the one step
+ * Shown while staff are typing the domain, because that is the one step
  * npanel cannot do for them — and the one that silently breaks everything
  * downstream, from certificates to the site itself, when it's skipped.
  */
@@ -29,7 +29,7 @@ export function DnsRecords({ hostname }: { hostname: string }) {
         <>
           <p className="text-xs text-muted-foreground">
             Create {records.length > 1 ? 'these records' : 'this record'} for{' '}
-            <span className="font-medium text-foreground">{name || 'the hostname'}</span> at your DNS
+            <span className="font-medium text-foreground">{name || 'the domain'}</span> at your DNS
             provider:
           </p>
 
@@ -47,7 +47,7 @@ export function DnsRecords({ hostname }: { hostname: string }) {
         </>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Point the hostname at this server before it can be served. npanel couldn't work out its own
+          Point the domain at this server before it can be served. npanel couldn't work out its own
           address — {dashboard_host} doesn't resolve from here — so an admin needs to set the DNS target
           under Settings.
         </p>

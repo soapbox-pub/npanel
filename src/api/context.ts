@@ -35,6 +35,34 @@ export async function canAccessHost(db: Kysely<Database>, user: AuthUser, hostId
   return grant !== undefined;
 }
 
+/** A site as everyone else sees it: a name, and nothing about who runs it. */
+export interface SiteView {
+  hostname: string;
+}
+
+/**
+ * The sites npanel will name to someone who can't manage them — a stranger on
+ * the homepage, or a staff user without a grant.
+ *
+ * Empty unless an admin turned `public_site_list` on, since which sites a
+ * gateway serves is often the private part of a private deployment. A disabled
+ * host is left out because it answers 404, and a hidden one because that is
+ * what the flag is for.
+ */
+export async function listedSites(db: Kysely<Database>, settings: SettingsService): Promise<SiteView[]> {
+  if (!settings.get("public_site_list")) return [];
+
+  const rows = await db
+    .selectFrom("hosts")
+    .select("hostname")
+    .where("enabled", "=", 1)
+    .where("hidden", "=", 0)
+    .orderBy("hostname")
+    .execute();
+
+  return rows.map((row) => ({ hostname: row.hostname }));
+}
+
 /** Record an administrative change. */
 export async function audit(
   db: Kysely<Database>,
@@ -66,6 +94,8 @@ export interface HostView {
   address: string;
   naddr: string;
   enabled: boolean;
+  /** Kept out of the public list and away from staff without a grant. */
+  hidden: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -101,6 +131,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     address: formatNsiteAddress(address),
     naddr: encodeNaddr(address),
     enabled: host.enabled === 1,
+    hidden: host.hidden === 1,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
     created_at: host.created_at,

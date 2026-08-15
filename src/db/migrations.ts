@@ -101,6 +101,12 @@ const MIGRATIONS: Migration[] = [
     name: "002_drop_allow_private_blob_servers",
     statements: ["DELETE FROM settings WHERE key = 'allow_private_blob_servers'"],
   },
+  {
+    // Existing hosts are listed like any other: the list itself is off until an
+    // admin turns it on, so nothing becomes public by upgrading.
+    name: "003_hosts_hidden",
+    statements: ["ALTER TABLE hosts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

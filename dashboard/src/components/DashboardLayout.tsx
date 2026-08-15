@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils';
 import { HomePage } from '@/pages/HomePage';
 
 const NAV = [
-  { to: '/', label: 'Hostnames', icon: Globe, adminOnly: false, end: true },
+  { to: '/', label: 'Sites', icon: Globe, adminOnly: false, end: true },
   { to: '/users', label: 'Users', icon: Users, adminOnly: true, end: false },
   { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true, end: false },
   { to: '/audit', label: 'Audit log', icon: ScrollText, adminOnly: true, end: false },

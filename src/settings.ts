@@ -58,6 +58,15 @@ export interface SettingsValues {
    * else's gateway needs a way to tell whose it is.
    */
   contact_npub: string;
+  /**
+   * Whether the sites this gateway serves are listed on the homepage, and to
+   * staff who can't manage them.
+   *
+   * Off by default: which sites a gateway serves is often the interesting part
+   * of a private deployment. A site can opt out of the list on its own with its
+   * `hidden` flag.
+   */
+  public_site_list: boolean;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -120,7 +129,7 @@ const dnsTarget = z
 
     const hostname = normalizeHostname(value);
     if (!isHostname(hostname)) {
-      ctx.addIssue({ code: "custom", message: `Not an IP address or hostname: ${value}` });
+      ctx.addIssue({ code: "custom", message: `Not an IP address or domain: ${value}` });
       return z.NEVER;
     }
     return hostname;
@@ -186,12 +195,13 @@ const SCHEMAS = {
     .array(dnsTarget)
     .max(8)
     .refine((targets) => targets.length < 2 || targets.every((target) => isIP(target)), {
-      message: "A hostname target becomes a CNAME, which must be the only record. Use IP addresses to list several.",
+      message: "A domain target becomes a CNAME, which must be the only record. Use IP addresses to list several.",
     }),
   allowed_host_suffixes: z.array(hostSuffix),
   tls_check_limit_per_host: z.number().int().min(1).max(10_000),
   tls_check_limit_total: z.number().int().min(1).max(100_000),
   contact_npub: contactNpub,
+  public_site_list: z.boolean(),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -209,6 +219,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   tls_check_limit_per_host: 60,
   tls_check_limit_total: 600,
   contact_npub: "",
+  public_site_list: false,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

@@ -22,7 +22,7 @@ export function VersionList({ hostId }: { hostId: number }) {
       toast({
         title: eventId ? 'Rolled back' : 'Following the latest version',
         description: eventId
-          ? 'This hostname now serves the pinned version.'
+          ? 'This site now serves the pinned version.'
           : 'New deploys will go live automatically again.',
       });
     } catch (error) {

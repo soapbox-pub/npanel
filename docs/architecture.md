@@ -148,7 +148,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled flag   |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
@@ -211,6 +211,12 @@ A valid signature proves identity, not authorization. npanel is not
 permissionless, so a pubkey with no row in `users` gets `403`. Admins see and
 change everything; staff see only the hosts they've been granted, and only
 admins manage users, grants, settings, and the audit log.
+
+What a host is *named* is a weaker secret than what it holds, so it is governed
+separately. With `public_site_list` on, npanel will list its hostnames — to
+anyone at `/api/sites`, and to staff alongside the hosts they manage — while
+everything else about a host still needs a grant. The setting is off by default,
+and a host marked `hidden` is left out of both regardless.
 
 Two things happen before any of that. Request bodies are capped at 1 MB — the
 `payload` check hashes the body, which means reading it before knowing who is

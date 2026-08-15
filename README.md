@@ -4,17 +4,17 @@ A self-hostable gateway for
 [static websites published on Nostr](https://github.com/nostr-protocol/nips/blob/master/5A.md)
 (the nsite protocol), with a team dashboard.
 
-Point your domains' A/AAAA records at one box, then map hostnames to nsites from
+Point your domains' A/AAAA records at one box, then map domains to nsites from
 a web UI that works like a DNS editor. npanel downloads each site's files from
 Blossom servers, stores them locally, and serves them — so a site stays up even
 when the relays and Blossom servers it came from are down.
 
-- **Permissioned.** Only people you add can log in. Staff see only the hostnames
+- **Permissioned.** Only people you add can log in. Staff see only the sites
   they've been granted; admins see everything.
 - **Nostr-native login.** NIP-98 HTTP auth with a browser extension. No passwords.
 - **Versioned.** Every site event is kept as a version you can inspect, pin, or
   roll back to, with a per-version deploy log that explains failures.
-- **Auditable.** Every change to a host, user, or setting is recorded.
+- **Auditable.** Every change to a site, user, or setting is recorded.
 
 ## Requirements
 
@@ -46,7 +46,7 @@ $EDITOR /etc/caddy/Caddyfile    # replace panel.example.com
 sudo systemctl reload caddy
 ```
 
-Visit your dashboard hostname, log in with a Nostr extension, and add a host.
+Visit your dashboard domain, log in with a Nostr extension, and add a site.
 
 See [docs/deployment.md](docs/deployment.md) for a real production setup with a
 systemd unit and TLS.

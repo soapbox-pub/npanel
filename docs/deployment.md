@@ -212,11 +212,11 @@ internet. It listens on `127.0.0.1` unless you change `BIND_ADDRESS`; if the
 proxy is on another machine, set `BIND_ADDRESS=0.0.0.0` and firewall the port
 to it.
 
-## Adding a host
+## Adding a site
 
-In the dashboard: **Add host**, give it a hostname and an address. The address
-can be an npub, nprofile, naddr, an `a` tag (`35128:<pubkey>:<identifier>`), a
-NIP-5A label, or a URL to paste from.
+In the dashboard: **Add site**, give it a domain and an nsite address. The
+address can be an npub, nprofile, naddr, an `a` tag
+(`35128:<pubkey>:<identifier>`), a NIP-5A label, or a URL to paste from.
 
 npanel then fetches the newest manifest, downloads every blob it references, and
 only marks the version ready when all of them are on disk. Until then the host

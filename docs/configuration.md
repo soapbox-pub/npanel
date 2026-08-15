@@ -152,8 +152,8 @@ re-arms the timer immediately.
 
 ### `dns_targets`
 
-Default empty. What the dashboard tells staff to point a hostname at, shown in
-the *Add hostname* dialog. Each value becomes one record:
+Default empty. What the dashboard tells staff to point a domain at, shown in
+the *Add site* dialog. Each value becomes one record:
 
 | Value                 | Record                        |
 | --------------------- | ----------------------------- |
@@ -240,6 +240,25 @@ own". Left empty, the homepage just says nobody is listed.
 Paste an npub, an nprofile, or a hex pubkey; all three are stored as an npub.
 It is read by `GET /api/instance`, which is unauthenticated — this value is
 published to be shown in public, so don't set it to a key you want kept quiet.
+
+### `public_site_list`
+
+Default `false`. Whether npanel will name the sites it serves to people who
+can't manage them: a list on the logged-out homepage, and a *Also on this
+gateway* panel for staff, showing the sites they have no grant for.
+
+Off by default because which sites a gateway serves is often the private part of
+a private deployment — a team's staging domains, a client's site before launch.
+Turning it on publishes nothing but the domain names themselves, which DNS
+already tells anyone who asks; it does not reveal which nsite a site points at,
+or who added it.
+
+Disabled sites are never listed, since they answer `404` and listing one would
+only advertise a dead link. Individual sites opt out with their **unlisted**
+flag, set when adding a site or from its page afterwards — that flag wins over
+this setting, and is the way to keep one domain quiet on a gateway that
+otherwise publishes its list. Neither this setting nor the flag affects who can
+*visit* a site; a served site is public either way.
 
 ## Precedence and validation
 

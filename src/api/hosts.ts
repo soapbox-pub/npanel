@@ -5,18 +5,29 @@ import type { Host } from "../db/schema.ts";
 import { parseHostname } from "../hostname.ts";
 import { parseNsiteAddress } from "../nsite-address.ts";
 import { activeEvent, newestEvent, siteKey } from "../sites.ts";
-import { type ApiDeps, type ApiEnv, audit, canAccessHost, serializeHost, serializeVersion } from "./context.ts";
+import {
+  type ApiDeps,
+  type ApiEnv,
+  audit,
+  canAccessHost,
+  listedSites,
+  serializeHost,
+  serializeVersion,
+} from "./context.ts";
 
 const createSchema = z.object({
   hostname: z.string(),
   /** Any supported address format; stored decomposed. */
   address: z.string(),
+  /** Keep the site off the public list from the moment it exists. */
+  hidden: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
   hostname: z.string().optional(),
   address: z.string().optional(),
   enabled: z.boolean().optional(),
+  hidden: z.boolean().optional(),
   /** Event id to pin, or null to follow the newest ready version. */
   pinned_event_id: z.string().nullable().optional(),
 });
@@ -42,7 +53,17 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     const hosts = await query.execute();
 
-    return c.json({ hosts: await Promise.all(hosts.map((host) => serializeHost(db, host))) });
+    // Staff are told what else this gateway serves on the same terms as the
+    // public, which spares them asking an admin whether a name is already
+    // taken. Admins have every host in `hosts` already.
+    const mine = new Set(hosts.map((host) => host.hostname));
+    const others =
+      user.role === "admin" ? [] : (await listedSites(db, settings)).filter((site) => !mine.has(site.hostname));
+
+    return c.json({
+      hosts: await Promise.all(hosts.map((host) => serializeHost(db, host))),
+      other_sites: others,
+    });
   });
 
   app.post("/", async (c) => {
@@ -62,7 +83,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
 
     if (hostname === deps.dashboardHost) {
-      return c.json({ error: "That hostname serves the dashboard itself." }, 409);
+      return c.json({ error: "That domain serves the dashboard itself." }, 409);
     }
 
     const existing = await db.selectFrom("hosts").select("id").where("hostname", "=", hostname).executeTakeFirst();
@@ -80,6 +101,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         identifier: address.identifier,
         pinned_event_id: null,
         enabled: 1,
+        hidden: body.data.hidden ? 1 : 0,
         created_by: user.pubkey,
         created_at: now,
         updated_at: now,
@@ -142,7 +164,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         return c.json({ error: message(error) }, 400);
       }
       if (hostname === deps.dashboardHost) {
-        return c.json({ error: "That hostname serves the dashboard itself." }, 409);
+        return c.json({ error: "That domain serves the dashboard itself." }, 409);
       }
       if (hostname !== host.hostname) {
         const clash = await db.selectFrom("hosts").select("id").where("hostname", "=", hostname).executeTakeFirst();
@@ -166,6 +188,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     if (body.data.enabled !== undefined) {
       patch.enabled = body.data.enabled ? 1 : 0;
+    }
+
+    if (body.data.hidden !== undefined) {
+      patch.hidden = body.data.hidden ? 1 : 0;
     }
 
     if (body.data.pinned_event_id !== undefined && body.data.address === undefined) {
@@ -435,6 +461,7 @@ function hostSummary(host: Host) {
     kind: host.kind,
     identifier: host.identifier,
     enabled: host.enabled,
+    hidden: host.hidden,
     pinned_event_id: host.pinned_event_id,
   };
 }

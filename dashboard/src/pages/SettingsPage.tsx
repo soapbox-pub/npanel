@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
@@ -23,6 +24,7 @@ interface Draft {
   tlsCheckLimitPerHost?: string;
   tlsCheckLimitTotal?: string;
   contactNpub?: string;
+  publicSiteList?: boolean;
 }
 
 /**
@@ -57,6 +59,7 @@ export function SettingsPage() {
   const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
+  const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
 
   const save = async () => {
     try {
@@ -71,6 +74,7 @@ export function SettingsPage() {
         tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
         tls_check_limit_total: Number(tlsCheckLimitTotal),
         contact_npub: contactNpub.trim(),
+        public_site_list: publicSiteList,
       });
 
       setDraft({});
@@ -116,6 +120,27 @@ export function SettingsPage() {
             className="font-mono text-sm"
           />
           <ContactPreview value={contactNpub} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Public site list</CardTitle>
+          <CardDescription>
+            List the sites this gateway serves on the homepage, where anyone can read them, and
+            show staff the sites they don't manage. Off by default — on a private gateway, which
+            sites it serves is often the part worth keeping to yourself. Any site can be left out
+            individually by marking it unlisted.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <label className="flex items-center gap-3 text-sm">
+            <Switch
+              checked={publicSiteList}
+              onCheckedChange={(checked) => setDraft({ ...draft, publicSiteList: checked })}
+            />
+            {publicSiteList ? 'Listed publicly' : 'Not listed'}
+          </label>
         </CardContent>
       </Card>
 
@@ -206,9 +231,9 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">DNS target</CardTitle>
           <CardDescription>
-            What staff are told to point hostnames at when they add one. One per line: an IP address
-            becomes an A or AAAA record, a hostname becomes a CNAME and must be the only entry. Leave
-            this empty to use whatever {dns.data?.dashboard_host ?? 'the dashboard hostname'} itself
+            What staff are told to point a domain at when they add a site. One per line: an IP address
+            becomes an A or AAAA record, a domain becomes a CNAME and must be the only entry. Leave
+            this empty to use whatever {dns.data?.dashboard_host ?? 'the dashboard domain'} itself
             resolves to.
           </CardDescription>
         </CardHeader>
@@ -235,10 +260,10 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Allowed domains</CardTitle>
           <CardDescription>
-            One per line, and a hostname must match one of them or sit under it. Adding a host
+            One per line, and a site's domain must match one of them or sit under it. Adding a site
             authorizes a certificate for it, and certificate authorities meter issuance per
             registered domain — so this limits how much of that budget any one person can spend.
-            Leave empty to allow any hostname. Hosts that already exist keep working.
+            Leave empty to allow any domain. Sites that already exist keep working.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -257,15 +282,15 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Certificate authorization</CardTitle>
           <CardDescription>
-            How many certificates npanel will approve per hour when your proxy asks, per hostname
-            and in total. A host whose DNS doesn't point here would otherwise retry forever and
-            exhaust your certificate authority's issuance limits. The dashboard hostname is always
-            approved.
+            How many certificates npanel will approve per hour when your proxy asks, per domain and
+            in total. A site whose DNS doesn't point here would otherwise retry forever and
+            exhaust your certificate authority's issuance limits. The dashboard's own domain is
+            always approved.
           </CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
-            <Label htmlFor="tls-check-limit-per-host">Per hostname, each hour</Label>
+            <Label htmlFor="tls-check-limit-per-host">Per domain, each hour</Label>
             <Input
               id="tls-check-limit-per-host"
               type="number"
@@ -275,7 +300,7 @@ export function SettingsPage() {
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="tls-check-limit-total">Across all hostnames, each hour</Label>
+            <Label htmlFor="tls-check-limit-total">Across all domains, each hour</Label>
             <Input
               id="tls-check-limit-total"
               type="number"
@@ -294,7 +319,7 @@ export function SettingsPage() {
 
         {status.data && (
           <p className="text-sm text-muted-foreground">
-            {status.data.hosts} hostnames · {status.data.blobs} blobs · {formatBytes(status.data.blob_bytes)}{' '}
+            {status.data.hosts} sites · {status.data.blobs} blobs · {formatBytes(status.data.blob_bytes)}{' '}
             stored
           </p>
         )}

@@ -29,13 +29,13 @@ export function parseHostname(input: string, allowedSuffixes: string[]): string 
   const hostname = normalizeHostname(input);
 
   if (!hostname) {
-    throw new Error("Enter a hostname.");
+    throw new Error("Enter a domain.");
   }
   if (!HOSTNAME.test(hostname)) {
-    throw new Error(`Not a valid hostname: ${input.trim()}`);
+    throw new Error(`Not a valid domain: ${input.trim()}`);
   }
   if (hostname.length > 253) {
-    throw new Error("Hostname is too long.");
+    throw new Error("Domain is too long.");
   }
   if (allowedSuffixes.length && !allowedSuffixes.some((suffix) => matchesSuffix(hostname, suffix))) {
     throw new Error(
