@@ -151,6 +151,7 @@ A host object:
   "naddr": "naddr1...",
   "enabled": true,
   "hidden": false,
+  "redirect_www": true,
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -193,7 +194,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -220,6 +221,7 @@ Any subset of:
   "address": "naddr1...",
   "enabled": false,
   "hidden": true,
+  "redirect_www": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -233,6 +235,13 @@ Changing `address` clears any pin, since it belonged to the old site.
 `hidden` keeps the site out of `/api/sites` and out of other users'
 `other_sites`. It changes nothing about serving it: an unlisted site answers
 requests exactly as before.
+
+`redirect_www` sends `www.<hostname>/<path>` to `<hostname>/<path>` with a
+`301`, and defaults to on. It only acts when the hostname is a root domain
+(`example.org`, `example.co.uk` — decided by the Public Suffix List), and never
+when `www.<hostname>` is configured as a host of its own. Setting it on a
+subdomain is accepted and does nothing, so a later rename doesn't silently
+leave `www` unserved.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`.

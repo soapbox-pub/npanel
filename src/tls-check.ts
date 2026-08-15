@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Database } from "./db/schema.ts";
+import { wwwApex } from "./hostname.ts";
 import { type Logger, errFields } from "./log.ts";
 import { RateLimiter } from "./rate-limit.ts";
 import type { SettingsService } from "./settings.ts";
@@ -77,6 +78,37 @@ export function startTlsCheckServer(deps: TlsCheckDeps, opts: TlsCheckOptions): 
   const total = new RateLimiter({ maxKeys: 1 });
 
   /**
+   * Whether npanel answers for `domain` at all.
+   *
+   * A `www` name npanel only redirects still needs a certificate of its own:
+   * the redirect is an HTTPS response like any other, and without one the
+   * browser refuses the connection before it can be told where to go.
+   */
+  async function served(domain: string): Promise<boolean> {
+    const configured = await db
+      .selectFrom("hosts")
+      .select("id")
+      .where("hostname", "=", domain)
+      .where("enabled", "=", 1)
+      .executeTakeFirst();
+
+    if (configured) return true;
+
+    const apex = wwwApex(domain);
+    if (!apex) return false;
+
+    const redirects = await db
+      .selectFrom("hosts")
+      .select("id")
+      .where("hostname", "=", apex)
+      .where("enabled", "=", 1)
+      .where("redirect_www", "=", 1)
+      .executeTakeFirst();
+
+    return redirects !== undefined;
+  }
+
+  /**
    * Whether `domain` may have a certificate.
    *
    * Reveals only whether a hostname is configured here, which DNS already
@@ -89,14 +121,7 @@ export function startTlsCheckServer(deps: TlsCheckDeps, opts: TlsCheckOptions): 
       return new Response("ok", { headers: TEXT });
     }
 
-    const host = await db
-      .selectFrom("hosts")
-      .select("id")
-      .where("hostname", "=", domain)
-      .where("enabled", "=", 1)
-      .executeTakeFirst();
-
-    if (!host) {
+    if (!(await served(domain))) {
       log.debug("tls_check_denied", { domain });
       return new Response("unknown host", { status: 404, headers: TEXT });
     }

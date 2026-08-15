@@ -16,8 +16,15 @@ Point every hostname you plan to serve at the box:
 panel.example.com.   A     203.0.113.10
 panel.example.com.   AAAA  2001:db8::10
 example.org.         A     203.0.113.10
+www.example.org.     A     203.0.113.10
 blog.example.org.    A     203.0.113.10
 ```
+
+A site on a root domain redirects its `www` to the bare name by default, and
+that redirect needs `www` in DNS: it is served over HTTPS like anything else,
+so the name has to reach this box and get a certificate before a browser can be
+told where to go. Turn the redirect off per site in the dashboard if you'd
+rather `www` stayed unresolved.
 
 The dashboard hostname is just another name pointed at the same address. A
 wildcard (`*.example.com`) works too, and is convenient when staff add
@@ -264,8 +271,8 @@ hundred kilobytes. Caddy's defaults already skip types that are compressed
 already, like images and video.
 
 Caddy calls `/tls-check?domain=<name>` before issuing any certificate. npanel
-answers `200` for the dashboard hostname and for every enabled host, and `404`
-for anything else. **Do not run on-demand TLS without the `ask` directive**:
+answers `200` for the dashboard hostname, for every enabled host, and for the
+`www` of a host that redirects it, and `404` for anything else. **Do not run on-demand TLS without the `ask` directive**:
 anyone who points a domain at your IP could otherwise drive certificate issuance
 on your behalf and get you rate-limited by Let's Encrypt.
 

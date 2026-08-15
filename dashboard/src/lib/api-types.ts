@@ -25,6 +25,8 @@ export interface Host {
   enabled: boolean;
   /** Kept off the public list, and out of sight of staff without access. */
   hidden: boolean;
+  /** Whether `www.<hostname>` redirects here. Only acts on a root domain. */
+  redirect_www: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;

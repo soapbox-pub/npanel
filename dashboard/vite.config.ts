@@ -55,6 +55,9 @@ export default defineConfig(() => ({
       // shown while typing is exactly what the server will store.
       "@shared/nsite-address": path.resolve(import.meta.dirname, "../src/nsite-address.ts"),
       "@shared/pubkey": path.resolve(import.meta.dirname, "../src/pubkey.ts"),
+      // The same Public Suffix List rules the server applies, so the dashboard
+      // offers the www redirect exactly where the server will honour it.
+      "@shared/hostname": path.resolve(import.meta.dirname, "../src/hostname.ts"),
     },
   },
 }));

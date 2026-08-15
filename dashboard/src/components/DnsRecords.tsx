@@ -6,6 +6,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { useDnsTarget } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 import type { DnsRecord } from '@/lib/api-types';
+import { isRootDomain, recordName } from '@shared/hostname';
+
+/** One line of the table: a record, and the name field it goes in. */
+interface Row {
+  /** Absent when npanel can't tell which part of the hostname is the name. */
+  name?: string;
+  record: DnsRecord;
+}
 
 /**
  * The DNS records a domain needs before this gateway can answer for it.
@@ -13,8 +21,12 @@ import type { DnsRecord } from '@/lib/api-types';
  * Shown while staff are typing the domain, because that is the one step
  * npanel cannot do for them — and the one that silently breaks everything
  * downstream, from certificates to the site itself, when it's skipped.
+ *
+ * `www` adds the second row that redirect needs. A redirect is still an HTTPS
+ * response, so `www` has to resolve here and get a certificate of its own
+ * before it can be told where to go — which makes this the moment to say so.
  */
-export function DnsRecords({ hostname }: { hostname: string }) {
+export function DnsRecords({ hostname, www = false }: { hostname: string; www?: boolean }) {
   const dns = useDnsTarget();
 
   if (dns.isLoading) return <Skeleton className="h-20 w-full" />;
@@ -23,19 +35,29 @@ export function DnsRecords({ hostname }: { hostname: string }) {
   const { records, source, dashboard_host } = dns.data;
   const name = hostname.trim().toLowerCase();
 
+  // No name column until the hostname is one the public suffix list recognizes:
+  // a guess about which part of it goes in a DNS provider's name field is worse
+  // than leaving the field to staff, who know their own zone.
+  const label = name ? recordName(name) : undefined;
+  const rows = records.flatMap((record): Row[] =>
+    label
+      ? [{ name: label, record }, ...(www && isRootDomain(name) ? [{ name: 'www', record }] : [])]
+      : [{ name: undefined, record }],
+  );
+
   return (
     <div className="space-y-2 rounded-lg border bg-muted/40 p-3">
       {records.length ? (
         <>
           <p className="text-xs text-muted-foreground">
-            Create {records.length > 1 ? 'these records' : 'this record'} for{' '}
+            Create {rows.length > 1 ? 'these records' : 'this record'} for{' '}
             <span className="font-medium text-foreground">{name || 'the domain'}</span> at your DNS
             provider:
           </p>
 
           <ul className="space-y-1">
-            {records.map((record) => (
-              <RecordRow key={`${record.type}:${record.value}`} record={record} />
+            {rows.map((row) => (
+              <RecordRow key={`${row.name}:${row.record.type}:${row.record.value}`} {...row} />
             ))}
           </ul>
 
@@ -56,7 +78,7 @@ export function DnsRecords({ hostname }: { hostname: string }) {
   );
 }
 
-function RecordRow({ record }: { record: DnsRecord }) {
+function RecordRow({ name, record }: Row) {
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
 
@@ -73,6 +95,11 @@ function RecordRow({ record }: { record: DnsRecord }) {
 
   return (
     <li className="flex items-center gap-2 font-mono text-xs">
+      {name !== undefined && (
+        <span className="w-16 shrink-0 truncate text-foreground" title={name}>
+          {name}
+        </span>
+      )}
       <span className="w-12 shrink-0 text-muted-foreground">{record.type}</span>
       <span className="truncate">{record.value}</span>
       <Button
@@ -81,7 +108,9 @@ function RecordRow({ record }: { record: DnsRecord }) {
         size="icon"
         className="ml-auto size-6 shrink-0"
         onClick={copy}
-        aria-label={`Copy ${record.value}`}
+        // The two rows of a www redirect carry the same value, so the name is
+        // what tells their buttons apart.
+        aria-label={name ? `Copy ${record.value} for ${name}` : `Copy ${record.value}`}
       >
         {copied ? <Check className="size-3" aria-hidden /> : <Copy className="size-3" aria-hidden />}
       </Button>

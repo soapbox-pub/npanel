@@ -95,7 +95,12 @@ export class ApiClient {
     return this.request('GET', `/api/hosts/${id}`);
   }
 
-  createHost(input: { hostname: string; address: string; hidden?: boolean }): Promise<{ host: Host }> {
+  createHost(input: {
+    hostname: string;
+    address: string;
+    hidden?: boolean;
+    redirect_www?: boolean;
+  }): Promise<{ host: Host }> {
     return this.request('POST', '/api/hosts', input);
   }
 
@@ -106,6 +111,7 @@ export class ApiClient {
       address?: string;
       enabled?: boolean;
       hidden?: boolean;
+      redirect_www?: boolean;
       pinned_event_id?: string | null;
     },
   ): Promise<{ host: Host }> {

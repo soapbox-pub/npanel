@@ -43,11 +43,31 @@ here it would have to answer on every hostname npanel serves, putting a
 certificate-issuing decision on the public internet where a stranger could spend
 a real host's hourly budget. So it gets a listener of its own on
 `TLS_CHECK_PORT`, serving one path and nothing else (`src/tls-check.ts`). It
+approves the hostnames npanel serves, plus the `www` names it only redirects —
+a redirect is an HTTPS response like any other, and without a certificate the
+browser never gets far enough to be told where to go. It
 calls `Bun.serve` directly rather than going through Hono and the default export
 in `src/server.ts`, which is what the runtime serves: one route needs no router,
 and a second port has to be bound by hand.
 
 A site only answers `GET` and `HEAD`; anything else is a `405`.
+
+A host may also answer for its `www`. When nothing is configured for
+`www.example.com`, npanel looks for `example.com`, and if that host has
+`redirect_www` set — the default — the request gets a `301` to the same path
+and query on the bare name. The redirect is offered only where the hostname is
+a *root domain*, which is a question the Public Suffix List answers and label
+counting does not: `example.co.uk` is one and `foo.github.io` is not. So
+`src/hostname.ts` carries the list, via `tldts`, and the dashboard imports the
+same module so it offers the switch exactly where the server will honour it.
+Folding `www.docs.example.com` into `docs.example.com` would be a guess about
+somebody else's zone, so npanel doesn't make it. A `www` host someone
+configured deliberately always wins over the redirect.
+
+The `301` is sent with an hour of freshness. Browsers cache a permanent
+redirect with no freshness of its own until they restart, which would outlive
+an admin turning the redirect back off; crawlers still take the `301` itself as
+the permanent answer.
 
 The dashboard is otherwise served straight off disk, with one exception:
 `index.html` is read into memory and its `og:image` and `og:url` tags are
@@ -156,7 +176,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |

@@ -382,6 +382,28 @@ test("the public list leaves out hidden and disabled sites", async () => {
   assert.deepEqual(hostnames((await (await harness.request(undefined, "GET", "/api/sites")).json()).sites), []);
 });
 
+test("www redirects unless the request says otherwise", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+  assert.equal(host.redirect_www, true, "on by default, which is what people expect of www");
+
+  const off = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { redirect_www: false });
+  assert.equal((await off.json()).host.redirect_www, false);
+
+  // The flag is kept on a host it can't act on, so renaming a subdomain to a
+  // root domain later doesn't quietly leave www unserved.
+  const sub = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  assert.equal((await sub.json()).host.redirect_www, true);
+});
+
 test("a listed site describes itself with its own page metadata", async () => {
   const { harness, admin } = await setup();
 

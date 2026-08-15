@@ -73,6 +73,37 @@ test("refuses a disabled host", async () => {
   assert.equal((await ask("docs.example.com")).status, 404);
 });
 
+test("answers for the www a root domain redirects", async () => {
+  const { ask, addHost } = await setup();
+
+  await addHost("example.com");
+
+  // The redirect is an HTTPS response like any other: without a certificate of
+  // its own, the browser never gets far enough to be told where to go.
+  assert.equal((await ask("www.example.com")).status, 200);
+
+  // Nothing answers for this one, so nothing should have a certificate for it.
+  assert.equal((await ask("www.other.com")).status, 404);
+});
+
+test("refuses www when the root domain doesn't redirect it", async () => {
+  const { ask, addHost, harness, admin } = await setup();
+
+  const created = await addHost("example.com");
+  const host = (await created.json()).host;
+  await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { redirect_www: false });
+
+  assert.equal((await ask("www.example.com")).status, 404);
+});
+
+test("refuses the www of a subdomain", async () => {
+  const { ask, addHost } = await setup();
+
+  await addHost("docs.example.com");
+
+  assert.equal((await ask("www.docs.example.com")).status, 404);
+});
+
 test("matches the hostname case-insensitively", async () => {
   const { ask, addHost } = await setup();
 

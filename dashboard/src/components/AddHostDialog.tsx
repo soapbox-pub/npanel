@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useCreateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
+import { isRootDomain } from '@shared/hostname';
 
 /** Add a domain → nsite mapping, the DNS-editor moment of the dashboard. */
 export function AddHostDialog() {
@@ -25,19 +26,25 @@ export function AddHostDialog() {
   const [hostname, setHostname] = useState('');
   const [address, setAddress] = useState('');
   const [hidden, setHidden] = useState(false);
+  const [redirectWww, setRedirectWww] = useState(true);
 
   const parsed = useParsedAddress(address);
   const createHost = useCreateHost();
   const { toast } = useToast();
 
+  const domain = hostname.trim().toLowerCase();
+  // Only a root domain owns its `www`, so that is the only place the offer means anything.
+  const www = isRootDomain(domain);
+
   const submit = async () => {
     try {
-      await createHost.mutateAsync({ hostname, address, hidden });
+      await createHost.mutateAsync({ hostname, address, hidden, redirect_www: redirectWww });
       toast({ title: 'Site added', description: `${hostname.trim().toLowerCase()} is now configured.` });
       setOpen(false);
       setHostname('');
       setAddress('');
       setHidden(false);
+      setRedirectWww(true);
     } catch (error) {
       toast({
         title: "Couldn't add that site",
@@ -72,7 +79,22 @@ export function AddHostDialog() {
               autoComplete="off"
               spellCheck={false}
             />
-            <DnsRecords hostname={hostname} />
+            {www && (
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  id="redirect-www"
+                  checked={redirectWww}
+                  onCheckedChange={(checked) => setRedirectWww(checked === true)}
+                  className="mt-0.5"
+                />
+                <Label htmlFor="redirect-www" className="font-normal text-sm text-muted-foreground">
+                  Redirect <span className="font-mono">www.{domain}</span> to{' '}
+                  <span className="font-mono">{domain}</span>, keeping the path.
+                </Label>
+              </div>
+            )}
+
+            <DnsRecords hostname={hostname} www={redirectWww} />
           </div>
 
           <AddressInput value={address} onChange={setAddress} parsed={parsed} />

@@ -15,7 +15,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   server.ts             entry point; wires everything together
   app.ts                Host-based routing: dashboard vs nsite
   config.ts             the six environment variables
-  hostname.ts           hostname validation, shared with settings
+  hostname.ts           hostname validation and root-domain rules (tldts)
   rate-limit.ts         token buckets, used to meter certificate authorization
   settings.ts           runtime settings, DB-backed and live-reloading
   nsite-address.ts      address parsing; also imported by the dashboard
@@ -129,7 +129,8 @@ be asked — no exceptions.
 - Comments explain *why*, not *what*. Match the density of the surrounding code.
 - The dashboard imports shared parsing from the server via the `@shared/` alias
   (`vite.config.ts` + `tsconfig.json` paths). Keep address logic in
-  `src/nsite-address.ts` so the two can't drift.
+  `src/nsite-address.ts` and hostname rules in `src/hostname.ts` so the two
+  can't drift.
 - Logs are one flat JSON object per line. Use the `Logger` from `src/log.ts` and
   `errFields()` for errors; no `console.log` in server code.
 - User-facing error strings are full sentences that say what to do next. They

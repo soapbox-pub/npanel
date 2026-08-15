@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { AddressInput } from '@/components/AddressInput';
+import { DnsRecords } from '@/components/DnsRecords';
 import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
@@ -28,6 +29,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
+import { isRootDomain } from '@shared/hostname';
 
 /** Everything about one site: what it points at, its versions, its access. */
 export function HostDetailPage() {
@@ -149,6 +151,38 @@ export function HostDetailPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Only a root domain owns its `www`; on a subdomain the switch would be
+          a promise npanel has no business making about someone's zone. */}
+      {isRootDomain(data.hostname) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">www</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="flex items-center gap-3 text-sm">
+              <Switch
+                checked={data.redirect_www}
+                onCheckedChange={(redirect) =>
+                  run(
+                    () => updateHost.mutateAsync({ id: data.id, redirect_www: redirect }),
+                    redirect ? 'www now redirects here' : 'www no longer redirects here',
+                  )
+                }
+              />
+              <span className="font-mono text-xs">
+                www.{data.hostname} → {data.hostname}
+              </span>
+            </label>
+            <p className="text-sm text-muted-foreground">
+              {data.redirect_www
+                ? 'A permanent redirect that keeps the path. It needs the DNS record below: the redirect is an HTTPS response like any other, so www has to reach this server and get a certificate of its own before a browser will follow it.'
+                : `www.${data.hostname} is not served at all, unless you add it as a site of its own.`}
+            </p>
+            {data.redirect_www && <DnsRecords hostname={data.hostname} www />}
+          </CardContent>
+        </Card>
+      )}
 
       <Tabs defaultValue="versions">
         <TabsList>

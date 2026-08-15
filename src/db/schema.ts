@@ -47,6 +47,8 @@ export interface HostsTable {
   enabled: number;
   /** 0/1. Kept out of the public list, and out of sight of staff without a grant. */
   hidden: Generated<number>;
+  /** 0/1. Send `www.<hostname>` here instead, when `hostname` is a root domain. */
+  redirect_www: Generated<number>;
   created_by: string;
   created_at: number;
   updated_at: number;

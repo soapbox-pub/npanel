@@ -24,6 +24,7 @@
     "kysely": "^0.29.5",
     "node-html-parser": "^9.0.1",
     "nostr-tools": "^2.24.1",
+    "tldts": "^7.4.10",
     "zod": "^4.4.3"
   },
   "devDependencies": {

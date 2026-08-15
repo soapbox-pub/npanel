@@ -88,6 +88,95 @@ test("unknown hostnames are not served", async () => {
   assert.match(await response.text(), /not configured/);
 });
 
+/** A harness whose one host is a root domain, which is what `www` needs. */
+async function rootDomain(opts: { redirectWww?: boolean; enabled?: boolean } = {}) {
+  const harness = await createHarness();
+  harnesses.push(harness);
+
+  await harness.db
+    .insertInto("hosts")
+    .values({
+      hostname: "example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: opts.enabled === false ? 0 : 1,
+      redirect_www: opts.redirectWww === false ? 0 : 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .execute();
+
+  return harness;
+}
+
+test("www redirects to the root domain, path and query intact", async () => {
+  const harness = await rootDomain();
+
+  const response = await harness.site("www.example.com", "/docs/page?q=1");
+
+  assert.equal(response.status, 301);
+  // https without being told: npanel only ever sees the proxy's plain HTTP.
+  assert.equal(response.headers.get("location"), "https://example.com/docs/page?q=1");
+  // Long enough to be free, short enough that turning the redirect off works.
+  assert.equal(response.headers.get("cache-control"), "public, max-age=3600");
+});
+
+test("www redirects to the scheme the proxy reports", async () => {
+  const harness = await rootDomain();
+
+  const response = await harness.site("www.example.com", "/", {
+    headers: { "x-forwarded-proto": "http" },
+  });
+
+  assert.equal(response.headers.get("location"), "http://example.com/");
+});
+
+test("www is not served when the root domain doesn't redirect it", async () => {
+  const harness = await rootDomain({ redirectWww: false });
+
+  assert.equal((await harness.site("www.example.com", "/")).status, 404);
+});
+
+test("www is not served when the root domain is disabled", async () => {
+  const harness = await rootDomain({ enabled: false });
+
+  // A hostname npanel answers 404 for has nothing to redirect to.
+  assert.equal((await harness.site("www.example.com", "/")).status, 404);
+});
+
+test("a www host of its own is served rather than redirected away", async () => {
+  const harness = await rootDomain();
+
+  await harness.db
+    .insertInto("hosts")
+    .values({
+      hostname: "www.example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "different",
+      pinned_event_id: null,
+      enabled: 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .execute();
+
+  // 503, not 301: the explicit mapping wins, and it has nothing deployed yet.
+  assert.equal((await harness.site("www.example.com", "/")).status, 503);
+});
+
+test("www of a subdomain is nobody's to redirect", async () => {
+  const { harness } = await setup();
+
+  // `docs.example.com` is configured, but `www.docs.example.com` is a name in
+  // a zone npanel knows nothing about.
+  assert.equal((await harness.site("www.docs.example.com", "/")).status, 404);
+});
+
 test("a disabled host stops serving", async () => {
   const { harness } = await setup({
     enabled: false,

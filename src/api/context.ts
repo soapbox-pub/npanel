@@ -128,6 +128,8 @@ export interface HostView {
   enabled: boolean;
   /** Kept out of the public list and away from staff without a grant. */
   hidden: boolean;
+  /** Whether `www.<hostname>` redirects here. Only acts on a root domain. */
+  redirect_www: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -164,6 +166,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     naddr: encodeNaddr(address),
     enabled: host.enabled === 1,
     hidden: host.hidden === 1,
+    redirect_www: host.redirect_www === 1,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
     created_at: host.created_at,

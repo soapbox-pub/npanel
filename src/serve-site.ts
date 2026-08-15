@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import type { BlobStore } from "./blobs.ts";
 import type { Database } from "./db/schema.ts";
+import { wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
@@ -38,6 +39,38 @@ const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifes
 export function createSiteServer(deps: SiteServerDeps) {
   const { db, blobs, log } = deps;
 
+  /**
+   * The redirect `www.example.com` gets when `example.com` asked for one.
+   *
+   * Only reached when no host of that name is configured, so a `www` host
+   * someone added deliberately is served rather than redirected away.
+   */
+  async function wwwRedirect(request: Request, hostname: string): Promise<Response | undefined> {
+    const apex = wwwApex(hostname);
+    if (!apex) return undefined;
+
+    const host = await findHost(db, apex);
+    if (!host || host.enabled !== 1 || host.redirect_www !== 1) return undefined;
+
+    const url = new URL(request.url);
+    const location = `${requestScheme(request)}://${apex}${url.pathname}${url.search}`;
+
+    log.debug("site_www_redirect", { hostname, location });
+
+    return new Response(null, {
+      status: 301,
+      headers: {
+        location,
+        // A 301 with no freshness of its own is cached by browsers until they
+        // are restarted, which would outlive an admin switching the redirect
+        // back off. An hour is long enough that nobody pays for the hop twice
+        // in a session, and short enough that undoing this is not a support
+        // call. Crawlers take the 301 itself as the permanent answer.
+        "cache-control": "public, max-age=3600",
+      },
+    });
+  }
+
   return async function serveSite(request: Request, hostname: string): Promise<Response> {
     if (request.method !== "GET" && request.method !== "HEAD") {
       // An nsite is a pile of files. There is nothing to POST to.
@@ -48,6 +81,11 @@ export function createSiteServer(deps: SiteServerDeps) {
     }
 
     const host = await findHost(db, hostname);
+
+    if (!host) {
+      const redirect = await wwwRedirect(request, hostname);
+      if (redirect) return redirect;
+    }
 
     if (!host || host.enabled !== 1) {
       log.debug("site_unknown_host", { hostname });
@@ -130,6 +168,23 @@ export function createSiteServer(deps: SiteServerDeps) {
 
     return new Response(body, { status, headers });
   };
+}
+
+/**
+ * The scheme the client used, for building an absolute redirect.
+ *
+ * npanel is always behind a proxy that terminates TLS, so the URL this process
+ * sees is `http://` even when the request that reached the proxy was `https://`
+ * — redirecting to the scheme of the local request would downgrade every
+ * redirect. `X-Forwarded-Proto` is the proxy's word for it, and `https` is the
+ * assumption when the proxy didn't say, since a plain-HTTP deployment is the
+ * unusual one and the wrong guess there costs a redirect rather than a
+ * downgrade.
+ */
+export function requestScheme(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+
+  return forwarded === "http" || forwarded === "https" ? forwarded : "https";
 }
 
 /** Parse a single-range `Range` header. Multi-range requests are ignored. */

@@ -176,7 +176,8 @@ export function useCreateHost() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (input: { hostname: string; address: string; hidden?: boolean }) => api!.createHost(input),
+    mutationFn: (input: { hostname: string; address: string; hidden?: boolean; redirect_www?: boolean }) =>
+      api!.createHost(input),
     onSuccess: invalidate,
   });
 }
@@ -192,6 +193,7 @@ export function useUpdateHost() {
       address?: string;
       enabled?: boolean;
       hidden?: boolean;
+      redirect_www?: boolean;
       pinned_event_id?: string | null;
     }) => {
       const { id, ...patch } = input;

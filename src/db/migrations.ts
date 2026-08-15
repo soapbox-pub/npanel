@@ -107,6 +107,14 @@ const MIGRATIONS: Migration[] = [
     name: "003_hosts_hidden",
     statements: ["ALTER TABLE hosts ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"],
   },
+  {
+    // On for every existing host, including the ones this can't apply to: the
+    // flag means "fold www in where that makes sense", and whether it makes
+    // sense is decided against the Public Suffix List at the moment it matters,
+    // not frozen into a column that a later rename would make a lie.
+    name: "004_hosts_redirect_www",
+    statements: ["ALTER TABLE hosts ADD COLUMN redirect_www INTEGER NOT NULL DEFAULT 1"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */
