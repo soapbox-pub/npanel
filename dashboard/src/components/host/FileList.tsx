@@ -5,8 +5,8 @@ import { useFiles } from '@/hooks/useNpanel';
 import { formatBytes } from '@/lib/format';
 
 /** Files in the served version, with whether each blob is stored locally. */
-export function FileList({ hostId }: { hostId: number }) {
-  const files = useFiles(hostId);
+export function FileList({ hostname }: { hostname: string }) {
+  const files = useFiles(hostname);
 
   if (files.isLoading) return <Skeleton className="h-40 w-full" />;
 

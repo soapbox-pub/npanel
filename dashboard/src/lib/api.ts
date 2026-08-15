@@ -5,6 +5,7 @@ import type {
   DeployLogEntry,
   DnsTarget,
   Host,
+  HostPatch,
   HostVersion,
   Instance,
   Me,
@@ -91,8 +92,8 @@ export class ApiClient {
     return this.request('GET', '/api/hosts');
   }
 
-  host(id: number): Promise<{ host: Host }> {
-    return this.request('GET', `/api/hosts/${id}`);
+  host(hostname: string): Promise<{ host: Host }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}`);
   }
 
   createHost(input: {
@@ -104,54 +105,44 @@ export class ApiClient {
     return this.request('POST', '/api/hosts', input);
   }
 
-  updateHost(
-    id: number,
-    patch: {
-      hostname?: string;
-      address?: string;
-      enabled?: boolean;
-      hidden?: boolean;
-      redirect_www?: boolean;
-      pinned_event_id?: string | null;
-    },
-  ): Promise<{ host: Host }> {
-    return this.request('PATCH', `/api/hosts/${id}`, patch);
+  updateHost(hostname: string, patch: HostPatch): Promise<{ host: Host }> {
+    return this.request('PATCH', `/api/hosts/${path(hostname)}`, patch);
   }
 
-  deleteHost(id: number): Promise<{ ok: true }> {
-    return this.request('DELETE', `/api/hosts/${id}`);
+  deleteHost(hostname: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/hosts/${path(hostname)}`);
   }
 
-  syncHost(id: number): Promise<{ ok: true }> {
-    return this.request('POST', `/api/hosts/${id}/sync`);
+  syncHost(hostname: string): Promise<{ ok: true }> {
+    return this.request('POST', `/api/hosts/${path(hostname)}/sync`);
   }
 
-  versions(id: number): Promise<{
+  versions(hostname: string): Promise<{
     active_event_id: string | null;
     pinned_event_id: string | null;
     versions: HostVersion[];
   }> {
-    return this.request('GET', `/api/hosts/${id}/versions`);
+    return this.request('GET', `/api/hosts/${path(hostname)}/versions`);
   }
 
   deployLog(
-    id: number,
+    hostname: string,
     eventId: string,
   ): Promise<{ version: HostVersion; entries: DeployLogEntry[] }> {
-    return this.request('GET', `/api/hosts/${id}/versions/${eventId}/log`);
+    return this.request('GET', `/api/hosts/${path(hostname)}/versions/${eventId}/log`);
   }
 
-  files(id: number, eventId?: string): Promise<{ event_id: string; files: SiteFile[] }> {
+  files(hostname: string, eventId?: string): Promise<{ event_id: string; files: SiteFile[] }> {
     const query = eventId ? `?event_id=${encodeURIComponent(eventId)}` : '';
-    return this.request('GET', `/api/hosts/${id}/files${query}`);
+    return this.request('GET', `/api/hosts/${path(hostname)}/files${query}`);
   }
 
-  grants(id: number): Promise<{ grants: { user_pubkey: string; created_at: number }[] }> {
-    return this.request('GET', `/api/hosts/${id}/grants`);
+  grants(hostname: string): Promise<{ grants: { user_pubkey: string; created_at: number }[] }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/grants`);
   }
 
-  setGrants(id: number, pubkeys: string[]): Promise<{ grants: string[] }> {
-    return this.request('PUT', `/api/hosts/${id}/grants`, { pubkeys });
+  setGrants(hostname: string, pubkeys: string[]): Promise<{ grants: string[] }> {
+    return this.request('PUT', `/api/hosts/${path(hostname)}/grants`, { pubkeys });
   }
 
   users(): Promise<{ users: NpanelUser[] }> {
@@ -212,6 +203,16 @@ export async function fetchSites(): Promise<{ sites: SiteCard[] }> {
   }
 
   return (await response.json()) as { sites: SiteCard[] };
+}
+
+/**
+ * A hostname as one path segment.
+ *
+ * A no-op for anything the server would accept, but it keeps a stray slash in
+ * a hostname the dashboard was handed from turning into a different endpoint.
+ */
+function path(hostname: string): string {
+  return encodeURIComponent(hostname);
 }
 
 async function errorMessage(response: Response): Promise<string> {

@@ -118,7 +118,7 @@ export async function audit(
 }
 
 export interface HostView {
-  id: number;
+  /** The API's identifier for a host: unique, and what every route keys on. */
   hostname: string;
   pubkey: string;
   kind: number;
@@ -157,7 +157,6 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
   const [active, latest] = await Promise.all([activeEvent(db, host), newestEvent(db, address)]);
 
   return {
-    id: host.id,
     hostname: host.hostname,
     pubkey: host.pubkey,
     kind: host.kind,

@@ -114,7 +114,7 @@ address preview in the UI can't drift from what the server will store.
    site's newest manifest. This is the backstop for anything missed during relay
    downtime or a restart.
 3. **Explicit triggers** — adding or retargeting a host, or the *Sync now*
-   button, which calls `POST /api/hosts/:id/sync`.
+   button, which calls `POST /api/hosts/:hostname/sync`.
 
 A manifest for a site nobody has configured is ignored. One that is configured
 is stored verbatim in `site_events`, its `path` tags are expanded into

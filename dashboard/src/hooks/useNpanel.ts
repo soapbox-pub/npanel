@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchInstance, fetchSites } from '@/lib/api';
-import type { Settings } from '@/lib/api-types';
+import type { HostPatch, Settings } from '@/lib/api-types';
 
 /** Poll while a deploy could be in progress, so progress bars actually move. */
 const LIVE_INTERVAL = 5000;
@@ -83,55 +83,55 @@ export function usePublicSites() {
   });
 }
 
-export function useHost(id: number | undefined) {
+export function useHost(hostname: string | undefined) {
   const api = useApi();
 
   return useQuery({
-    queryKey: useKey('host', id ?? 0),
-    queryFn: async () => (await api!.host(id!)).host,
-    enabled: !!api && id !== undefined,
+    queryKey: useKey('host', hostname ?? ''),
+    queryFn: async () => (await api!.host(hostname!)).host,
+    enabled: !!api && !!hostname,
     refetchInterval: LIVE_INTERVAL,
   });
 }
 
-export function useVersions(id: number | undefined) {
+export function useVersions(hostname: string | undefined) {
   const api = useApi();
 
   return useQuery({
-    queryKey: useKey('versions', id ?? 0),
-    queryFn: () => api!.versions(id!),
-    enabled: !!api && id !== undefined,
+    queryKey: useKey('versions', hostname ?? ''),
+    queryFn: () => api!.versions(hostname!),
+    enabled: !!api && !!hostname,
     refetchInterval: LIVE_INTERVAL,
   });
 }
 
-export function useDeployLog(id: number | undefined, eventId: string | undefined) {
+export function useDeployLog(hostname: string | undefined, eventId: string | undefined) {
   const api = useApi();
 
   return useQuery({
-    queryKey: useKey('deploy-log', id ?? 0, eventId ?? ''),
-    queryFn: () => api!.deployLog(id!, eventId!),
-    enabled: !!api && id !== undefined && !!eventId,
+    queryKey: useKey('deploy-log', hostname ?? '', eventId ?? ''),
+    queryFn: () => api!.deployLog(hostname!, eventId!),
+    enabled: !!api && !!hostname && !!eventId,
   });
 }
 
-export function useFiles(id: number | undefined, eventId?: string) {
+export function useFiles(hostname: string | undefined, eventId?: string) {
   const api = useApi();
 
   return useQuery({
-    queryKey: useKey('files', id ?? 0, eventId ?? 'active'),
-    queryFn: () => api!.files(id!, eventId),
-    enabled: !!api && id !== undefined,
+    queryKey: useKey('files', hostname ?? '', eventId ?? 'active'),
+    queryFn: () => api!.files(hostname!, eventId),
+    enabled: !!api && !!hostname,
   });
 }
 
-export function useGrants(id: number | undefined, enabled = true) {
+export function useGrants(hostname: string | undefined, enabled = true) {
   const api = useApi();
 
   return useQuery({
-    queryKey: useKey('grants', id ?? 0),
-    queryFn: async () => (await api!.grants(id!)).grants,
-    enabled: !!api && id !== undefined && enabled,
+    queryKey: useKey('grants', hostname ?? ''),
+    queryFn: async () => (await api!.grants(hostname!)).grants,
+    enabled: !!api && !!hostname && enabled,
   });
 }
 
@@ -187,18 +187,10 @@ export function useUpdateHost() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (input: {
-      id: number;
-      hostname?: string;
-      address?: string;
-      enabled?: boolean;
-      hidden?: boolean;
-      redirect_www?: boolean;
-      pinned_event_id?: string | null;
-    }) => {
-      const { id, ...patch } = input;
-      return api!.updateHost(id, patch);
-    },
+    // `hostname` names the host being changed, and the patch may rename it, so
+    // the two can't share a field.
+    mutationFn: (input: { hostname: string; patch: HostPatch }) =>
+      api!.updateHost(input.hostname, input.patch),
     onSuccess: invalidate,
   });
 }
@@ -208,7 +200,7 @@ export function useDeleteHost() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (id: number) => api!.deleteHost(id),
+    mutationFn: (hostname: string) => api!.deleteHost(hostname),
     onSuccess: invalidate,
   });
 }
@@ -218,7 +210,7 @@ export function useSyncHost() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (id: number) => api!.syncHost(id),
+    mutationFn: (hostname: string) => api!.syncHost(hostname),
     onSuccess: invalidate,
   });
 }
@@ -228,7 +220,7 @@ export function useSetGrants() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (input: { id: number; pubkeys: string[] }) => api!.setGrants(input.id, input.pubkeys),
+    mutationFn: (input: { hostname: string; pubkeys: string[] }) => api!.setGrants(input.hostname, input.pubkeys),
     onSuccess: invalidate,
   });
 }

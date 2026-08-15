@@ -11,7 +11,7 @@ import { useDeployLog } from '@/hooks/useNpanel';
 import { cn } from '@/lib/utils';
 
 interface DeployLogDialogProps {
-  hostId: number;
+  hostname: string;
   eventId: string | undefined;
   onClose(): void;
 }
@@ -24,8 +24,8 @@ const LEVEL_STYLES: Record<string, string> = {
 };
 
 /** Why a deploy succeeded or failed, straight from the sync worker. */
-export function DeployLogDialog({ hostId, eventId, onClose }: DeployLogDialogProps) {
-  const log = useDeployLog(hostId, eventId);
+export function DeployLogDialog({ hostname, eventId, onClose }: DeployLogDialogProps) {
+  const log = useDeployLog(hostname, eventId);
 
   return (
     <Dialog open={!!eventId} onOpenChange={(open) => !open && onClose()}>

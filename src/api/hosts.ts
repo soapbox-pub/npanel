@@ -135,8 +135,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ host: await serializeHost(db, host) }, 201);
   });
 
-  app.get("/:id", async (c) => {
-    const host = await load(c.req.param("id"));
+  app.get("/:hostname", async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, c.get("user"), host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -145,9 +145,9 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ host: await serializeHost(db, host) });
   });
 
-  app.patch("/:id", async (c) => {
+  app.patch("/:hostname", async (c) => {
     const user = c.get("user");
-    const host = await load(c.req.param("id"));
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, user, host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -253,9 +253,9 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ host: await serializeHost(db, updated) });
   });
 
-  app.delete("/:id", async (c) => {
+  app.delete("/:hostname", async (c) => {
     const user = c.get("user");
-    const host = await load(c.req.param("id"));
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, user, host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -271,8 +271,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ ok: true });
   });
 
-  app.get("/:id/versions", async (c) => {
-    const host = await load(c.req.param("id"));
+  app.get("/:hostname/versions", async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, c.get("user"), host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -299,8 +299,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     });
   });
 
-  app.get("/:id/versions/:eventId/log", async (c) => {
-    const host = await load(c.req.param("id"));
+  app.get("/:hostname/versions/:eventId/log", async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, c.get("user"), host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -337,8 +337,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     });
   });
 
-  app.get("/:id/files", async (c) => {
-    const host = await load(c.req.param("id"));
+  app.get("/:hostname/files", async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, c.get("user"), host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -377,8 +377,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     });
   });
 
-  app.post("/:id/sync", async (c) => {
-    const host = await load(c.req.param("id"));
+  app.post("/:hostname/sync", async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
     if (!(await canAccessHost(db, c.get("user"), host.id))) {
       return c.json({ error: "You don't have access to this host." }, 403);
@@ -390,8 +390,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ ok: true }, 202);
   });
 
-  app.get("/:id/grants", requireAdmin(), async (c) => {
-    const host = await load(c.req.param("id"));
+  app.get("/:hostname/grants", requireAdmin(), async (c) => {
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
 
     const grants = await db
@@ -403,9 +403,9 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ grants });
   });
 
-  app.put("/:id/grants", requireAdmin(), async (c) => {
+  app.put("/:hostname/grants", requireAdmin(), async (c) => {
     const user = c.get("user");
-    const host = await load(c.req.param("id"));
+    const host = await load(c.req.param("hostname"));
     if (!host) return c.json({ error: "Host not found." }, 404);
 
     const body = grantsSchema.safeParse(await c.req.json().catch(() => null));
@@ -453,10 +453,11 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ grants: pubkeys });
   });
 
-  async function load(id: string): Promise<Host | undefined> {
-    const hostId = Number(id);
-    if (!Number.isInteger(hostId)) return undefined;
-    return await db.selectFrom("hosts").selectAll().where("id", "=", hostId).executeTakeFirst();
+  // A host is addressed by its hostname, which is unique and is the thing staff
+  // actually recognise. The row id stays inside the server, where a URL someone
+  // pastes into chat can't turn into a guess at what host 12 might be.
+  async function load(hostname: string): Promise<Host | undefined> {
+    return await db.selectFrom("hosts").selectAll().where("hostname", "=", hostname.toLowerCase()).executeTakeFirst();
   }
 
   return app;

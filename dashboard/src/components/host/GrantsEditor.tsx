@@ -14,9 +14,9 @@ import { useToast } from '@/hooks/useToast';
  * Admins always have access; staff see only the sites granted to them, so
  * this list is what makes a staff account useful.
  */
-export function GrantsEditor({ hostId }: { hostId: number }) {
+export function GrantsEditor({ hostname }: { hostname: string }) {
   const users = useUsers();
-  const grants = useGrants(hostId);
+  const grants = useGrants(hostname);
   const setGrants = useSetGrants();
   const { toast } = useToast();
 
@@ -40,7 +40,7 @@ export function GrantsEditor({ hostId }: { hostId: number }) {
 
   const save = async () => {
     try {
-      await setGrants.mutateAsync({ id: hostId, pubkeys: selected });
+      await setGrants.mutateAsync({ hostname, pubkeys: selected });
       setDraft(undefined);
       toast({ title: 'Access updated' });
     } catch (error) {

@@ -10,15 +10,15 @@ import { useToast } from '@/hooks/useToast';
 import type { HostVersion } from '@/lib/api-types';
 
 /** Version history with rollback, the reason npanel keeps every manifest. */
-export function VersionList({ hostId }: { hostId: number }) {
-  const versions = useVersions(hostId);
+export function VersionList({ hostname }: { hostname: string }) {
+  const versions = useVersions(hostname);
   const updateHost = useUpdateHost();
   const { toast } = useToast();
   const [logEventId, setLogEventId] = useState<string | undefined>();
 
   const pin = async (eventId: string | null) => {
     try {
-      await updateHost.mutateAsync({ id: hostId, pinned_event_id: eventId });
+      await updateHost.mutateAsync({ hostname, patch: { pinned_event_id: eventId } });
       toast({
         title: eventId ? 'Rolled back' : 'Following the latest version',
         description: eventId
@@ -115,7 +115,7 @@ export function VersionList({ hostId }: { hostId: number }) {
         </TableBody>
       </Table>
 
-      <DeployLogDialog hostId={hostId} eventId={logEventId} onClose={() => setLogEventId(undefined)} />
+      <DeployLogDialog hostname={hostname} eventId={logEventId} onClose={() => setLogEventId(undefined)} />
     </>
   );
 }

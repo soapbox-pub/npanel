@@ -69,11 +69,11 @@ export function HostsPage() {
             </TableHeader>
             <TableBody>
               {mine.map((host) => (
-                <TableRow key={host.id}>
+                <TableRow key={host.hostname}>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Link
-                        to={`/hosts/${host.id}`}
+                        to={`/hosts/${host.hostname}`}
                         className="font-mono text-sm font-medium hover:text-primary hover:underline"
                       >
                         {host.hostname}

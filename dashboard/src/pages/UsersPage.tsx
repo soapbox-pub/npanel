@@ -131,7 +131,7 @@ export function UsersPage() {
                     </Select>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {user.role === 'admin' ? 'all' : user.host_ids.length}
+                    {user.role === 'admin' ? 'all' : user.hostnames.length}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button

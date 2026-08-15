@@ -29,16 +29,17 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
+import type { HostPatch } from '@/lib/api-types';
 import { isRootDomain } from '@shared/hostname';
 
 /** Everything about one site: what it points at, its versions, its access. */
 export function HostDetailPage() {
   const params = useParams();
-  const hostId = Number(params.id);
+  const hostname = params.hostname;
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  const host = useHost(Number.isInteger(hostId) ? hostId : undefined);
+  const host = useHost(hostname);
   const me = useMe();
   const updateHost = useUpdateHost();
   const deleteHost = useDeleteHost();
@@ -77,6 +78,9 @@ export function HostDetailPage() {
     }
   };
 
+  const patch = (values: HostPatch, success: string) =>
+    run(() => updateHost.mutateAsync({ hostname: data.hostname, patch: values }), success);
+
   return (
     <div className="space-y-6">
       <BackLink />
@@ -108,7 +112,9 @@ export function HostDetailPage() {
             variant="outline"
             size="sm"
             disabled={syncHost.isPending}
-            onClick={() => run(() => syncHost.mutateAsync(data.id), 'Checking relays for a new version')}
+            onClick={() =>
+              run(() => syncHost.mutateAsync(data.hostname), 'Checking relays for a new version')
+            }
           >
             <RefreshCw className="mr-2 h-4 w-4" />
             Sync now
@@ -142,7 +148,7 @@ export function HostDetailPage() {
             disabled={!parsed.address || updateHost.isPending}
             onClick={() =>
               run(async () => {
-                await updateHost.mutateAsync({ id: data.id, address });
+                await updateHost.mutateAsync({ hostname: data.hostname, patch: { address } });
                 setAddress('');
               }, 'Target updated')
             }
@@ -152,54 +158,128 @@ export function HostDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Only a root domain owns its `www`; on a subdomain the switch would be
-          a promise npanel has no business making about someone's zone. */}
-      {isRootDomain(data.hostname) && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">www</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <label className="flex items-center gap-3 text-sm">
-              <Switch
-                checked={data.redirect_www}
-                onCheckedChange={(redirect) =>
-                  run(
-                    () => updateHost.mutateAsync({ id: data.id, redirect_www: redirect }),
-                    redirect ? 'www now redirects here' : 'www no longer redirects here',
-                  )
-                }
-              />
-              <span className="font-mono text-xs">
-                www.{data.hostname} → {data.hostname}
-              </span>
-            </label>
-            <p className="text-sm text-muted-foreground">
-              {data.redirect_www
-                ? 'A permanent redirect that keeps the path. It needs the DNS record below: the redirect is an HTTPS response like any other, so www has to reach this server and get a certificate of its own before a browser will follow it.'
-                : `www.${data.hostname} is not served at all, unless you add it as a site of its own.`}
-            </p>
-            {data.redirect_www && <DnsRecords hostname={data.hostname} www />}
-          </CardContent>
-        </Card>
-      )}
-
       <Tabs defaultValue="versions">
         <TabsList>
           <TabsTrigger value="versions">Versions</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
           {me.data?.role === 'admin' && <TabsTrigger value="access">Access</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="versions" className="pt-4">
           <Card>
-            <VersionList hostId={data.id} />
+            <VersionList hostname={data.hostname} />
           </Card>
         </TabsContent>
 
         <TabsContent value="files" className="pt-4">
           <Card>
-            <FileList hostId={data.id} />
+            <FileList hostname={data.hostname} />
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="settings" className="space-y-6 pt-4">
+          {/* Only a root domain owns its `www`; on a subdomain the switch would
+              be a promise npanel has no business making about someone's zone. */}
+          {isRootDomain(data.hostname) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">www</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <label className="flex items-center gap-3 text-sm">
+                  <Switch
+                    checked={data.redirect_www}
+                    onCheckedChange={(redirect) =>
+                      patch(
+                        { redirect_www: redirect },
+                        redirect ? 'www now redirects here' : 'www no longer redirects here',
+                      )
+                    }
+                  />
+                  <span className="font-mono text-xs">
+                    www.{data.hostname} → {data.hostname}
+                  </span>
+                </label>
+                <p className="text-sm text-muted-foreground">
+                  {data.redirect_www
+                    ? 'A permanent redirect that keeps the path. It needs the DNS record below: the redirect is an HTTPS response like any other, so www has to reach this server and get a certificate of its own before a browser will follow it.'
+                    : `www.${data.hostname} is not served at all, unless you add it as a site of its own.`}
+                </p>
+                {data.redirect_www && <DnsRecords hostname={data.hostname} www />}
+              </CardContent>
+            </Card>
+          )}
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Visibility</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {/* The switch reads as "listed", not as "hidden": a site is listed
+                  unless someone says otherwise, and a toggle sitting off while
+                  the label says Listed would contradict itself. */}
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={!data.hidden}
+                  onCheckedChange={(listed) =>
+                    patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')
+                  }
+                />
+                {data.hidden ? 'Unlisted' : 'Listed'}
+              </label>
+              <p className="text-sm text-muted-foreground">
+                An unlisted site is left out of the list on the homepage, and out of sight of staff
+                who can't manage it. It changes nothing about who can visit the site itself.
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-destructive/40">
+            <CardHeader>
+              <CardTitle className="text-base text-destructive">Danger zone</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-wrap items-center justify-between gap-4">
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.enabled}
+                  onCheckedChange={(enabled) =>
+                    patch({ enabled }, enabled ? 'Site enabled' : 'Site disabled')
+                  }
+                />
+                {data.enabled ? 'Serving' : 'Disabled — requests return 404'}
+              </label>
+
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" size="sm">
+                    Delete site
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete {data.hostname}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      The site stops being served. Downloaded files stay on disk until you prune
+                      them.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() =>
+                        run(async () => {
+                          await deleteHost.mutateAsync(data.hostname);
+                          navigate('/');
+                        }, 'Site deleted')
+                      }
+                    >
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </CardContent>
           </Card>
         </TabsContent>
 
@@ -207,88 +287,12 @@ export function HostDetailPage() {
           <TabsContent value="access" className="pt-4">
             <Card>
               <CardContent className="pt-6">
-                <GrantsEditor hostId={data.id} />
+                <GrantsEditor hostname={data.hostname} />
               </CardContent>
             </Card>
           </TabsContent>
         )}
       </Tabs>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Visibility</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {/* The switch reads as "listed", not as "hidden": a site is listed
-              unless someone says otherwise, and a toggle sitting off while the
-              label says Listed would contradict itself. */}
-          <label className="flex items-center gap-3 text-sm">
-            <Switch
-              checked={!data.hidden}
-              onCheckedChange={(listed) =>
-                run(
-                  () => updateHost.mutateAsync({ id: data.id, hidden: !listed }),
-                  listed ? 'Site is now listed' : 'Site is now unlisted',
-                )
-              }
-            />
-            {data.hidden ? 'Unlisted' : 'Listed'}
-          </label>
-          <p className="text-sm text-muted-foreground">
-            An unlisted site is left out of the list on the homepage, and out of sight of staff who
-            can't manage it. It changes nothing about who can visit the site itself.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Danger zone</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center justify-between gap-4">
-          <label className="flex items-center gap-3 text-sm">
-            <Switch
-              checked={data.enabled}
-              onCheckedChange={(enabled) =>
-                run(
-                  () => updateHost.mutateAsync({ id: data.id, enabled }),
-                  enabled ? 'Site enabled' : 'Site disabled',
-                )
-              }
-            />
-            {data.enabled ? 'Serving' : 'Disabled — requests return 404'}
-          </label>
-
-          <AlertDialog>
-            <AlertDialogTrigger asChild>
-              <Button variant="destructive" size="sm">
-                Delete site
-              </Button>
-            </AlertDialogTrigger>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete {data.hostname}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  The site stops being served. Downloaded files stay on disk until you prune them.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() =>
-                    run(async () => {
-                      await deleteHost.mutateAsync(data.id);
-                      navigate('/');
-                    }, 'Site deleted')
-                  }
-                >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </CardContent>
-      </Card>
     </div>
   );
 }

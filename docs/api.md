@@ -138,11 +138,13 @@ produced anything; `type` is `A`, `AAAA`, or `CNAME`.
 
 ## Hosts
 
+A host is addressed by its hostname, which is unique — `/api/hosts/example.org`.
+The database's row id is never part of the API.
+
 A host object:
 
 ```json
 {
-  "id": 1,
   "hostname": "example.org",
   "pubkey": "<hex>",
   "kind": 35128,
@@ -207,11 +209,11 @@ is `DASHBOARD_HOST`. `400` if it doesn't sit under one of
 creates a host is granted it automatically, so they aren't locked out of their
 own work.
 
-### `GET /api/hosts/:id`
+### `GET /api/hosts/:hostname`
 
 `{ "host": {...} }`, or `404` / `403`.
 
-### `PATCH /api/hosts/:id`
+### `PATCH /api/hosts/:hostname`
 
 Any subset of:
 
@@ -244,14 +246,15 @@ subdomain is accepted and does nothing, so a later rename doesn't silently
 leave `www` unserved.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
-or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`.
+or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
+rename also moves the host: every subsequent request must use the new name.
 
-### `DELETE /api/hosts/:id`
+### `DELETE /api/hosts/:hostname`
 
 `{ "ok": true }`. Removes the mapping; stored versions and blobs are untouched
 until `prune-blobs` runs.
 
-### `GET /api/hosts/:id/versions?limit=50`
+### `GET /api/hosts/:hostname/versions?limit=50`
 
 ```json
 {
@@ -263,7 +266,7 @@ until `prune-blobs` runs.
 
 Newest first. `limit` is clamped to 1–200.
 
-### `GET /api/hosts/:id/versions/:eventId/log`
+### `GET /api/hosts/:hostname/versions/:eventId/log`
 
 The deploy trace for one version — what the dashboard shows when a deploy fails.
 
@@ -284,7 +287,7 @@ The deploy trace for one version — what the dashboard shows when a deploy fail
 
 Oldest first, capped at the 500 most recent entries per version.
 
-### `GET /api/hosts/:id/files?event_id=<hex>`
+### `GET /api/hosts/:hostname/files?event_id=<hex>`
 
 Files in a version, defaulting to the active one (or the newest if none is
 ready).
@@ -301,16 +304,16 @@ ready).
 `stored` is false for a blob that hasn't been downloaded yet — which is how you
 spot exactly what a stalled deploy is missing.
 
-### `POST /api/hosts/:id/sync`
+### `POST /api/hosts/:hostname/sync`
 
 Fetch the newest manifest from relays now. Returns `202` immediately;
 relay round trips take seconds, so poll the host or its versions for the result.
 
-### `GET /api/hosts/:id/grants` — admin
+### `GET /api/hosts/:hostname/grants` — admin
 
 `{ "grants": [{ "user_pubkey": "<hex>", "created_at": 1754000000 }] }`
 
-### `PUT /api/hosts/:id/grants` — admin
+### `PUT /api/hosts/:hostname/grants` — admin
 
 ```json
 { "pubkeys": ["<hex>", "<hex>"] }
@@ -332,7 +335,7 @@ an npanel user. Returns `{ "grants": [...] }`.
       "role": "staff",
       "added_by": "<hex>",
       "created_at": 1754000000,
-      "host_ids": [1, 4]
+      "hostnames": ["example.org", "docs.example.org"]
     }
   ]
 }

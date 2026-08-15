@@ -120,10 +120,10 @@ test("staff only see hosts they are granted", async () => {
   const empty = await harness.request(staff, "GET", "/api/hosts");
   assert.deepEqual((await empty.json()).hosts, []);
 
-  const forbidden = await harness.request(staff, "GET", `/api/hosts/${adminHost.id}`);
+  const forbidden = await harness.request(staff, "GET", `/api/hosts/${adminHost.hostname}`);
   assert.equal(forbidden.status, 403);
 
-  const granted = await harness.request(admin, "PUT", `/api/hosts/${adminHost.id}/grants`, {
+  const granted = await harness.request(admin, "PUT", `/api/hosts/${adminHost.hostname}/grants`, {
     pubkeys: [staff.pubkey],
   });
   assert.equal(granted.status, 200);
@@ -131,7 +131,7 @@ test("staff only see hosts they are granted", async () => {
   const visible = await harness.request(staff, "GET", "/api/hosts");
   assert.equal((await visible.json()).hosts.length, 1);
 
-  const allowed = await harness.request(staff, "GET", `/api/hosts/${adminHost.id}`);
+  const allowed = await harness.request(staff, "GET", `/api/hosts/${adminHost.hostname}`);
   assert.equal(allowed.status, 200);
 });
 
@@ -157,7 +157,7 @@ test("grants must name existing users", async () => {
   });
   const host = (await created.json()).host;
 
-  const response = await harness.request(admin, "PUT", `/api/hosts/${host.id}/grants`, {
+  const response = await harness.request(admin, "PUT", `/api/hosts/${host.hostname}/grants`, {
     pubkeys: [stranger.pubkey],
   });
   assert.equal(response.status, 400);
@@ -173,7 +173,7 @@ test("retargets a host and clears its pin", async () => {
   });
   const host = (await created.json()).host;
 
-  const updated = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, {
+  const updated = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, {
     address: `${NAMED_SITE_KIND}:${PUBKEY}:docs`,
   });
 
@@ -211,7 +211,7 @@ test("refuses to pin a version from another site", async () => {
     })
     .execute();
 
-  const response = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, {
+  const response = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, {
     pinned_event_id: "a".repeat(64),
   });
 
@@ -228,11 +228,37 @@ test("deletes a host", async () => {
   });
   const host = (await created.json()).host;
 
-  const deleted = await harness.request(admin, "DELETE", `/api/hosts/${host.id}`);
+  const deleted = await harness.request(admin, "DELETE", `/api/hosts/${host.hostname}`);
   assert.equal(deleted.status, 200);
 
-  const missing = await harness.request(admin, "GET", `/api/hosts/${host.id}`);
+  const missing = await harness.request(admin, "GET", `/api/hosts/${host.hostname}`);
   assert.equal(missing.status, 404);
+});
+
+test("hosts are addressed by hostname, not by a row id", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+
+  // The primary key stays in the database, so nothing outside can count rows
+  // or guess at a host it was never told about.
+  assert.ok(!("id" in host));
+  assert.equal((await harness.request(admin, "GET", "/api/hosts/1")).status, 404);
+
+  // Hostnames are stored lowercased, so a URL must match on the same terms.
+  assert.equal((await harness.request(admin, "GET", "/api/hosts/DOCS.example.com")).status, 200);
+
+  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, {
+    hostname: "blog.example.com",
+  });
+  assert.equal(renamed.status, 200);
+
+  assert.equal((await harness.request(admin, "GET", "/api/hosts/docs.example.com")).status, 404);
+  assert.equal((await harness.request(admin, "GET", "/api/hosts/blog.example.com")).status, 200);
 });
 
 test("only admins manage users and settings", async () => {
@@ -312,7 +338,7 @@ test("audits host changes", async () => {
     address: NPUB,
   });
   const host = (await created.json()).host;
-  await harness.request(admin, "DELETE", `/api/hosts/${host.id}`);
+  await harness.request(admin, "DELETE", `/api/hosts/${host.hostname}`);
 
   const audit = await harness.request(admin, "GET", "/api/audit-log");
   const actions = (await audit.json()).entries.map((entry: { action: string }) => entry.action);
@@ -365,7 +391,7 @@ test("the public list leaves out hidden and disabled sites", async () => {
     hostname: "off.example.com",
     address: NPUB,
   });
-  await harness.request(admin, "PATCH", `/api/hosts/${(await off.json()).host.id}`, { enabled: false });
+  await harness.request(admin, "PATCH", `/api/hosts/${(await off.json()).host.hostname}`, { enabled: false });
 
   const shown = await harness.request(admin, "POST", "/api/hosts", {
     hostname: "docs.example.com",
@@ -378,7 +404,7 @@ test("the public list leaves out hidden and disabled sites", async () => {
   assert.deepEqual(hostnames((await sites.json()).sites), ["docs.example.com"]);
 
   // Hiding a site takes it off the list without taking it offline.
-  await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { hidden: true });
+  await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { hidden: true });
   assert.deepEqual(hostnames((await (await harness.request(undefined, "GET", "/api/sites")).json()).sites), []);
 });
 
@@ -392,7 +418,7 @@ test("www redirects unless the request says otherwise", async () => {
   const host = (await created.json()).host;
   assert.equal(host.redirect_www, true, "on by default, which is what people expect of www");
 
-  const off = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { redirect_www: false });
+  const off = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { redirect_www: false });
   assert.equal((await off.json()).host.redirect_www, false);
 
   // The flag is kept on a host it can't act on, so renaming a subdomain to a
@@ -504,9 +530,9 @@ test("staff are told what else the gateway serves, once the list is public", asy
   assert.equal(open.hosts.length, 1);
 
   // Naming a site is not access to it.
-  assert.equal((await harness.request(staff, "GET", `/api/hosts/${other.id}`)).status, 403);
+  assert.equal((await harness.request(staff, "GET", `/api/hosts/${other.hostname}`)).status, 403);
 
-  await harness.request(admin, "PATCH", `/api/hosts/${other.id}`, { hidden: true });
+  await harness.request(admin, "PATCH", `/api/hosts/${other.hostname}`, { hidden: true });
 
   const hidden = await (await harness.request(staff, "GET", "/api/hosts")).json();
   assert.deepEqual(hidden.other_sites, []);
@@ -540,7 +566,7 @@ test("renaming a host cannot take over the dashboard hostname", async () => {
   });
   const host = (await created.json()).host;
 
-  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { hostname: "panel.test" });
+  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { hostname: "panel.test" });
 
   assert.equal(renamed.status, 409);
   assert.match((await renamed.json()).error, /dashboard itself/);
@@ -581,7 +607,7 @@ test("hostnames must sit under an allowed domain when one is set", async () => {
   const apex = await harness.request(admin, "POST", "/api/hosts", { hostname: "example.com", address: NPUB });
   assert.equal(apex.status, 201);
 
-  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, {
+  const renamed = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, {
     hostname: "sneaky.example.org",
   });
   assert.equal(renamed.status, 400);

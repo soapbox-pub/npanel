@@ -16,7 +16,7 @@ export function AppRouter() {
       <Routes>
         <Route element={<DashboardLayout />}>
           <Route path="/" element={<HostsPage />} />
-          <Route path="/hosts/:id" element={<HostDetailPage />} />
+          <Route path="/hosts/:hostname" element={<HostDetailPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/audit" element={<AuditLogPage />} />

@@ -14,7 +14,7 @@ export interface HostVersion {
 }
 
 export interface Host {
-  id: number;
+  /** The API's identifier for a host: unique, and what every route keys on. */
   hostname: string;
   pubkey: string;
   kind: number;
@@ -35,6 +35,16 @@ export interface Host {
   active: HostVersion | null;
   /** The newest known version, which may still be deploying. */
   latest: HostVersion | null;
+}
+
+/** Everything about a host that can be changed after it exists. */
+export interface HostPatch {
+  hostname?: string;
+  address?: string;
+  enabled?: boolean;
+  hidden?: boolean;
+  redirect_www?: boolean;
+  pinned_event_id?: string | null;
 }
 
 export interface DeployLogEntry {
@@ -58,7 +68,7 @@ export interface NpanelUser {
   role: 'admin' | 'staff';
   added_by: string | null;
   created_at: number;
-  host_ids: number[];
+  hostnames: string[];
 }
 
 export interface DnsRecord {

@@ -67,7 +67,7 @@ test("refuses a disabled host", async () => {
 
   const created = await addHost("docs.example.com");
   const host = (await created.json()).host;
-  await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { enabled: false });
+  await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { enabled: false });
 
   // A hostname npanel answers 404 for has no use for a certificate.
   assert.equal((await ask("docs.example.com")).status, 404);
@@ -91,7 +91,7 @@ test("refuses www when the root domain doesn't redirect it", async () => {
 
   const created = await addHost("example.com");
   const host = (await created.json()).host;
-  await harness.request(admin, "PATCH", `/api/hosts/${host.id}`, { redirect_www: false });
+  await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { redirect_www: false });
 
   assert.equal((await ask("www.example.com")).status, 404);
 });

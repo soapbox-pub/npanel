@@ -24,7 +24,11 @@ export function userRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
   app.get("/", async (c) => {
     const users = await db.selectFrom("users").selectAll().orderBy("created_at").execute();
-    const grants = await db.selectFrom("host_grants").select(["user_pubkey", "host_id"]).execute();
+    const grants = await db
+      .selectFrom("host_grants")
+      .innerJoin("hosts", "hosts.id", "host_grants.host_id")
+      .select(["host_grants.user_pubkey", "hosts.hostname"])
+      .execute();
 
     return c.json({
       users: users.map((user) => ({
@@ -33,7 +37,7 @@ export function userRoutes(deps: ApiDeps): Hono<ApiEnv> {
         role: user.role,
         added_by: user.added_by,
         created_at: user.created_at,
-        host_ids: grants.filter((grant) => grant.user_pubkey === user.pubkey).map((grant) => grant.host_id),
+        hostnames: grants.filter((grant) => grant.user_pubkey === user.pubkey).map((grant) => grant.hostname),
       })),
     });
   });
