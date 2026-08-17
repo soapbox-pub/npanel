@@ -6,6 +6,7 @@ import type { Database } from "./db/schema.ts";
 import { wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
+import { encodeNaddr } from "./nsite-address.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
@@ -36,15 +37,7 @@ const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifes
  * that a `fetch` could not read the `ETag` to revalidate with, or the
  * `Content-Range` to resume a download from.
  */
-const EXPOSED_HEADERS = [
-  "accept-ranges",
-  "content-length",
-  "content-range",
-  "etag",
-  "x-npanel-pubkey",
-  "x-npanel-event",
-  "x-npanel-identifier",
-].join(", ");
+const EXPOSED_HEADERS = ["accept-ranges", "content-length", "content-range", "etag", "x-nsite-addr"].join(", ");
 
 /** How long a browser may reuse a preflight result, in seconds. */
 const PREFLIGHT_MAX_AGE = "86400";
@@ -144,12 +137,10 @@ export function createSiteServer(deps: SiteServerDeps) {
       etag,
       "last-modified": lastModified(version.created_at, version.fetched_at),
       "accept-ranges": "bytes",
-      "x-npanel-pubkey": host.pubkey,
-      "x-npanel-event": version.event_id,
+      // Which nsite this hostname is serving, in the one form a client can
+      // paste anywhere: `naddr` carries the pubkey, kind, and `d` tag at once.
+      "x-nsite-addr": encodeNaddr(host),
     });
-    if (host.identifier) {
-      headers.set("x-npanel-identifier", host.identifier);
-    }
 
     if (matchesEtag(request.headers.get("if-none-match"), etag)) {
       return new Response(null, { status: 304, headers });

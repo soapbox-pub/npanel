@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, test } from "node:test";
+import { encodeNaddr } from "./nsite-address.ts";
 import { matchesEtag, parseRange } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
@@ -219,8 +220,7 @@ test("serves index.html with caching headers", async () => {
   // A document's URL survives a redeploy, so it must revalidate every time.
   assert.equal(response.headers.get("cache-control"), "public, no-cache");
   assert.equal(response.headers.get("accept-ranges"), "bytes");
-  assert.equal(response.headers.get("x-npanel-pubkey"), PUBKEY);
-  assert.equal(response.headers.get("x-npanel-event"), "a".repeat(64));
+  assert.equal(response.headers.get("x-nsite-addr"), encodeNaddr({ pubkey: PUBKEY, kind: 15128, identifier: "" }));
 });
 
 test("assets may be cached, documents may not", async () => {
@@ -260,7 +260,7 @@ test("any origin may read a site", async () => {
   const exposed = response.headers.get("access-control-expose-headers") ?? "";
   assert.match(exposed, /etag/);
   assert.match(exposed, /content-range/);
-  assert.match(exposed, /x-npanel-event/);
+  assert.match(exposed, /x-nsite-addr/);
 });
 
 test("error and redirect responses carry CORS headers too", async () => {
