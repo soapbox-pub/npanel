@@ -93,8 +93,16 @@ export interface ResolvedFile {
 const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
 
 /**
- * Resolve a request path within a stored version: exact match, then
- * `index.html` for extensionless paths, then the site's own `/404.html`.
+ * Resolve a request path within a stored version: exact match, then — for an
+ * extensionless path — a `.html` sibling and then `index.html` beneath it, and
+ * finally the site's own `/404.html`.
+ *
+ * The `.html` step is what a multi-page generator needs. VitePress with
+ * `cleanUrls` emits `self-hosting.html` and links to `/self-hosting`, so
+ * without it every page of such a site answers `404` while sitting right there
+ * in the manifest. It is tried ahead of `index.html` because that is the order
+ * `try_files {path} {path}.html {path}/index.html` established, and a site
+ * carrying both spellings meant the first one.
  *
  * Reads the path map from the database, so serving a file never parses a
  * manifest event.
@@ -115,10 +123,12 @@ export async function resolveSitePath(
   options: { spa?: boolean } = {},
 ): Promise<ResolvedFile | undefined> {
   const normalized = join("/", decodePath(requestPath));
-  const indexPath = extname(normalized) === "" ? join(normalized, "index.html") : undefined;
+  const extensionless = extname(normalized) === "";
+  const htmlPath = extensionless && normalized !== "/" ? `${normalized}.html` : undefined;
+  const indexPath = extensionless ? join(normalized, "index.html") : undefined;
   const shell = options.spa && DOCUMENT_EXTENSIONS.has(extname(normalized).toLowerCase());
 
-  const candidates = [normalized, indexPath, "/404.html", shell ? "/index.html" : undefined].filter(
+  const candidates = [normalized, htmlPath, indexPath, "/404.html", shell ? "/index.html" : undefined].filter(
     (path): path is string => path !== undefined,
   );
 
@@ -133,6 +143,11 @@ export async function resolveSitePath(
 
   const exact = found.get(normalized);
   if (exact) return { path: normalized, sha256: exact, status: 200 };
+
+  if (htmlPath) {
+    const page = found.get(htmlPath);
+    if (page) return { path: htmlPath, sha256: page, status: 200 };
+  }
 
   if (indexPath) {
     const index = found.get(indexPath);

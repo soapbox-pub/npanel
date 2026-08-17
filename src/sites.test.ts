@@ -76,6 +76,36 @@ test("resolves exact paths, index fallbacks, and 404s", async () => {
   });
 });
 
+test("resolves an extensionless path to its .html sibling", async () => {
+  const db = await version({
+    "/index.html": HASH_A,
+    "/self-hosting.html": HASH_B,
+    "/404.html": HASH_C,
+  });
+
+  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/self-hosting"), {
+    path: "/self-hosting.html",
+    sha256: HASH_B,
+    status: 200,
+  });
+  // The root is not "/.html".
+  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/"), {
+    path: "/index.html",
+    sha256: HASH_A,
+    status: 200,
+  });
+});
+
+test("prefers a .html sibling over a directory index", async () => {
+  const db = await version({ "/blog.html": HASH_A, "/blog/index.html": HASH_B });
+
+  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/blog"), {
+    path: "/blog.html",
+    sha256: HASH_A,
+    status: 200,
+  });
+});
+
 test("resolution normalizes traversal and percent-encoding", async () => {
   const db = await version({ "/index.html": HASH_A, "/my file.txt": HASH_B });
 
