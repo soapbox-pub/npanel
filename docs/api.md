@@ -462,6 +462,13 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 | `X-Npanel-Event`     | The exact version served                  |
 | `X-Npanel-Identifier`| The `d` tag, for named sites              |
 
+Every site response is readable from any origin: `Access-Control-Allow-Origin`
+is always `*`, and `Access-Control-Expose-Headers` covers the headers above
+along with `Accept-Ranges`, `Content-Range`, and `Content-Length`, so a
+cross-origin `fetch` can revalidate and resume like a same-origin one.
+Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing to
+configure — a site is public files with no credential attached.
+
 Range requests are supported. A `503` with `Retry-After` means no version is
 ready yet; a `404` means the hostname isn't configured, or the path isn't in the
 version — served as the site's `/404.html` when it has one. On a host with `spa`

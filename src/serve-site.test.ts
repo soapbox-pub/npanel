@@ -246,6 +246,65 @@ test("only GET and HEAD reach a site", async () => {
   assert.equal(response.headers.get("allow"), "GET, HEAD");
 });
 
+test("any origin may read a site", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/", {
+    headers: { origin: "https://reader.example" },
+  });
+
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+  // Without these a cross-origin fetch cannot revalidate or resume.
+  const exposed = response.headers.get("access-control-expose-headers") ?? "";
+  assert.match(exposed, /etag/);
+  assert.match(exposed, /content-range/);
+  assert.match(exposed, /x-npanel-event/);
+});
+
+test("error and redirect responses carry CORS headers too", async () => {
+  const { harness } = await setup();
+  const root = await rootDomain();
+
+  // A cross-origin caller has to be able to read the status it got.
+  const missing = await harness.site("nope.example.com", "/");
+  assert.equal(missing.headers.get("access-control-allow-origin"), "*");
+
+  const undeployed = await harness.site("docs.example.com", "/");
+  assert.equal(undeployed.status, 503);
+  assert.equal(undeployed.headers.get("access-control-allow-origin"), "*");
+
+  // CORS follows redirects, so the hop needs the header as much as the target.
+  const redirect = await root.site("www.example.com", "/");
+  assert.equal(redirect.status, 301);
+  assert.equal(redirect.headers.get("access-control-allow-origin"), "*");
+});
+
+test("preflights are answered, plain OPTIONS is still a 405", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/data.txt": "0123456789" } }],
+  });
+
+  const flight = await harness.site("docs.example.com", "/data.txt", {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://reader.example",
+      "access-control-request-method": "GET",
+      "access-control-request-headers": "range",
+    },
+  });
+
+  assert.equal(flight.status, 204);
+  assert.equal(flight.headers.get("access-control-allow-origin"), "*");
+  assert.equal(flight.headers.get("access-control-allow-methods"), "GET, HEAD, OPTIONS");
+  assert.equal(flight.headers.get("access-control-allow-headers"), "range");
+
+  const plain = await harness.site("docs.example.com", "/data.txt", { method: "OPTIONS" });
+  assert.equal(plain.status, 405);
+  assert.equal(plain.headers.get("allow"), "GET, HEAD");
+});
+
 test("last-modified never runs ahead of when the manifest was seen", async () => {
   const { harness } = await setup({
     versions: [

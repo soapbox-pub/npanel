@@ -30,6 +30,26 @@ const ASSET_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifest", ".xml", ".txt", ".md"]);
 
 /**
+ * Response headers a cross-origin script may read.
+ *
+ * CORS otherwise hides everything outside its safelist, which is small enough
+ * that a `fetch` could not read the `ETag` to revalidate with, or the
+ * `Content-Range` to resume a download from.
+ */
+const EXPOSED_HEADERS = [
+  "accept-ranges",
+  "content-length",
+  "content-range",
+  "etag",
+  "x-npanel-pubkey",
+  "x-npanel-event",
+  "x-npanel-identifier",
+].join(", ");
+
+/** How long a browser may reuse a preflight result, in seconds. */
+const PREFLIGHT_MAX_AGE = "86400";
+
+/**
  * Serve a request for one of the configured hostnames.
  *
  * Everything is read from the local blob store — npanel never proxies a
@@ -71,7 +91,7 @@ export function createSiteServer(deps: SiteServerDeps) {
     });
   }
 
-  return async function serveSite(request: Request, hostname: string): Promise<Response> {
+  async function handle(request: Request, hostname: string): Promise<Response> {
     if (request.method !== "GET" && request.method !== "HEAD") {
       // An nsite is a pile of files. There is nothing to POST to.
       return new Response("This site only serves GET and HEAD requests.", {
@@ -167,7 +187,64 @@ export function createSiteServer(deps: SiteServerDeps) {
     });
 
     return new Response(body, { status, headers });
+  }
+
+  return async function serveSite(request: Request, hostname: string): Promise<Response> {
+    if (isPreflight(request)) return preflight(request);
+
+    const response = await handle(request, hostname);
+    allowCrossOrigin(response.headers);
+
+    return response;
   };
+}
+
+/**
+ * Let any origin read any site.
+ *
+ * A site is a pile of public files, served identically to everyone and with no
+ * cookie or credential anywhere in the request — so the same-origin policy
+ * protects nothing here, and withholding these headers only breaks the callers
+ * with a legitimate reason to read one site from another: viewers that render
+ * a site's `feed.xml`, importers, archivers. `*` also forbids credentialed
+ * requests outright, which is the behavior we want regardless.
+ */
+function allowCrossOrigin(headers: Headers): void {
+  headers.set("access-control-allow-origin", "*");
+  headers.set("access-control-expose-headers", EXPOSED_HEADERS);
+}
+
+/**
+ * Whether a request is a CORS preflight rather than something to serve.
+ *
+ * A plain `OPTIONS` is not one, and keeps falling through to the 405 that
+ * tells the client which methods a site does answer.
+ */
+function isPreflight(request: Request): boolean {
+  return request.method === "OPTIONS" && request.headers.has("access-control-request-method");
+}
+
+/**
+ * Answer a preflight.
+ *
+ * A simple `GET` never triggers one, but a `fetch` that sets `Range` or
+ * `If-None-Match` does, and failing it would fail the request that follows.
+ * The requested headers are echoed back because a static file server has no
+ * request header it needs to refuse.
+ */
+function preflight(request: Request): Response {
+  const headers = new Headers({
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, HEAD, OPTIONS",
+    "access-control-max-age": PREFLIGHT_MAX_AGE,
+  });
+
+  const requested = request.headers.get("access-control-request-headers");
+  if (requested) {
+    headers.set("access-control-allow-headers", requested);
+  }
+
+  return new Response(null, { status: 204, headers });
 }
 
 /**
