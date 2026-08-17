@@ -1,6 +1,9 @@
 .env
 .env.*
 !.env.example
+# The runbook for our own instance: hostnames, ports, and what else shares the
+# box. docs/deployment.md is the one written for everybody else.
+DEPLOY.md
 .ai/
 node_modules/
 data/
