@@ -100,6 +100,64 @@ export interface Settings {
   tls_check_limit_total: number;
   contact_npub: string;
   public_site_list: boolean;
+  bunker_relays: string[];
+  bunker_request_timeout: number;
+  bunker_max_relays: number;
+  bunker_rate_limit: number;
+}
+
+/** Whether a bunker can reach the signer that actually holds its key. */
+export type BunkerStatus = 'pending' | 'connected' | 'error';
+
+/** An identity npanel signs for without holding its key. */
+export interface Bunker {
+  /** The API's identifier for a bunker. Stable across renames. */
+  slug: string;
+  name: string;
+  /** Who the bunker signs as, once pairing has established it. */
+  user_pubkey: string | null;
+  npub: string | null;
+  /** The upstream signer's pubkey. Half of a bunker URI, and not a secret. */
+  upstream_pubkey: string | null;
+  upstream_relays: string[];
+  status: BunkerStatus;
+  error: string | null;
+  last_ok_at: number | null;
+  enabled: boolean;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+/** How a pairing attempt is going. `idle` means nothing is in flight. */
+export interface PairingStatus {
+  state: 'idle' | 'waiting' | 'connected' | 'failed';
+  /** The `nostrconnect://` URI to show a signer, while waiting. */
+  uri: string | null;
+  error: string | null;
+}
+
+export interface BunkerTestResult {
+  ok: boolean;
+  user_pubkey: string | null;
+  error: string | null;
+}
+
+/** One client's authorization to sign through a bunker. */
+export interface BunkerConnection {
+  /** What its client `p`-tags, and how the API addresses it. */
+  signer_pubkey: string;
+  name: string;
+  /** NIP-46 specs: `method` or `method:kind`. */
+  permissions: string[];
+  connected: boolean;
+  client_pubkey: string | null;
+  relays: string[];
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  /** The last request npanel refused, so you can see what to grant. */
+  last_error: string | null;
 }
 
 /** A site as it appears to someone who can't manage it. */

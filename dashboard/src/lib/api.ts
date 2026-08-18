@@ -2,6 +2,9 @@ import type { NostrSigner } from '@nostrify/nostrify';
 
 import type {
   AuditEntry,
+  Bunker,
+  BunkerConnection,
+  BunkerTestResult,
   DeployLogEntry,
   DnsTarget,
   Host,
@@ -10,6 +13,7 @@ import type {
   Instance,
   Me,
   NpanelUser,
+  PairingStatus,
   PublicSite,
   SiteCard,
   ServerStatus,
@@ -143,6 +147,81 @@ export class ApiClient {
 
   setGrants(hostname: string, pubkeys: string[]): Promise<{ grants: string[] }> {
     return this.request('PUT', `/api/hosts/${path(hostname)}/grants`, { pubkeys });
+  }
+
+  bunkers(): Promise<{ bunkers: Bunker[] }> {
+    return this.request('GET', '/api/bunkers');
+  }
+
+  bunker(slug: string): Promise<{ bunker: Bunker }> {
+    return this.request('GET', `/api/bunkers/${path(slug)}`);
+  }
+
+  createBunker(input: { name: string }): Promise<{ bunker: Bunker }> {
+    return this.request('POST', '/api/bunkers', input);
+  }
+
+  updateBunker(slug: string, patch: { name?: string; enabled?: boolean }): Promise<{ bunker: Bunker }> {
+    return this.request('PATCH', `/api/bunkers/${path(slug)}`, patch);
+  }
+
+  deleteBunker(slug: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/bunkers/${path(slug)}`);
+  }
+
+  /** Without a `uri`, npanel mints a `nostrconnect://` invitation instead. */
+  startPairing(slug: string, uri?: string): Promise<{ pairing: PairingStatus }> {
+    return this.request('POST', `/api/bunkers/${path(slug)}/pair`, uri ? { uri } : {});
+  }
+
+  pairing(slug: string): Promise<{ pairing: PairingStatus }> {
+    return this.request('GET', `/api/bunkers/${path(slug)}/pair`);
+  }
+
+  cancelPairing(slug: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/bunkers/${path(slug)}/pair`);
+  }
+
+  testBunker(slug: string): Promise<{ result: BunkerTestResult }> {
+    return this.request('POST', `/api/bunkers/${path(slug)}/test`);
+  }
+
+  bunkerGrants(slug: string): Promise<{ grants: { user_pubkey: string; created_at: number }[] }> {
+    return this.request('GET', `/api/bunkers/${path(slug)}/grants`);
+  }
+
+  setBunkerGrants(slug: string, pubkeys: string[]): Promise<{ grants: string[] }> {
+    return this.request('PUT', `/api/bunkers/${path(slug)}/grants`, { pubkeys });
+  }
+
+  connections(slug: string): Promise<{ connections: BunkerConnection[] }> {
+    return this.request('GET', `/api/bunkers/${path(slug)}/connections`);
+  }
+
+  /**
+   * Mint a connection.
+   *
+   * The `uri` it returns is a `bunker://` one shown exactly once — its secret
+   * is single-use and the server keeps no copy — or null when the client
+   * supplied its own invitation and has already been answered.
+   */
+  mintConnection(
+    slug: string,
+    input: { name: string; permissions: string[]; uri?: string },
+  ): Promise<{ connection: BunkerConnection; uri: string | null }> {
+    return this.request('POST', `/api/bunkers/${path(slug)}/connections`, input);
+  }
+
+  updateConnection(
+    slug: string,
+    signerPubkey: string,
+    patch: { name?: string; permissions?: string[] },
+  ): Promise<{ connection: BunkerConnection }> {
+    return this.request('PATCH', `/api/bunkers/${path(slug)}/connections/${path(signerPubkey)}`, patch);
+  }
+
+  revokeConnection(slug: string, signerPubkey: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/bunkers/${path(slug)}/connections/${path(signerPubkey)}`);
   }
 
   users(): Promise<{ users: NpanelUser[] }> {

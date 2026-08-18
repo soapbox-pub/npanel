@@ -1,4 +1,4 @@
-import { Globe, ScrollText, Settings as SettingsIcon, Users } from 'lucide-react';
+import { Globe, ScrollText, Settings as SettingsIcon, ShieldCheck, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
 
@@ -17,6 +17,7 @@ import { HomePage } from '@/pages/HomePage';
 
 const NAV = [
   { to: '/', label: 'Sites', icon: Globe, adminOnly: false, end: true },
+  { to: '/bunkers', label: 'Bunkers', icon: ShieldCheck, adminOnly: false, end: false },
   { to: '/users', label: 'Users', icon: Users, adminOnly: true, end: false },
   { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true, end: false },
   { to: '/audit', label: 'Audit log', icon: ScrollText, adminOnly: true, end: false },

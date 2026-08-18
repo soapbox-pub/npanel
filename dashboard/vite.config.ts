@@ -58,6 +58,9 @@ export default defineConfig(() => ({
       // The same Public Suffix List rules the server applies, so the dashboard
       // offers the www redirect exactly where the server will honour it.
       "@shared/hostname": path.resolve(import.meta.dirname, "../src/hostname.ts"),
+      // The permissions someone ticks are the ones the gateway enforces, in
+      // the same NIP-46 spec format both ends read.
+      "@shared/bunker-permissions": path.resolve(import.meta.dirname, "../src/bunker/permissions.ts"),
     },
   },
 }));

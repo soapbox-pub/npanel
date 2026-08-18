@@ -8,6 +8,9 @@ import type { HostPatch, Settings } from '@/lib/api-types';
 /** Poll while a deploy could be in progress, so progress bars actually move. */
 const LIVE_INTERVAL = 5000;
 
+/** Poll faster while someone is standing there with a phone in their hand. */
+const PAIRING_INTERVAL = 1500;
+
 function useKey(...parts: (string | number)[]) {
   const { user } = useCurrentUser();
   return ['npanel', user?.pubkey ?? 'anonymous', ...parts];
@@ -221,6 +224,171 @@ export function useSetGrants() {
 
   return useMutation({
     mutationFn: (input: { hostname: string; pubkeys: string[] }) => api!.setGrants(input.hostname, input.pubkeys),
+    onSuccess: invalidate,
+  });
+}
+
+export function useBunkers() {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('bunkers'),
+    queryFn: async () => (await api!.bunkers()).bunkers,
+    enabled: !!api,
+  });
+}
+
+export function useBunker(slug: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('bunker', slug ?? ''),
+    queryFn: async () => (await api!.bunker(slug!)).bunker,
+    enabled: !!api && !!slug,
+  });
+}
+
+export function useConnections(slug: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('connections', slug ?? ''),
+    queryFn: async () => (await api!.connections(slug!)).connections,
+    enabled: !!api && !!slug,
+    refetchInterval: LIVE_INTERVAL,
+  });
+}
+
+/**
+ * How a pairing attempt is going.
+ *
+ * Polled quickly and only while one is in flight: the answer comes from
+ * someone picking up their phone, so there is nothing to wait on but time.
+ */
+export function useBunkerPairing(slug: string | undefined, enabled: boolean) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('pairing', slug ?? ''),
+    queryFn: async () => (await api!.pairing(slug!)).pairing,
+    enabled: !!api && !!slug && enabled,
+    refetchInterval: PAIRING_INTERVAL,
+  });
+}
+
+export function useBunkerGrants(slug: string | undefined, enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('bunker-grants', slug ?? ''),
+    queryFn: async () => (await api!.bunkerGrants(slug!)).grants,
+    enabled: !!api && !!slug && enabled,
+  });
+}
+
+export function useCreateBunker() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { name: string }) => api!.createBunker(input),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateBunker() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { slug: string; patch: { name?: string; enabled?: boolean } }) =>
+      api!.updateBunker(input.slug, input.patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteBunker() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (slug: string) => api!.deleteBunker(slug),
+    onSuccess: invalidate,
+  });
+}
+
+export function useStartPairing() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { slug: string; uri?: string }) => api!.startPairing(input.slug, input.uri),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCancelPairing() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (slug: string) => api!.cancelPairing(slug),
+    onSuccess: invalidate,
+  });
+}
+
+export function useTestBunker() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (slug: string) => api!.testBunker(slug),
+    onSuccess: invalidate,
+  });
+}
+
+export function useMintConnection() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { slug: string; name: string; permissions: string[]; uri?: string }) =>
+      api!.mintConnection(input.slug, { name: input.name, permissions: input.permissions, uri: input.uri }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateConnection() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: {
+      slug: string;
+      signerPubkey: string;
+      patch: { name?: string; permissions?: string[] };
+    }) => api!.updateConnection(input.slug, input.signerPubkey, input.patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRevokeConnection() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { slug: string; signerPubkey: string }) =>
+      api!.revokeConnection(input.slug, input.signerPubkey),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetBunkerGrants() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { slug: string; pubkeys: string[] }) => api!.setBunkerGrants(input.slug, input.pubkeys),
     onSuccess: invalidate,
   });
 }
