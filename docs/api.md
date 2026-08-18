@@ -449,6 +449,87 @@ A signer that refuses or never answers is reported as `ok: false` with a reason,
 and the bunker's `status` becomes `error`. This is a `200` either way: the call
 succeeded in finding out.
 
+### Connections
+
+A connection is one client's authorization to sign through a bunker. It is
+addressed by its signer pubkey — the one its client already `p`-tags —
+`/api/bunkers/press-team/connections/<hex>`.
+
+```json
+{
+  "signer_pubkey": "<hex>",
+  "name": "CI deploy bot",
+  "permissions": ["sign_event:1", "nip44_decrypt"],
+  "connected": true,
+  "client_pubkey": "<hex>",
+  "relays": ["wss://relay.example.com"],
+  "created_by": "<hex>",
+  "created_at": 1754000000,
+  "last_used_at": 1754000600,
+  "last_error": "Refused sign_event:4"
+}
+```
+
+`permissions` are NIP-46 spec strings, `method` or `method:kind`. The
+grantable methods are `sign_event`, `nip04_encrypt`, `nip04_decrypt`,
+`nip44_encrypt` and `nip44_decrypt`; only `sign_event` takes a kind, and
+without one it means every kind. `connect`, `ping`, `get_public_key`,
+`switch_relays` and `logout` are implicit and can't be granted.
+
+`last_error` is the last request npanel refused, kept so staff can see what a
+client wanted without reading logs. It clears on the next request that works.
+
+Neither the connection's own key nor its claim token is ever serialized.
+
+### `GET /api/bunkers/:slug/connections`
+
+`{ "connections": [...] }`, newest first.
+
+### `POST /api/bunkers/:slug/connections`
+
+```json
+{ "name": "CI deploy bot", "permissions": ["sign_event:1"] }
+```
+
+Mints a connection and returns a `bunker://` URI for the client to consume:
+
+```json
+{ "connection": { "...": "..." }, "uri": "bunker://<hex>?relay=wss://...&secret=..." }
+```
+
+**The URI is returned once.** Its secret is single-use and npanel keeps no copy
+after the first client claims it; a connection whose URI was lost has to be
+revoked and minted again.
+
+Pass a client's own invitation instead to answer it directly:
+
+```json
+{ "name": "Some App", "permissions": ["sign_event:1"], "uri": "nostrconnect://<hex>?relay=...&secret=..." }
+```
+
+npanel replies to the client on the relays it named, and `uri` comes back
+`null` — the client is already connected, so there is nothing to show. The
+`perms` in the invitation are what the client *asked* for; what it gets is what
+`permissions` says.
+
+`400` for a permission spec that isn't one. `502` when the gateway refuses —
+because the invitation is malformed, because its relays can't be reached, or
+because honouring them would push past `bunker_max_relays`.
+
+### `PATCH /api/bunkers/:slug/connections/:pubkey`
+
+```json
+{ "name": "Deploy bot", "permissions": ["sign_event:1", "sign_event:30023"] }
+```
+
+Takes effect on the connection's next request. Returns
+`{ "connection": {...} }`.
+
+### `DELETE /api/bunkers/:slug/connections/:pubkey`
+
+Revokes it. `{ "ok": true }`. The client is not told; its next request is simply
+not answered by anything.
+
 ### `GET /api/bunkers/:slug/grants` — admin
 
 `{ "grants": [{ "user_pubkey": "<hex>", "created_at": 1754000000 }] }`

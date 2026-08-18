@@ -50,7 +50,7 @@ const service = new BunkerService({
   dashboardHost: data.dashboardHost,
 });
 
-service.start();
+await service.start();
 
 port.on("message", (call: BunkerCall & { id: number }) => {
   void dispatch(call).then(
@@ -78,6 +78,8 @@ async function dispatch(call: BunkerCall): Promise<unknown> {
       return await service.cancelPairing(...call.args);
     case "testBunker":
       return await service.testBunker(...call.args);
+    case "mintConnection":
+      return await service.mintConnection(...call.args);
     case "stop":
       // Signals only reach the main thread, so shutting down cleanly has to be
       // something the host asks for.

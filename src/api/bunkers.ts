@@ -2,8 +2,10 @@ import { Hono } from "hono";
 import { nip19 } from "nostr-tools";
 import { z } from "zod";
 import { requireAdmin } from "../auth.ts";
+import type { MintedConnection } from "../bunker/api.ts";
 import { BUNKER_UNAVAILABLE } from "../bunker/host.ts";
-import type { Bunker } from "../db/schema.ts";
+import { formatPermission, parsePermissions } from "../bunker/permissions.ts";
+import type { Bunker, BunkerConnection } from "../db/schema.ts";
 import { type ApiDeps, type ApiEnv, audit, canAccessBunker } from "./context.ts";
 
 const createSchema = z.object({
@@ -20,6 +22,18 @@ const updateSchema = z.object({
 const pairSchema = z.object({
   /** A `bunker://` URI to consume, or absent to have npanel mint an invitation. */
   uri: z.string().optional(),
+});
+
+const mintSchema = z.object({
+  name: z.string(),
+  permissions: z.array(z.string()),
+  /** A `nostrconnect://` URI from the client, or absent to mint a bunker one. */
+  uri: z.string().optional(),
+});
+
+const connectionSchema = z.object({
+  name: z.string().optional(),
+  permissions: z.array(z.string()).optional(),
 });
 
 const grantsSchema = z.object({
@@ -274,6 +288,163 @@ export function bunkerRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
   });
 
+  app.get("/:slug/connections", async (c) => {
+    const bunker = await load(c.req.param("slug"));
+    if (!bunker) return c.json({ error: "Bunker not found." }, 404);
+    if (!(await canAccessBunker(db, c.get("user"), bunker.id))) {
+      return c.json({ error: "You don't have access to this bunker." }, 403);
+    }
+
+    const connections = await db
+      .selectFrom("bunker_connections")
+      .selectAll()
+      .where("bunker_id", "=", bunker.id)
+      .orderBy("created_at", "desc")
+      .execute();
+
+    return c.json({ connections: connections.map(serializeConnection) });
+  });
+
+  /**
+   * Authorize a client to sign through this bunker.
+   *
+   * The `bunker://` URI this can return is shown once and never again — its
+   * secret is single-use, and npanel keeps no copy after the first client
+   * claims it.
+   */
+  app.post("/:slug/connections", async (c) => {
+    const user = c.get("user");
+    const bunker = await load(c.req.param("slug"));
+    if (!bunker) return c.json({ error: "Bunker not found." }, 404);
+    if (!(await canAccessBunker(db, user, bunker.id))) {
+      return c.json({ error: "You don't have access to this bunker." }, 403);
+    }
+
+    const body = mintSchema.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ error: "Expected a JSON body with a name and a permissions array." }, 400);
+    }
+
+    // Checked here as well as in the gateway, so a typo is a 400 with the
+    // reason rather than a round trip that comes back as a gateway failure.
+    try {
+      parsePermissions(body.data.permissions);
+    } catch (error) {
+      return c.json({ error: message(error) }, 400);
+    }
+
+    let minted: MintedConnection;
+    try {
+      minted = await bunkers.mintConnection({
+        bunkerId: bunker.id,
+        name: body.data.name,
+        permissions: body.data.permissions,
+        createdBy: user.pubkey,
+        uri: body.data.uri,
+      });
+    } catch (error) {
+      return c.json({ error: message(error) }, 502);
+    }
+
+    await audit(db, user.pubkey, "bunker.connection.create", `${bunker.slug}/${minted.signer_pubkey}`, undefined, {
+      name: body.data.name,
+      permissions: body.data.permissions,
+    });
+    log.info("bunker_connection_created", {
+      bunker: bunker.slug,
+      signer_pubkey: minted.signer_pubkey,
+      actor: user.pubkey,
+    });
+
+    const row = await db
+      .selectFrom("bunker_connections")
+      .selectAll()
+      .where("signer_pubkey", "=", minted.signer_pubkey)
+      .executeTakeFirstOrThrow();
+
+    return c.json({ connection: serializeConnection(row), uri: minted.uri }, 201);
+  });
+
+  app.patch("/:slug/connections/:pubkey", async (c) => {
+    const user = c.get("user");
+    const found = await loadConnection(c.req.param("slug"), c.req.param("pubkey"));
+    if ("error" in found) return c.json({ error: found.error }, found.status);
+    if (!(await canAccessBunker(db, user, found.bunker.id))) {
+      return c.json({ error: "You don't have access to this bunker." }, 403);
+    }
+
+    const body = connectionSchema.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) {
+      return c.json({ error: "Expected a JSON body." }, 400);
+    }
+
+    const patch: { name?: string; permissions?: string } = {};
+
+    if (body.data.name !== undefined) {
+      const name = body.data.name.trim();
+      if (!name) return c.json({ error: "A connection needs a name." }, 400);
+      patch.name = name;
+    }
+
+    if (body.data.permissions !== undefined) {
+      try {
+        patch.permissions = JSON.stringify(parsePermissions(body.data.permissions).map(formatPermission));
+      } catch (error) {
+        return c.json({ error: message(error) }, 400);
+      }
+    }
+
+    if (!Object.keys(patch).length) {
+      return c.json({ connection: serializeConnection(found.connection) });
+    }
+
+    await db.updateTable("bunker_connections").set(patch).where("id", "=", found.connection.id).execute();
+
+    await audit(
+      db,
+      user.pubkey,
+      "bunker.connection.update",
+      `${found.bunker.slug}/${found.connection.signer_pubkey}`,
+      { name: found.connection.name, permissions: JSON.parse(found.connection.permissions) },
+      { name: patch.name ?? found.connection.name, permissions: JSON.parse(patch.permissions ?? "null") },
+    );
+
+    const updated = await db
+      .selectFrom("bunker_connections")
+      .selectAll()
+      .where("id", "=", found.connection.id)
+      .executeTakeFirstOrThrow();
+
+    return c.json({ connection: serializeConnection(updated) });
+  });
+
+  app.delete("/:slug/connections/:pubkey", async (c) => {
+    const user = c.get("user");
+    const found = await loadConnection(c.req.param("slug"), c.req.param("pubkey"));
+    if ("error" in found) return c.json({ error: found.error }, found.status);
+    if (!(await canAccessBunker(db, user, found.bunker.id))) {
+      return c.json({ error: "You don't have access to this bunker." }, 403);
+    }
+
+    await db.deleteFrom("bunker_connections").where("id", "=", found.connection.id).execute();
+
+    await audit(db, user.pubkey, "bunker.connection.delete", `${found.bunker.slug}/${found.connection.signer_pubkey}`, {
+      name: found.connection.name,
+      permissions: JSON.parse(found.connection.permissions),
+    });
+    log.info("bunker_connection_revoked", {
+      bunker: found.bunker.slug,
+      signer_pubkey: found.connection.signer_pubkey,
+      actor: user.pubkey,
+    });
+
+    // The row is already gone, so a request arriving before the gateway drops
+    // its subscription finds no connection and is ignored either way.
+    void bunkers.reload().catch(() => {});
+
+    return c.json({ ok: true });
+  });
+
   app.get("/:slug/grants", requireAdmin(), async (c) => {
     const bunker = await load(c.req.param("slug"));
     if (!bunker) return c.json({ error: "Bunker not found." }, 404);
@@ -347,6 +518,30 @@ export function bunkerRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return await db.selectFrom("bunkers").selectAll().where("slug", "=", slug.toLowerCase()).executeTakeFirst();
   }
 
+  /**
+   * A connection, addressed by the pubkey its clients already know.
+   *
+   * A connection belonging to another bunker is a `404` rather than a `403`:
+   * the path names a bunker the caller may not be allowed to know exists.
+   */
+  async function loadConnection(
+    slug: string,
+    signerPubkey: string,
+  ): Promise<{ bunker: Bunker; connection: BunkerConnection } | { error: string; status: 404 }> {
+    const bunker = await load(slug);
+    if (!bunker) return { error: "Bunker not found.", status: 404 };
+
+    const connection = await db
+      .selectFrom("bunker_connections")
+      .selectAll()
+      .where("signer_pubkey", "=", signerPubkey.toLowerCase())
+      .where("bunker_id", "=", bunker.id)
+      .executeTakeFirst();
+    if (!connection) return { error: "Connection not found.", status: 404 };
+
+    return { bunker, connection };
+  }
+
   return app;
 }
 
@@ -382,7 +577,7 @@ function serializeBunker(bunker: Bunker): BunkerView {
     user_pubkey: bunker.user_pubkey,
     npub: bunker.user_pubkey ? nip19.npubEncode(bunker.user_pubkey) : null,
     upstream_pubkey: bunker.upstream_pubkey,
-    upstream_relays: parseRelays(bunker.upstream_relays),
+    upstream_relays: parseStrings(bunker.upstream_relays),
     status: bunker.status,
     error: bunker.error,
     last_ok_at: bunker.last_ok_at,
@@ -390,6 +585,44 @@ function serializeBunker(bunker: Bunker): BunkerView {
     created_by: bunker.created_by,
     created_at: bunker.created_at,
     updated_at: bunker.updated_at,
+  };
+}
+
+export interface ConnectionView {
+  /** How the API addresses a connection, and what its client `p`-tags. */
+  signer_pubkey: string;
+  name: string;
+  permissions: string[];
+  /** Whether a client has claimed this connection yet. */
+  connected: boolean;
+  client_pubkey: string | null;
+  relays: string[];
+  created_by: string;
+  created_at: number;
+  last_used_at: number | null;
+  /** The last request npanel refused, so staff can see what to grant. */
+  last_error: string | null;
+}
+
+/**
+ * Shape a connection row for the API.
+ *
+ * Neither secret is here. `signer_secret` is the connection's key, and
+ * `secret` is the claim token from its URI — publishing that would let anyone
+ * who can read the dashboard take over a connection before its owner does.
+ */
+function serializeConnection(connection: BunkerConnection): ConnectionView {
+  return {
+    signer_pubkey: connection.signer_pubkey,
+    name: connection.name,
+    permissions: parseStrings(connection.permissions),
+    connected: connection.client_pubkey !== null,
+    client_pubkey: connection.client_pubkey,
+    relays: parseStrings(connection.relays),
+    created_by: connection.created_by,
+    created_at: connection.created_at,
+    last_used_at: connection.last_used_at,
+    last_error: connection.last_error,
   };
 }
 
@@ -403,10 +636,11 @@ function slugify(value: string): string {
     .slice(0, 48);
 }
 
-function parseRelays(json: string): string[] {
+/** Read one of the JSON string-array columns, tolerating a damaged row. */
+function parseStrings(json: string): string[] {
   try {
     const value: unknown = JSON.parse(json);
-    return Array.isArray(value) ? value.filter((url): url is string => typeof url === "string") : [];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
   } catch {
     return [];
   }

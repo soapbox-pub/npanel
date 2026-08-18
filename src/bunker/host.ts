@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { type Logger, errFields } from "../log.ts";
 import type { LogLevel } from "../log.ts";
-import type { BunkerApi, BunkerGateway, BunkerTestResult, PairingStatus } from "./api.ts";
+import type { BunkerApi, BunkerGateway, BunkerTestResult, MintedConnection, PairingStatus } from "./api.ts";
 import type { BunkerWorkerData } from "./worker.ts";
 
 /** What to tell someone whose deployment can't do this yet. */
@@ -49,6 +49,8 @@ export class BunkerHost implements BunkerGateway {
   private worker: Worker | undefined;
   private pending = new Map<number, Pending>();
   private nextId = 1;
+  /** Calls in flight. While there are any, the worker holds the loop open. */
+  private waiting = 0;
   private stopped = false;
   private restartDelay = FIRST_RESTART_DELAY;
   private spawnedAt = 0;
@@ -97,6 +99,16 @@ export class BunkerHost implements BunkerGateway {
     return this.call("testBunker", bunkerId);
   }
 
+  mintConnection(input: {
+    bunkerId: number;
+    name: string;
+    permissions: string[];
+    createdBy: string;
+    uri?: string;
+  }): Promise<MintedConnection> {
+    return this.call("mintConnection", input);
+  }
+
   private call<K extends keyof BunkerApi>(
     method: K,
     ...args: Parameters<BunkerApi[K]>
@@ -116,9 +128,15 @@ export class BunkerHost implements BunkerGateway {
 
     const id = this.nextId++;
 
+    // An unref'd worker doesn't keep the process alive, which is what we want
+    // of an idle gateway — but a call in flight is exactly the case where
+    // nothing else may be holding the loop open, and a runtime that tears the
+    // thread down there turns a slow answer into a lost one.
+    if (this.waiting++ === 0) worker.ref();
+
     return new Promise<Awaited<ReturnType<BunkerApi[K]>>>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        this.forget(id);
         reject(new Error("The bunker gateway didn't answer in time."));
       }, CALL_TIMEOUT);
       timer.unref?.();
@@ -131,6 +149,19 @@ export class BunkerHost implements BunkerGateway {
 
       worker.postMessage({ id, method, args });
     });
+  }
+
+  /** Drop a call, releasing its hold on the event loop. */
+  private forget(id: number): Pending | undefined {
+    const pending = this.pending.get(id);
+    if (!pending) return undefined;
+
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+
+    if (--this.waiting === 0) this.worker?.unref();
+
+    return pending;
   }
 
   private spawn(): void {
@@ -153,8 +184,13 @@ export class BunkerHost implements BunkerGateway {
       return;
     }
 
-    // Nothing here should keep the process alive on its own.
-    worker.unref();
+    // An idle gateway shouldn't keep the process alive — but a respawn may be
+    // happening because a call arrived, and that one is still waiting.
+    if (this.waiting > 0) {
+      worker.ref();
+    } else {
+      worker.unref();
+    }
 
     worker.on("message", (reply: Reply) => this.settle(reply));
     worker.on("error", (error) => {
@@ -169,11 +205,8 @@ export class BunkerHost implements BunkerGateway {
   }
 
   private settle(reply: Reply): void {
-    const pending = this.pending.get(reply.id);
+    const pending = this.forget(reply.id);
     if (!pending) return;
-
-    this.pending.delete(reply.id);
-    clearTimeout(pending.timer);
 
     if (reply.ok) {
       pending.resolve(reply.value);
@@ -190,10 +223,8 @@ export class BunkerHost implements BunkerGateway {
 
     // Nothing will ever answer these now, and a caller waiting out the full
     // timeout for a thread that is already gone helps nobody.
-    for (const [id, pending] of this.pending) {
-      this.pending.delete(id);
-      clearTimeout(pending.timer);
-      pending.reject(new Error("The bunker gateway restarted. Try again."));
+    for (const id of [...this.pending.keys()]) {
+      this.forget(id)?.reject(new Error("The bunker gateway restarted. Try again."));
     }
 
     if (Date.now() - this.spawnedAt > HEALTHY_UPTIME) {

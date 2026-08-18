@@ -55,6 +55,7 @@ export function fakeBunkers(overrides: Partial<BunkerGateway> = {}): BunkerGatew
     pairingStatus: async () => ({ state: "idle", uri: null, error: null }),
     cancelPairing: async () => {},
     testBunker: async () => ({ ok: false, user_pubkey: null, error: "Not paired." }),
+    mintConnection: async () => ({ signer_pubkey: "00".repeat(32), uri: null }),
     stop: async () => {},
     ...overrides,
   };

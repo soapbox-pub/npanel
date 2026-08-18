@@ -351,6 +351,32 @@ asleep, offline, or waiting for a tap. Too short and a signer that would have
 answered gets reported as broken; too long and a client hangs instead of being
 told something is wrong.
 
+### `bunker_max_relays`
+
+Default `8`, allowed range 1–32. How many relays the gateway will hold open at
+once, across every connection.
+
+A client connecting with `nostrconnect://` names its own relays, and honouring
+all of them without limit is how a gateway ends up holding a socket to
+everywhere. Minting a connection that would push past this is refused, with a
+message saying so — the budget is spent where somebody is present to be told,
+rather than quietly.
+
+The gateway is frugal with what it does hold: subscriptions are keyed by relay,
+not by connection, so a hundred connections reachable on one relay cost one
+socket and one filter between them. No connection may pull in more than four
+relays of its own regardless of this setting.
+
+### `bunker_rate_limit`
+
+Default `60`, allowed range 1–6000. Requests per minute one connection may make
+before being refused.
+
+It is per connection rather than per bunker, so a runaway script holding one
+credential can't starve the others. A refusal is an error the client is sent,
+not silence. A connection that legitimately signs in bursts — a bulk publish, a
+migration — wants this raised.
+
 ## Precedence and validation
 
 Runtime settings are read from the database at startup and cached in memory. A

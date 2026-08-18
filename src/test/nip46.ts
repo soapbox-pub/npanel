@@ -1,6 +1,127 @@
-import type { NRelay, NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type { NRelay, NostrConnectResponse, NostrEvent, NostrFilter, NostrRelayEVENT } from "@nostrify/nostrify";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
-import { NOSTR_CONNECT_KIND, decryptFrom, encryptTo } from "../bunker/rpc.ts";
+import { type Encryption, NOSTR_CONNECT_KIND, decodeResponse, decryptFrom, encryptTo } from "../bunker/rpc.ts";
+
+/**
+ * A relay that exists only in memory.
+ *
+ * Events published to it are handed to every subscriber whose filter matches,
+ * and nothing is stored: which is exactly how a real relay treats the
+ * ephemeral kind 24133 this carries.
+ */
+export class MemoryRelay implements NRelay {
+  private subscribers = new Set<{ filters: NostrFilter[]; channel: Channel<NostrEvent> }>();
+  /** Everything published, in order, for asserting on what was sent. */
+  readonly published: NostrEvent[] = [];
+
+  async event(event: NostrEvent): Promise<void> {
+    this.published.push(event);
+
+    for (const subscriber of this.subscribers) {
+      if (subscriber.filters.some((filter) => matches(filter, event))) {
+        subscriber.channel.push(event);
+      }
+    }
+  }
+
+  async *req(filters: NostrFilter[], opts?: { signal?: AbortSignal }): AsyncGenerator<NostrRelayEVENT> {
+    const subscriber = { filters, channel: new Channel<NostrEvent>() };
+    this.subscribers.add(subscriber);
+
+    try {
+      while (true) {
+        const event = await subscriber.channel.next(opts?.signal);
+        if (!event) return;
+        yield ["EVENT", "sub", event];
+      }
+    } finally {
+      this.subscribers.delete(subscriber);
+    }
+  }
+
+  async query(): Promise<NostrEvent[]> {
+    return [];
+  }
+
+  async close(): Promise<void> {}
+}
+
+/** A NIP-46 client, for driving the signer side of the gateway. */
+export class FakeClient {
+  readonly secretKey = generateSecretKey();
+  readonly pubkey = getPublicKey(this.secretKey);
+
+  constructor(private readonly relay: MemoryRelay) {}
+
+  /** Send a request and wait for the answer to it. */
+  async call(
+    signerPubkey: string,
+    method: string,
+    params: string[] = [],
+    encryption: Encryption = "nip44",
+  ): Promise<NostrConnectResponse> {
+    const id = Math.random().toString(36).slice(2);
+    const request = this.request(signerPubkey, method, params, encryption, id);
+
+    const controller = new AbortController();
+    const subscription = this.relay
+      .req([{ kinds: [NOSTR_CONNECT_KIND], "#p": [this.pubkey] }], {
+        signal: controller.signal,
+      })
+      [Symbol.asyncIterator]();
+
+    // Start the subscription, and let it register, before publishing: this
+    // relay stores nothing, so an answer sent first would be sent to nobody.
+    let pending = subscription.next();
+    await tick();
+
+    await this.relay.event(request);
+
+    try {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const next = await Promise.race([pending, timeout(deadline - Date.now())]);
+        if (!next || next.done) break;
+
+        pending = subscription.next();
+
+        const response = decodeResponse(this.secretKey, next.value[2]);
+        if (response?.id === id) return response;
+      }
+    } finally {
+      controller.abort();
+    }
+
+    throw new Error(`No answer to ${method}`);
+  }
+
+  /** The event for a request, for tests that need to send it themselves. */
+  request(
+    signerPubkey: string,
+    method: string,
+    params: string[] = [],
+    encryption: Encryption = "nip44",
+    id = Math.random().toString(36).slice(2),
+  ): NostrEvent {
+    return finalizeEvent(
+      {
+        kind: NOSTR_CONNECT_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [["p", signerPubkey]],
+        content: encryptTo(this.secretKey, signerPubkey, JSON.stringify({ id, method, params }), encryption),
+      },
+      this.secretKey,
+    );
+  }
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function timeout(ms: number): Promise<undefined> {
+  return new Promise((resolve) => setTimeout(() => resolve(undefined), Math.max(0, ms)));
+}
 
 /**
  * A stand-in for the phone at the far end of a bunker.
@@ -28,23 +149,24 @@ export function fakeSigner(opts: { userKey?: Uint8Array; signerKey?: Uint8Array 
   const signerKey = opts.signerKey ?? generateSecretKey();
   const pubkey = getPublicKey(signerKey);
 
-  const subscribers = new Set<Channel<NostrEvent>>();
+  const hub = new MemoryRelay();
   const requests: FakeSigner["requests"] = [];
   const failures = new Map<string, string>();
 
   function publish(to: string, id: string, result: string, error?: string): void {
     const payload = JSON.stringify(error === undefined ? { id, result } : { id, result, error });
-    const event = finalizeEvent(
-      {
-        kind: NOSTR_CONNECT_KIND,
-        created_at: Math.floor(Date.now() / 1000),
-        tags: [["p", to]],
-        content: encryptTo(signerKey, to, payload, "nip44"),
-      },
-      signerKey,
-    );
 
-    for (const subscriber of subscribers) subscriber.push(event);
+    void hub.event(
+      finalizeEvent(
+        {
+          kind: NOSTR_CONNECT_KIND,
+          created_at: Math.floor(Date.now() / 1000),
+          tags: [["p", to]],
+          content: encryptTo(signerKey, to, payload, "nip44"),
+        },
+        signerKey,
+      ),
+    );
   }
 
   return {
@@ -61,22 +183,7 @@ export function fakeSigner(opts: { userKey?: Uint8Array; signerKey?: Uint8Array 
     },
 
     relay: {
-      async *req(filters: NostrFilter[], reqOpts?: { signal?: AbortSignal }) {
-        const channel = new Channel<NostrEvent>();
-        subscribers.add(channel);
-
-        try {
-          while (true) {
-            const event = await channel.next(reqOpts?.signal);
-            if (!event) return;
-            if (filters.some((filter) => matches(filter, event))) {
-              yield ["EVENT", "sub", event] as const;
-            }
-          }
-        } finally {
-          subscribers.delete(channel);
-        }
-      },
+      req: (filters: NostrFilter[], reqOpts?: { signal?: AbortSignal }) => hub.req(filters, reqOpts),
 
       async event(request: NostrEvent) {
         const plaintext = decryptFrom(signerKey, request.pubkey, request.content);

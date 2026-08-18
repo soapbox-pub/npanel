@@ -216,6 +216,166 @@ test("a gateway that is down fails the route, not the request path", async () =>
   assert.equal((await harness.request(admin, "GET", "/api/bunkers/press")).status, 200);
 });
 
+test("mints a connection and shows its URI exactly once", async () => {
+  const minted = { signer_pubkey: "cc".repeat(32), uri: "bunker://cc?relay=wss%3A%2F%2Frelay.test&secret=abcd" };
+  const calls: { name: string; permissions: string[]; createdBy: string }[] = [];
+
+  const { harness, admin } = await setup(
+    fakeBunkers({
+      available: true,
+      mintConnection: async (input) => {
+        calls.push(input);
+        await harness.db
+          .insertInto("bunker_connections")
+          .values({
+            bunker_id: 1,
+            name: input.name,
+            signer_secret: "sealed",
+            signer_pubkey: minted.signer_pubkey,
+            client_pubkey: null,
+            secret: "abcd",
+            relays: JSON.stringify(["wss://relay.test"]),
+            permissions: JSON.stringify(input.permissions),
+            created_by: input.createdBy,
+            created_at: Math.floor(Date.now() / 1000),
+            last_used_at: null,
+            last_error: null,
+          })
+          .execute();
+        return minted;
+      },
+    }),
+  );
+
+  await harness.request(admin, "POST", "/api/bunkers", { name: "Press" });
+
+  const response = await harness.request(admin, "POST", "/api/bunkers/press/connections", {
+    name: "CI",
+    permissions: ["sign_event:1"],
+  });
+
+  assert.equal(response.status, 201);
+  const body = await response.json();
+
+  assert.equal(body.uri, minted.uri);
+  assert.equal(body.connection.name, "CI");
+  assert.equal(body.connection.connected, false);
+  assert.deepEqual(body.connection.permissions, ["sign_event:1"]);
+  assert.equal(calls[0].createdBy, admin.pubkey);
+
+  // The claim token is in the URI and nowhere else, so listing can't leak it.
+  const listed = await (await harness.request(admin, "GET", "/api/bunkers/press/connections")).text();
+  assert.ok(!listed.includes("abcd"));
+  assert.ok(!listed.includes("sealed"));
+});
+
+test("checks permission specs before troubling the gateway", async () => {
+  let minted = false;
+  const { harness, admin } = await setup(
+    fakeBunkers({
+      available: true,
+      mintConnection: async () => {
+        minted = true;
+        return { signer_pubkey: "cc".repeat(32), uri: null };
+      },
+    }),
+  );
+
+  await harness.request(admin, "POST", "/api/bunkers", { name: "Press" });
+
+  const response = await harness.request(admin, "POST", "/api/bunkers/press/connections", {
+    name: "CI",
+    permissions: ["sign_psbt"],
+  });
+
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Unknown permission/);
+  assert.equal(minted, false);
+});
+
+test("edits and revokes a connection", async () => {
+  const { harness, admin } = await setup();
+  const signerPubkey = "dd".repeat(32);
+
+  const created = await (await harness.request(admin, "POST", "/api/bunkers", { name: "Press" })).json();
+  const bunker = await harness.db
+    .selectFrom("bunkers")
+    .select("id")
+    .where("slug", "=", created.bunker.slug)
+    .executeTakeFirstOrThrow();
+
+  await harness.db
+    .insertInto("bunker_connections")
+    .values({
+      bunker_id: bunker.id,
+      name: "CI",
+      signer_secret: "sealed",
+      signer_pubkey: signerPubkey,
+      client_pubkey: "ee".repeat(32),
+      secret: null,
+      relays: "[]",
+      permissions: JSON.stringify(["sign_event:1"]),
+      created_by: admin.pubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      last_used_at: null,
+      last_error: null,
+    })
+    .execute();
+
+  const patched = await harness.request(admin, "PATCH", `/api/bunkers/press/connections/${signerPubkey}`, {
+    name: "Deploy bot",
+    permissions: ["sign_event:1", "sign_event:30023"],
+  });
+
+  const { connection } = await patched.json();
+  assert.equal(connection.name, "Deploy bot");
+  assert.deepEqual(connection.permissions, ["sign_event:1", "sign_event:30023"]);
+  assert.equal(connection.connected, true);
+
+  const bad = await harness.request(admin, "PATCH", `/api/bunkers/press/connections/${signerPubkey}`, {
+    permissions: ["nip44_decrypt:4"],
+  });
+  assert.equal(bad.status, 400);
+
+  assert.equal((await harness.request(admin, "DELETE", `/api/bunkers/press/connections/${signerPubkey}`)).status, 200);
+  assert.deepEqual(await harness.db.selectFrom("bunker_connections").selectAll().execute(), []);
+});
+
+test("won't reach a connection through the wrong bunker", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/bunkers", { name: "Alpha" });
+  await harness.request(admin, "POST", "/api/bunkers", { name: "Beta" });
+
+  const alpha = await harness.db
+    .selectFrom("bunkers")
+    .select("id")
+    .where("slug", "=", "alpha")
+    .executeTakeFirstOrThrow();
+  const signerPubkey = "dd".repeat(32);
+
+  await harness.db
+    .insertInto("bunker_connections")
+    .values({
+      bunker_id: alpha.id,
+      name: "CI",
+      signer_secret: "sealed",
+      signer_pubkey: signerPubkey,
+      client_pubkey: null,
+      secret: null,
+      relays: "[]",
+      permissions: "[]",
+      created_by: admin.pubkey,
+      created_at: Math.floor(Date.now() / 1000),
+      last_used_at: null,
+      last_error: null,
+    })
+    .execute();
+
+  const wrong = await harness.request(admin, "DELETE", `/api/bunkers/beta/connections/${signerPubkey}`);
+  assert.equal(wrong.status, 404);
+});
+
 test("records who did what", async () => {
   const { harness, admin } = await setup();
 

@@ -40,3 +40,67 @@ export function formatNostrConnectUri(params: NostrConnectParams): string {
 
   return `nostrconnect://${params.clientPubkey}?${query.toString()}`;
 }
+
+/** Read the URI a client published, or throw a message worth showing. */
+export function parseNostrConnectUri(input: string): NostrConnectParams {
+  const value = input.trim();
+  if (!value.startsWith("nostrconnect://")) {
+    throw new Error("That isn't a nostrconnect:// URI.");
+  }
+
+  // `new URL` mangles a non-special scheme's authority differently on
+  // different runtimes, and the pubkey is fixed-width hex anyway.
+  const [clientPubkey, query = ""] = value.slice("nostrconnect://".length).split("?", 2);
+  if (!/^[0-9a-f]{64}$/i.test(clientPubkey)) {
+    throw new Error("That URI doesn't start with a client pubkey.");
+  }
+
+  const params = new URLSearchParams(query);
+  const relays = params.getAll("relay").filter(Boolean);
+  const secret = params.get("secret");
+
+  if (!relays.length) {
+    throw new Error("That URI names no relays, so there is nowhere to answer it.");
+  }
+  // NIP-46 requires it, and without one the client can't tell our answer from
+  // an impostor's — which is the only thing stopping connection spoofing here.
+  if (!secret) {
+    throw new Error("That URI carries no secret, so the client couldn't verify the answer.");
+  }
+
+  const perms = params.get("perms");
+
+  return {
+    clientPubkey: clientPubkey.toLowerCase(),
+    relays,
+    secret,
+    perms: perms
+      ? perms
+          .split(",")
+          .map((spec) => spec.trim())
+          .filter(Boolean)
+      : undefined,
+    name: params.get("name") ?? undefined,
+    url: params.get("url") ?? undefined,
+  };
+}
+
+export interface BunkerUriParams {
+  /** The pubkey a client addresses its requests to. */
+  signerPubkey: string;
+  relays: string[];
+  /** Single-use claim token, spent by the first client that connects. */
+  secret: string;
+}
+
+/** Build the URI a client pastes to connect to a connection npanel minted. */
+export function formatBunkerUri(params: BunkerUriParams): string {
+  const query = new URLSearchParams();
+
+  for (const relay of params.relays) {
+    query.append("relay", relay);
+  }
+  query.set("secret", params.secret);
+
+  return `bunker://${params.signerPubkey}?${query.toString()}`;
+}

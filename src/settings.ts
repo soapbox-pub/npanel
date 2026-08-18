@@ -79,6 +79,18 @@ export interface SettingsValues {
   bunker_relays: string[];
   /** Seconds the gateway waits for an upstream signer to answer. */
   bunker_request_timeout: number;
+  /**
+   * How many relays the gateway will hold open at once.
+   *
+   * A client connecting with `nostrconnect://` names its own relays, and
+   * honouring all of them without limit is how a gateway ends up holding a
+   * socket to everywhere. Minting a connection that would push past this is
+   * refused, so an admin hears about it rather than the budget being spent
+   * quietly.
+   */
+  bunker_max_relays: number;
+  /** Requests per minute one connection may make before being refused. */
+  bunker_rate_limit: number;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -216,6 +228,8 @@ const SCHEMAS = {
   public_site_list: z.boolean(),
   bunker_relays: z.array(relayUrl).max(8),
   bunker_request_timeout: z.number().int().min(5).max(120),
+  bunker_max_relays: z.number().int().min(1).max(32),
+  bunker_rate_limit: z.number().int().min(1).max(6000),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -236,6 +250,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   public_site_list: false,
   bunker_relays: [],
   bunker_request_timeout: 20,
+  bunker_max_relays: 8,
+  bunker_rate_limit: 60,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

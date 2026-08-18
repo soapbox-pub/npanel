@@ -68,6 +68,20 @@ export class NostrService {
     return this.pool.req(filters, opts);
   }
 
+  /**
+   * Publish an event, resolving once any of `relays` accepted it.
+   *
+   * Rejects when every relay refused, and when there are no relays at all:
+   * silently succeeding at delivering nothing is the failure mode that takes
+   * longest to notice.
+   */
+  async publish(event: NostrEvent, opts: { relays: string[]; signal?: AbortSignal }): Promise<void> {
+    if (!opts.relays.length) {
+      throw new Error("No relays to publish to.");
+    }
+    await this.pool.event(event, opts);
+  }
+
   /** Collect events matching `filters`, giving up after `timeout` ms. */
   async query(
     filters: NostrFilter[],

@@ -14,6 +14,16 @@ export interface PairingStatus {
   error: string | null;
 }
 
+export interface MintedConnection {
+  /** The pubkey clients address, and how the API names this connection. */
+  signer_pubkey: string;
+  /**
+   * The `bunker://` URI to show once, or null when the client supplied its own
+   * invitation and has already been answered.
+   */
+  uri: string | null;
+}
+
 export interface BunkerTestResult {
   ok: boolean;
   user_pubkey: string | null;
@@ -33,6 +43,21 @@ export interface BunkerApi {
   cancelPairing(bunkerId: number): Promise<void>;
   /** Ask the upstream signer who it is, recording whether it answered. */
   testBunker(bunkerId: number): Promise<BunkerTestResult>;
+  /**
+   * Authorize a client to sign through a bunker.
+   *
+   * With a `nostrconnect://` URI npanel answers the client's invitation;
+   * without one it mints a `bunker://` URI for the client to consume. Only the
+   * gateway can do this: it holds the key that seals the connection's own
+   * keypair.
+   */
+  mintConnection(input: {
+    bunkerId: number;
+    name: string;
+    permissions: string[];
+    createdBy: string;
+    uri?: string;
+  }): Promise<MintedConnection>;
   /** Close relays and the database connection, before the thread goes away. */
   stop(): Promise<void>;
 }

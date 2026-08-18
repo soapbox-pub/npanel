@@ -39,10 +39,15 @@ export type SqliteValue = string | number | bigint | null | Uint8Array;
 export async function openSqlite(path: string): Promise<SqliteDatabase> {
   const db = await openDatabase(path);
 
+  // First, because everything below it can block: switching journal modes
+  // needs a brief exclusive lock, and npanel opens this file from more than
+  // one thread. Without a timeout already in force, a second connection
+  // arriving at the wrong moment fails outright with "database is locked".
+  db.exec("PRAGMA busy_timeout = 5000");
+
   // WAL keeps readers (blob serving) from blocking on the sync worker's writes.
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
-  db.exec("PRAGMA busy_timeout = 5000");
   db.exec("PRAGMA synchronous = NORMAL");
 
   return db;
