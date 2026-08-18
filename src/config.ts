@@ -90,26 +90,6 @@ export class Config {
     return hostname.replace(/:\d+$/, "");
   }
 
-  /**
-   * Key encrypting the signer credentials npanel holds, as 64 hex characters.
-   *
-   * Unset means the bunker gateway is unavailable and says so — nothing else
-   * in npanel depends on it, so an existing deployment upgrades untouched. It
-   * lives here rather than in the database for the obvious reason: a key kept
-   * beside the rows it protects is not protecting them.
-   */
-  get secretKey(): string | undefined {
-    const value = this.env.get("SECRET_KEY");
-    if (!value) {
-      return undefined;
-    }
-    const key = value.trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(key)) {
-      throw new Error("SECRET_KEY must be 64 hex characters. Generate one with: openssl rand -hex 32");
-    }
-    return key;
-  }
-
   /** Minimum severity of emitted log entries. */
   get logLevel(): LogLevel {
     const value = this.env.get("LOG_LEVEL");

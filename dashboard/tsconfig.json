@@ -25,8 +25,7 @@
       "@/*": ["./src/*"],
       "@shared/nsite-address": ["../src/nsite-address.ts"],
       "@shared/pubkey": ["../src/pubkey.ts"],
-      "@shared/hostname": ["../src/hostname.ts"],
-      "@shared/bunker-permissions": ["../src/bunker/permissions.ts"]
+      "@shared/hostname": ["../src/hostname.ts"]
     }
   },
   "include": ["src"]

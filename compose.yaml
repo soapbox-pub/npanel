@@ -26,9 +26,6 @@ services:
       # requests are the dashboard rather than an nsite, and NIP-98 logins are
       # checked against it.
       DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}
-      # Encrypts the credentials the bunker gateway holds. Empty leaves bunkers
-      # switched off, which is a working install — nothing else reads it.
-      SECRET_KEY: ${SECRET_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # The database and the blob store. This is the volume to back up.

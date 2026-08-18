@@ -3,11 +3,11 @@ import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
-import { AccessEditor } from '@/components/AccessEditor';
 import { AddressInput } from '@/components/AddressInput';
 import { DnsRecords } from '@/components/DnsRecords';
 import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { FileList } from '@/components/host/FileList';
+import { GrantsEditor } from '@/components/host/GrantsEditor';
 import { VersionList } from '@/components/host/VersionList';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -27,7 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useDeleteHost, useGrants, useHost, useMe, useSetGrants, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
+import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 import type { HostPatch } from '@/lib/api-types';
 import { isRootDomain } from '@shared/hostname';
@@ -44,9 +44,6 @@ export function HostDetailPage() {
   const updateHost = useUpdateHost();
   const deleteHost = useDeleteHost();
   const syncHost = useSyncHost();
-  // Admin-only, so it is not asked for until the tab that needs it can exist.
-  const grants = useGrants(hostname, me.data?.role === 'admin');
-  const setGrants = useSetGrants();
 
   const [address, setAddress] = useState('');
   const parsed = useParsedAddress(address);
@@ -315,13 +312,7 @@ export function HostDetailPage() {
           <TabsContent value="access" className="pt-4">
             <Card>
               <CardContent className="pt-6">
-                <AccessEditor
-                  granted={grants.data?.map((grant) => grant.user_pubkey)}
-                  loading={grants.isLoading}
-                  saving={setGrants.isPending}
-                  onSave={(pubkeys) => setGrants.mutateAsync({ hostname: data.hostname, pubkeys })}
-                  scope="site"
-                />
+                <GrantsEditor hostname={data.hostname} />
               </CardContent>
             </Card>
           </TabsContent>

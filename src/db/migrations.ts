@@ -124,10 +124,10 @@ const MIGRATIONS: Migration[] = [
     statements: ["ALTER TABLE hosts ADD COLUMN spa INTEGER NOT NULL DEFAULT 0"],
   },
   {
-    // The NIP-46 gateway. Nothing is seeded: a deployment without SECRET_KEY
-    // set simply never writes to these, and creating them anyway keeps the
-    // schema the same everywhere, so turning the key on later is one restart
-    // rather than a migration that has to run at exactly the right moment.
+    // The NIP-46 gateway, which shipped and was then withdrawn. It stays here
+    // because it ran: a deployment that applied it has the name recorded, and
+    // removing the entry would leave 007 dropping tables that this npanel had
+    // never claimed to create. 007 is what undoes it.
     name: "006_bunkers",
     statements: [
       `CREATE TABLE bunkers (
@@ -169,6 +169,24 @@ const MIGRATIONS: Migration[] = [
         last_error TEXT
       )`,
       "CREATE INDEX bunker_connections_bunker_idx ON bunker_connections (bunker_id)",
+    ],
+  },
+  {
+    // Bunkers are gone. Dropping the tables rather than leaving them empty
+    // matters for the one row that isn't empty: a stored `signer_secret` is a
+    // credential, and keeping unreadable ciphertext around after the code that
+    // could read it was removed is how a "deleted" secret outlives its feature.
+    //
+    // The settings rows go too, since nothing validates them any more and a
+    // future key of the same name would inherit a stale value. The audit log
+    // keeps its `bunker.*` entries: it records what happened, and this did.
+    name: "007_drop_bunkers",
+    statements: [
+      "DROP TABLE IF EXISTS bunker_connections",
+      "DROP TABLE IF EXISTS bunker_grants",
+      "DROP TABLE IF EXISTS bunkers",
+      `DELETE FROM settings WHERE key IN
+        ('bunker_relays', 'bunker_request_timeout', 'bunker_max_relays', 'bunker_rate_limit')`,
     ],
   },
 ];

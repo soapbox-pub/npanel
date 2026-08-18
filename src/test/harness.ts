@@ -9,7 +9,6 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
 import { createApp } from "../app.ts";
 import { NIP98_KIND } from "../auth.ts";
 import { BlobStore } from "../blobs.ts";
-import type { BunkerGateway } from "../bunker/api.ts";
 import { openDatabase } from "../db/index.ts";
 import type { Database, UserRole } from "../db/schema.ts";
 import { type DnsResolver, DnsTargets } from "../dns.ts";
@@ -38,27 +37,6 @@ export function fakeNostr(overrides: Partial<NostrService> = {}): NostrService {
     close: async () => {},
     ...overrides,
   } as unknown as NostrService;
-}
-
-/**
- * A bunker gateway that answers without a thread behind it.
- *
- * Unavailable by default, which is what a deployment with no `SECRET_KEY`
- * looks like and what most tests want. Pass `available: true` to reach the
- * routes behind that check.
- */
-export function fakeBunkers(overrides: Partial<BunkerGateway> = {}): BunkerGateway {
-  return {
-    available: false,
-    reload: async () => {},
-    startPairing: async () => ({ state: "waiting", uri: null, error: null }),
-    pairingStatus: async () => ({ state: "idle", uri: null, error: null }),
-    cancelPairing: async () => {},
-    testBunker: async () => ({ ok: false, user_pubkey: null, error: "Not paired." }),
-    mintConnection: async () => ({ signer_pubkey: "00".repeat(32), uri: null }),
-    stop: async () => {},
-    ...overrides,
-  };
 }
 
 export interface TestUser {
@@ -97,7 +75,6 @@ export interface Harness {
   db: Kysely<Database>;
   settings: SettingsService;
   sync: SyncWorker;
-  bunkers: BunkerGateway;
   blobs: BlobStore;
   app: Hono;
   dashboardDir: string;
@@ -120,9 +97,7 @@ export function fakeResolver(overrides: Partial<DnsResolver> = {}): DnsResolver 
 }
 
 /** A fully wired app backed by an in-memory database and a temp blob store. */
-export async function createHarness(
-  opts: { nostr?: NostrService; resolver?: DnsResolver; bunkers?: BunkerGateway } = {},
-): Promise<Harness> {
+export async function createHarness(opts: { nostr?: NostrService; resolver?: DnsResolver } = {}): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "npanel-test-"));
   const dashboardDir = join(dir, "dashboard");
   await mkdir(dashboardDir, { recursive: true });
@@ -134,7 +109,6 @@ export async function createHarness(
   const log = new Logger("error");
   // No test should sit through a retry's backoff.
   const sync = new SyncWorker({ db, blobs, nostr: opts.nostr ?? fakeNostr(), settings, log, retryBackoff: 0 });
-  const bunkers = opts.bunkers ?? fakeBunkers();
   const dns = new DnsTargets({
     dashboardHost: DASHBOARD_HOST,
     settings,
@@ -146,7 +120,6 @@ export async function createHarness(
     db,
     settings,
     sync,
-    bunkers,
     blobs,
     dns,
     log,
@@ -158,7 +131,6 @@ export async function createHarness(
     db,
     settings,
     sync,
-    bunkers,
     blobs,
     app,
     dashboardDir,

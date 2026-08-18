@@ -1,5 +1,5 @@
 import { NPool, NRelay1 } from "@nostrify/nostrify";
-import type { NRelay, NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 import { type Logger, errFields } from "./log.ts";
 import { getManifestServers, parseRelayList, parseServerList } from "./manifest.ts";
 import { NAMED_SITE_KIND, type NsiteAddress } from "./nsite-address.ts";
@@ -20,8 +20,7 @@ interface CachedList {
 }
 
 /**
- * Relay access for the sync worker, and for the bunker gateway in its own
- * thread.
+ * Relay access for the sync worker.
  *
  * All relay traffic goes through one pool whose relay set is read from
  * settings on every request, so an admin editing the relay list in the
@@ -49,37 +48,12 @@ export class NostrService {
     return this.settings.get("relays");
   }
 
-  /**
-   * A relay handle restricted to `relays`, sharing this pool's connections.
-   *
-   * For code that talks to one correspondent on relays of its own — a NIP-46
-   * signer, say — and would otherwise need a second pool, and a second set of
-   * sockets to relays this one is already connected to.
-   */
-  group(relays: string[]): NRelay {
-    return this.pool.group(relays);
-  }
-
   /** Stream events from relays until the signal aborts. */
   req(
     filters: NostrFilter[],
     opts: { signal: AbortSignal; relays?: string[] },
   ): AsyncIterable<["EVENT", string, NostrEvent] | ["EOSE", string] | ["CLOSED", string, string]> {
     return this.pool.req(filters, opts);
-  }
-
-  /**
-   * Publish an event, resolving once any of `relays` accepted it.
-   *
-   * Rejects when every relay refused, and when there are no relays at all:
-   * silently succeeding at delivering nothing is the failure mode that takes
-   * longest to notice.
-   */
-  async publish(event: NostrEvent, opts: { relays: string[]; signal?: AbortSignal }): Promise<void> {
-    if (!opts.relays.length) {
-      throw new Error("No relays to publish to.");
-    }
-    await this.pool.event(event, opts);
   }
 
   /** Collect events matching `filters`, giving up after `timeout` ms. */

@@ -4,9 +4,6 @@ npanel is one process that does three things: it serves nsites over HTTP, it
 serves a dashboard for configuring which nsites those are, and it runs a
 background worker that keeps local storage in sync with Nostr.
 
-A fourth thing, the [bunker gateway](#bunkers), runs in a worker thread beside
-them, and only when a `SECRET_KEY` is set.
-
 ```
         DNS ──► reverse proxy (TLS) ──► npanel :3000
                                           │
@@ -269,80 +266,6 @@ asking, and anyone can sign an event. And every dashboard and API response is
 sent with `frame-ancestors 'none'`, since the SPA's own CSP is a `<meta>` tag
 and those cannot express it.
 
-## Bunkers
-
-A bunker is an identity npanel can sign for over [NIP-46], and the point of it
-is that npanel never holds the key.
-
-Instead there are two hops. Upstream, npanel is a NIP-46 *client* of a signer
-that really does hold the key — Amber on someone's phone, usually — and stores
-only the client credential for that session. Downstream, npanel is a NIP-46
-*signer* for connections that staff mint, and forwards what they ask to the
-phone.
-
-```
-   client ──24133──► npanel bunker gateway ──24133──► Amber ──► signature
-          per-connection key          upstream client key      the real key
-```
-
-Three things fall out of that shape, and they are the reasons for it:
-
-- **No nsec is ever on the server.** What is stored is a credential to a
-  session, which the phone can revoke at any time without anyone changing a key.
-- **Re-pairing is invisible downstream.** Replacing the upstream credential
-  re-points a bunker; every connection minted from it keeps its own keypair and
-  never notices.
-- **Revoking one client is a row delete.** Each connection answers on a keypair
-  of its own rather than on the bunker's, so removing one breaks nothing else,
-  and two clients can't recognise each other by the pubkey they talk to.
-
-Credentials are encrypted at rest with [`SECRET_KEY`](configuration.md#secret_key),
-using NIP-44's payload format as a sealed box. Each bunker records which key
-sealed it, so starting with the wrong one is reported as such instead of
-surfacing later as a decryption failure. With no key set, the whole section
-answers `503` and says why — there is no degraded mode that writes credentials
-somewhere less safe.
-
-### Why a worker thread
-
-Serving nsites is what npanel is for; bunkers are what it also does. The gateway
-therefore runs in its own thread (`src/bunker/worker.ts`) with its own SQLite
-connection — WAL and a busy timeout make that safe — and its own relay pool.
-
-Nothing it does can reach the request path. A crash takes down the thread and
-not the process: the host handle rejects whatever was in flight, logs
-`bunker_worker_exited`, and respawns with a capped backoff. A hang costs a
-bunker route its response and nothing else. A runtime that cannot spawn it at
-all leaves every site still being served.
-
-The split also bounds relay sockets, which is the other reason. The gateway's
-pool is separate from the sync worker's, and it is deliberately frugal with it:
-subscriptions are keyed by relay rather than by connection, so every connection
-on a relay shares one filter and one socket, and `bunker_relays` caps how many
-relays there are to hold open in the first place.
-
-### Permissions
-
-Access to a bunker follows the same rule as a host: admins see all of them,
-staff see the ones they've been granted, and whoever creates one is granted it.
-
-What a *connection* may do is a static allow-list, in NIP-46's own
-`method[:kind]` spec format, fixed when the connection is minted and editable
-afterwards by anyone with access to the bunker. There is no approval prompt,
-because there is nobody at it — a request outside the grant is refused
-immediately and logged, rather than left hanging until the client times out.
-`connect`, `ping`, `get_public_key`, `switch_relays` and `logout` need no grant;
-nothing else is implicit.
-
-Upstream, npanel asks the phone for everything. Narrowing the request there
-would only mean a grant made in the dashboard failing later on a device nobody
-is watching — the enforcement point is here, per connection, on purpose. Which
-means the signer should be told to trust npanel standing: with a prompt-per-
-request policy, every downstream signature waits on a tap and most will time
-out.
-
-[NIP-46]: https://github.com/nostr-protocol/nips/blob/master/46.md
-
 ## Live settings
 
 `SettingsService` caches settings in memory and emits a change event on write.
@@ -352,9 +275,5 @@ timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
-Nothing in the settings UI requires a restart, which is the point: the
+Nothing in the settings UI requires a restart, which is the point: the five
 environment variables are the only things that do.
-
-The bunker worker is the one subscriber that isn't in this process. It holds its
-own cache, read from the same table through its own connection, so a write here
-is pushed across as a `reload` rather than heard as an event.

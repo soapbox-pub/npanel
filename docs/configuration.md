@@ -4,7 +4,7 @@ npanel splits configuration in two.
 
 **Environment variables** cover things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are seven of them, and they require a restart.
+set wrong. There are six of them, and they require a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
@@ -14,9 +14,9 @@ without a restart, and are recorded in the audit log.
 
 Copy `.env.example` to `.env` and edit it. Bun loads `.env` automatically.
 
-On Docker only `DASHBOARD_HOST`, `SECRET_KEY` and `LOG_LEVEL` are read from that
-file, by compose, which passes them to the containers; the image fixes the other
-four. See [deployment](deployment.md#docker-compose).
+On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
+compose, which passes them to the containers; the image fixes the other four.
+See [deployment](deployment.md#docker-compose).
 
 ### `PORT`
 
@@ -77,36 +77,6 @@ This one value does a lot of work:
 
 Because it's compared to the *public* hostname, it must be the name users type
 in the browser, not the address your proxy forwards to.
-
-### `SECRET_KEY`
-
-No default, and optional. 64 hex characters — 32 bytes — encrypting the signer
-credentials the [bunker gateway](architecture.md#bunkers) holds. Generate one
-with:
-
-```sh
-openssl rand -hex 32
-```
-
-Unset, bunkers are unavailable: the section reports that this server has nowhere
-safe to keep credentials, and every other part of npanel works exactly as
-before. Nothing else reads this value, so an existing install upgrades without
-touching it.
-
-It is an environment variable rather than a runtime setting for the obvious
-reason: a key stored beside the rows it protects is not protecting them. Keep it
-out of the database backup, and out of the same place you keep `DATA_DIR`.
-
-**Changing it strands every bunker.** The credentials already stored cannot be
-read back with a different key; npanel notices — each bunker records which key
-sealed it — and says so rather than failing later as a decryption error, but the
-only fix is to pair each bunker again. Treat it as permanent.
-
-What it protects is a stolen database, a leaked backup, a discarded disk. What
-it does not protect is a compromise of the running server, which has the key in
-its environment by construction. That is the honest boundary, and it is still
-worth having: it is the difference between a database dump being enough and
-needing the machine as well.
 
 ### `LOG_LEVEL`
 
@@ -323,59 +293,6 @@ flag, set when adding a site or from its page afterwards — that flag wins over
 this setting, and is the way to keep one domain quiet on a gateway that
 otherwise publishes its list. Neither this setting nor the flag affects who can
 *visit* a site; a served site is public either way.
-
-### `bunker_relays`
-
-Default empty, which means use [`relays`](#relays). The relays the bunker
-gateway listens on and advertises in the connection URIs it mints. At most
-eight, each a `ws://` or `wss://` URL.
-
-Worth setting separately. NIP-46 is ephemeral request/response chatter that has
-nothing to do with finding site manifests, and pointing it at one relay both
-bounds how many sockets the gateway holds open and keeps signing traffic off
-relays chosen for something else. A relay that drops ephemeral events, or that
-rate limits, will make signing unreliable in a way that looks like the phone not
-answering — prefer one you run.
-
-Only connections minted after a change use the new list; existing ones keep the
-relays they were minted with, so their clients don't stop being able to reach
-npanel because an admin edited a setting.
-
-### `bunker_request_timeout`
-
-Default `20` seconds, allowed range 5–120. How long the gateway waits for an
-upstream signer to answer before giving up on one request.
-
-The wait is real: the answer comes from an app on someone's phone, which may be
-asleep, offline, or waiting for a tap. Too short and a signer that would have
-answered gets reported as broken; too long and a client hangs instead of being
-told something is wrong.
-
-### `bunker_max_relays`
-
-Default `8`, allowed range 1–32. How many relays the gateway will hold open at
-once, across every connection.
-
-A client connecting with `nostrconnect://` names its own relays, and honouring
-all of them without limit is how a gateway ends up holding a socket to
-everywhere. Minting a connection that would push past this is refused, with a
-message saying so — the budget is spent where somebody is present to be told,
-rather than quietly.
-
-The gateway is frugal with what it does hold: subscriptions are keyed by relay,
-not by connection, so a hundred connections reachable on one relay cost one
-socket and one filter between them. No connection may pull in more than four
-relays of its own regardless of this setting.
-
-### `bunker_rate_limit`
-
-Default `60`, allowed range 1–6000. Requests per minute one connection may make
-before being refused.
-
-It is per connection rather than per bunker, so a runaway script holding one
-credential can't starve the others. A refusal is an error the client is sent,
-not silence. A connection that legitimately signs in bursts — a bulk publish, a
-migration — wants this raised.
 
 ## Precedence and validation
 

@@ -25,10 +25,6 @@ interface Draft {
   tlsCheckLimitTotal?: string;
   contactNpub?: string;
   publicSiteList?: boolean;
-  bunkerRelays?: string;
-  bunkerRequestTimeout?: string;
-  bunkerMaxRelays?: string;
-  bunkerRateLimit?: string;
 }
 
 /**
@@ -64,10 +60,6 @@ export function SettingsPage() {
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
-  const bunkerRelays = draft.bunkerRelays ?? current?.bunker_relays.join('\n') ?? '';
-  const bunkerRequestTimeout = draft.bunkerRequestTimeout ?? String(current?.bunker_request_timeout ?? '');
-  const bunkerMaxRelays = draft.bunkerMaxRelays ?? String(current?.bunker_max_relays ?? '');
-  const bunkerRateLimit = draft.bunkerRateLimit ?? String(current?.bunker_rate_limit ?? '');
 
   const save = async () => {
     try {
@@ -83,10 +75,6 @@ export function SettingsPage() {
         tls_check_limit_total: Number(tlsCheckLimitTotal),
         contact_npub: contactNpub.trim(),
         public_site_list: publicSiteList,
-        bunker_relays: lines(bunkerRelays),
-        bunker_request_timeout: Number(bunkerRequestTimeout),
-        bunker_max_relays: Number(bunkerMaxRelays),
-        bunker_rate_limit: Number(bunkerRateLimit),
       });
 
       setDraft({});
@@ -236,79 +224,6 @@ export function SettingsPage() {
               it to 1 to never retry.
             </p>
           </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Bunker gateway</CardTitle>
-          <CardDescription>
-            How npanel carries NIP-46 traffic. These do nothing unless the server has a{' '}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">SECRET_KEY</code> set.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="bunker-relays">Relays, one per line</Label>
-            <Textarea
-              id="bunker-relays"
-              value={bunkerRelays}
-              onChange={(event) => setDraft({ ...draft, bunkerRelays: event.target.value })}
-              rows={3}
-              spellCheck={false}
-              className="font-mono text-sm"
-              placeholder="wss://relay.example.com"
-            />
-            <p className="text-sm text-muted-foreground">
-              Where the gateway listens and what it advertises in the URIs it mints. Empty uses the relays
-              above. Signing traffic is ephemeral request-and-answer with nothing to do with finding sites, so
-              a relay you run is the right answer here. Connections already minted keep the relays they were
-              minted with.
-            </p>
-          </div>
-
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="space-y-2">
-              <Label htmlFor="bunker-request-timeout">Signer timeout (seconds)</Label>
-              <Input
-                id="bunker-request-timeout"
-                type="number"
-                min={5}
-                max={120}
-                value={bunkerRequestTimeout}
-                onChange={(event) => setDraft({ ...draft, bunkerRequestTimeout: event.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="bunker-max-relays">Relay limit</Label>
-              <Input
-                id="bunker-max-relays"
-                type="number"
-                min={1}
-                max={32}
-                value={bunkerMaxRelays}
-                onChange={(event) => setDraft({ ...draft, bunkerMaxRelays: event.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="bunker-rate-limit">Requests per minute</Label>
-              <Input
-                id="bunker-rate-limit"
-                type="number"
-                min={1}
-                max={6000}
-                value={bunkerRateLimit}
-                onChange={(event) => setDraft({ ...draft, bunkerRateLimit: event.target.value })}
-              />
-            </div>
-          </div>
-
-          <p className="text-sm text-muted-foreground">
-            The signer timeout is how long to wait for a phone that may be asleep. The relay limit caps how
-            many sockets the gateway holds across every connection — minting one that would exceed it is
-            refused rather than allowed to spend the budget quietly. The rate limit is per connection, so one
-            runaway client can't starve the rest.
-          </p>
         </CardContent>
       </Card>
 

@@ -5,38 +5,30 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useUsers } from '@/hooks/useNpanel';
+import { useGrants, useSetGrants, useUsers } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 
-interface AccessEditorProps {
-  /** Pubkeys currently granted, or undefined while they load. */
-  granted: string[] | undefined;
-  loading: boolean;
-  saving: boolean;
-  onSave: (pubkeys: string[]) => Promise<unknown>;
-  /** What admins can reach without a grant, for the note underneath. */
-  scope: string;
-}
-
 /**
- * Who may manage one thing.
+ * Who may manage this site.
  *
- * Shared by sites and bunkers because the rule is the same for both: admins
- * have everything, and staff have exactly what this list says.
+ * Admins always have access; staff see only the sites granted to them, so
+ * this list is what makes a staff account useful.
  */
-export function AccessEditor({ granted, loading, saving, onSave, scope }: AccessEditorProps) {
+export function GrantsEditor({ hostname }: { hostname: string }) {
   const users = useUsers();
+  const grants = useGrants(hostname);
+  const setGrants = useSetGrants();
   const { toast } = useToast();
 
   // Undefined until the admin edits something, so the server's answer shows
   // through without an effect copying it into state.
   const [draft, setDraft] = useState<string[] | undefined>();
 
-  if (users.isLoading || loading) {
+  if (users.isLoading || grants.isLoading) {
     return <Skeleton className="h-32 w-full" />;
   }
 
-  const selected = draft ?? granted ?? [];
+  const selected = draft ?? (grants.data ?? []).map((grant) => grant.user_pubkey);
   const staff = (users.data ?? []).filter((user) => user.role === 'staff');
   const admins = (users.data ?? []).filter((user) => user.role === 'admin');
 
@@ -48,7 +40,7 @@ export function AccessEditor({ granted, loading, saving, onSave, scope }: Access
 
   const save = async () => {
     try {
-      await onSave(selected);
+      await setGrants.mutateAsync({ hostname, pubkeys: selected });
       setDraft(undefined);
       toast({ title: 'Access updated' });
     } catch (error) {
@@ -85,13 +77,13 @@ export function AccessEditor({ granted, loading, saving, onSave, scope }: Access
 
       {!!admins.length && (
         <p className="text-xs text-muted-foreground">
-          Admins ({admins.length}) can manage every {scope} and are not listed here.
+          Admins ({admins.length}) can manage every site and are not listed here.
         </p>
       )}
 
       <div className="flex items-center gap-3">
-        <Button onClick={save} disabled={saving || !staff.length}>
-          {saving ? 'Saving…' : 'Save access'}
+        <Button onClick={save} disabled={setGrants.isPending || !staff.length}>
+          {setGrants.isPending ? 'Saving…' : 'Save access'}
         </Button>
         <Badge variant="outline">{selected.length} granted</Badge>
       </div>
