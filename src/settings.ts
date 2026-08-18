@@ -67,6 +67,18 @@ export interface SettingsValues {
    * `hidden` flag.
    */
   public_site_list: boolean;
+  /**
+   * Relays the bunker gateway listens on and advertises in the connection
+   * URIs it mints, or empty to use {@link SettingsValues.relays}.
+   *
+   * Worth setting separately: NIP-46 traffic is ephemeral request/response
+   * chatter that has nothing to do with finding site manifests, and pointing
+   * it at one relay both bounds how many sockets the gateway holds open and
+   * keeps signing requests off relays chosen for something else.
+   */
+  bunker_relays: string[];
+  /** Seconds the gateway waits for an upstream signer to answer. */
+  bunker_request_timeout: number;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -202,6 +214,8 @@ const SCHEMAS = {
   tls_check_limit_total: z.number().int().min(1).max(100_000),
   contact_npub: contactNpub,
   public_site_list: z.boolean(),
+  bunker_relays: z.array(relayUrl).max(8),
+  bunker_request_timeout: z.number().int().min(5).max(120),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -220,6 +234,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   tls_check_limit_total: 600,
   contact_npub: "",
   public_site_list: false,
+  bunker_relays: [],
+  bunker_request_timeout: 20,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];
@@ -284,6 +300,45 @@ export class SettingsService {
 
   get<K extends SettingKey>(key: K): SettingsValues[K] {
     return this.cache[key];
+  }
+
+  /**
+   * Re-read every setting from the database, notifying subscribers of any that
+   * changed underneath us.
+   *
+   * Nothing needs this in a single process, where {@link SettingsService.update}
+   * is the only writer. The bunker worker is a second thread with its own
+   * connection to the same file, and this is how it hears about an edit made
+   * on the main thread. Missing keys are left at their cached value rather
+   * than reseeded: seeding is {@link SettingsService.load}'s job, and doing it
+   * from two threads at once is a race for no benefit.
+   */
+  async reload(): Promise<SettingKey[]> {
+    const rows = await this.db.selectFrom("settings").selectAll().execute();
+    const stored = new Map(rows.map((row) => [row.key, row.value]));
+    const values = { ...this.cache };
+    const changed: SettingKey[] = [];
+
+    for (const key of SETTING_KEYS) {
+      const raw = stored.get(key);
+      if (raw === undefined) continue;
+
+      try {
+        const value = parseSetting(key, JSON.parse(raw));
+        if (JSON.stringify(this.cache[key]) === JSON.stringify(value)) continue;
+        assign(values, key, value);
+        changed.push(key);
+      } catch (error) {
+        this.log?.warn("setting_invalid", { key, err_msg: String(error) });
+      }
+    }
+
+    if (changed.length) {
+      this.cache = values;
+      this.emitter.emit("change", changed);
+    }
+
+    return changed;
   }
 
   /** A snapshot of every setting. */

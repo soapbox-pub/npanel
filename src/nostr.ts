@@ -1,5 +1,5 @@
 import { NPool, NRelay1 } from "@nostrify/nostrify";
-import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
+import type { NRelay, NostrEvent, NostrFilter } from "@nostrify/nostrify";
 import { type Logger, errFields } from "./log.ts";
 import { getManifestServers, parseRelayList, parseServerList } from "./manifest.ts";
 import { NAMED_SITE_KIND, type NsiteAddress } from "./nsite-address.ts";
@@ -20,7 +20,8 @@ interface CachedList {
 }
 
 /**
- * Relay access for the sync worker.
+ * Relay access for the sync worker, and for the bunker gateway in its own
+ * thread.
  *
  * All relay traffic goes through one pool whose relay set is read from
  * settings on every request, so an admin editing the relay list in the
@@ -46,6 +47,17 @@ export class NostrService {
   /** Relays configured in the dashboard. */
   get relays(): string[] {
     return this.settings.get("relays");
+  }
+
+  /**
+   * A relay handle restricted to `relays`, sharing this pool's connections.
+   *
+   * For code that talks to one correspondent on relays of its own — a NIP-46
+   * signer, say — and would otherwise need a second pool, and a second set of
+   * sockets to relays this one is already connected to.
+   */
+  group(relays: string[]): NRelay {
+    return this.pool.group(relays);
   }
 
   /** Stream events from relays until the signal aborts. */

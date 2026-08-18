@@ -123,6 +123,54 @@ const MIGRATIONS: Migration[] = [
     name: "005_hosts_spa",
     statements: ["ALTER TABLE hosts ADD COLUMN spa INTEGER NOT NULL DEFAULT 0"],
   },
+  {
+    // The NIP-46 gateway. Nothing is seeded: a deployment without SECRET_KEY
+    // set simply never writes to these, and creating them anyway keeps the
+    // schema the same everywhere, so turning the key on later is one restart
+    // rather than a migration that has to run at exactly the right moment.
+    name: "006_bunkers",
+    statements: [
+      `CREATE TABLE bunkers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        user_pubkey TEXT,
+        upstream_pubkey TEXT,
+        upstream_secret TEXT,
+        upstream_relays TEXT NOT NULL DEFAULT '[]',
+        key_fingerprint TEXT,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'connected', 'error')),
+        error TEXT,
+        last_ok_at INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE TABLE bunker_grants (
+        user_pubkey TEXT NOT NULL,
+        bunker_id INTEGER NOT NULL REFERENCES bunkers (id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_pubkey, bunker_id)
+      )`,
+      `CREATE TABLE bunker_connections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bunker_id INTEGER NOT NULL REFERENCES bunkers (id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        signer_secret TEXT NOT NULL,
+        signer_pubkey TEXT NOT NULL UNIQUE,
+        client_pubkey TEXT,
+        secret TEXT,
+        relays TEXT NOT NULL DEFAULT '[]',
+        permissions TEXT NOT NULL DEFAULT '[]',
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        last_error TEXT
+      )`,
+      "CREATE INDEX bunker_connections_bunker_idx ON bunker_connections (bunker_id)",
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

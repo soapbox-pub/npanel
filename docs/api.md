@@ -39,7 +39,8 @@ allowed in.
 Roles:
 
 - **admin** — everything
-- **staff** — only hosts explicitly granted to them, plus any host they created
+- **staff** — only the hosts and bunkers explicitly granted to them, plus any
+  they created
 
 Routes marked **admin** below return `403` for staff.
 
@@ -331,6 +332,134 @@ relay round trips take seconds, so poll the host or its versions for the result.
 
 Replaces the grant list wholesale. Every pubkey must be hex and must already be
 an npanel user. Returns `{ "grants": [...] }`.
+
+## Bunkers
+
+A bunker is an identity npanel can sign for over NIP-46 without holding its key
+— see [architecture](architecture.md#bunkers). It is addressed by its slug,
+`/api/bunkers/press-team`; the row id is never part of the API.
+
+Every route here answers `503` with an explanation when the server has no
+`SECRET_KEY`, since there is nowhere safe to keep a credential. A route that
+needs the gateway thread and can't reach it answers `502` — the gateway may be
+restarting — and the rest of npanel is unaffected either way.
+
+A bunker object:
+
+```json
+{
+  "slug": "press-team",
+  "name": "Press Team",
+  "user_pubkey": "<hex>",
+  "npub": "npub1...",
+  "upstream_pubkey": "<hex>",
+  "upstream_relays": ["wss://relay.example.com"],
+  "status": "connected",
+  "error": null,
+  "last_ok_at": 1754000000,
+  "enabled": true,
+  "created_by": "<hex>",
+  "created_at": 1754000000,
+  "updated_at": 1754000000
+}
+```
+
+`status` is `pending` before anyone has paired it, `connected` once a signer has
+answered, and `error` when one stopped answering, with `error` saying why. The
+credential npanel stores is never serialized, here or anywhere.
+
+### `GET /api/bunkers`
+
+`{ "bunkers": [...] }`, ordered by name. Staff see only the bunkers granted to
+them.
+
+### `POST /api/bunkers`
+
+```json
+{ "name": "Press Team", "slug": "press-team" }
+```
+
+`slug` is optional and defaults to one made from the name. `201` with
+`{ "bunker": {...} }`. `409` if the slug is taken, `400` if the name has no
+letters or digits to build one from. A staff user who creates a bunker is
+granted it, as with hosts.
+
+### `GET /api/bunkers/:slug`
+
+`{ "bunker": {...} }`, or `404` / `403`.
+
+### `PATCH /api/bunkers/:slug`
+
+```json
+{ "name": "Newsroom", "enabled": false }
+```
+
+Renaming does not move the bunker: the slug is the URL. Returns
+`{ "bunker": {...} }`.
+
+### `DELETE /api/bunkers/:slug`
+
+`{ "ok": true }`. Grants go with it.
+
+### `POST /api/bunkers/:slug/pair`
+
+Connects a bunker to the signer that holds its key. Two directions:
+
+```json
+{}
+```
+
+npanel mints a `nostrconnect://` invitation for a signer to scan or open.
+`202` with `{ "pairing": { "state": "waiting", "uri": "nostrconnect://...", "error": null } }`.
+
+```json
+{ "uri": "bunker://<hex>?relay=wss://relay.example.com&secret=..." }
+```
+
+npanel consumes a URI the signer produced instead. `202` with the same shape and
+no `uri` to show, since there is nothing for anyone to scan.
+
+Either way the call returns as soon as there is something to show, because the
+rest happens on someone's phone. Poll the companion `GET`. A second call
+supersedes the first: the earlier invitation stops being listened for.
+
+### `GET /api/bunkers/:slug/pair`
+
+```json
+{ "pairing": { "state": "waiting", "uri": "nostrconnect://...", "error": null } }
+```
+
+`state` is `waiting`, `connected`, `failed`, or `idle` — the last meaning
+nothing is in flight, which is also what a restarted gateway looks like, since
+pairings are held in memory. Attempts expire after five minutes.
+
+### `DELETE /api/bunkers/:slug/pair`
+
+Stops listening and discards the invitation. `{ "ok": true }`.
+
+### `POST /api/bunkers/:slug/test`
+
+Asks the upstream signer who it is, and records the answer on the bunker.
+
+```json
+{ "result": { "ok": true, "user_pubkey": "<hex>", "error": null } }
+```
+
+A signer that refuses or never answers is reported as `ok: false` with a reason,
+and the bunker's `status` becomes `error`. This is a `200` either way: the call
+succeeded in finding out.
+
+### `GET /api/bunkers/:slug/grants` — admin
+
+`{ "grants": [{ "user_pubkey": "<hex>", "created_at": 1754000000 }] }`
+
+### `PUT /api/bunkers/:slug/grants` — admin
+
+```json
+{ "pubkeys": ["<hex>", "<hex>"] }
+```
+
+Replaces the grant list wholesale, on the same terms as host grants.
 
 ## Users — admin
 

@@ -1,6 +1,7 @@
 import type { Kysely } from "kysely";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
+import type { BunkerGateway } from "../bunker/api.ts";
 import type { Database, Host } from "../db/schema.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
@@ -14,6 +15,7 @@ export interface ApiDeps {
   db: Kysely<Database>;
   settings: SettingsService;
   sync: SyncWorker;
+  bunkers: BunkerGateway;
   blobs: BlobStore;
   dns: DnsTargets;
   log: Logger;
@@ -31,6 +33,20 @@ export async function canAccessHost(db: Kysely<Database>, user: AuthUser, hostId
     .select("host_id")
     .where("user_pubkey", "=", user.pubkey)
     .where("host_id", "=", hostId)
+    .executeTakeFirst();
+
+  return grant !== undefined;
+}
+
+/** Whether a user may see and manage a bunker, and mint connections from it. */
+export async function canAccessBunker(db: Kysely<Database>, user: AuthUser, bunkerId: number): Promise<boolean> {
+  if (user.role === "admin") return true;
+
+  const grant = await db
+    .selectFrom("bunker_grants")
+    .select("bunker_id")
+    .where("user_pubkey", "=", user.pubkey)
+    .where("bunker_id", "=", bunkerId)
     .executeTakeFirst();
 
   return grant !== undefined;

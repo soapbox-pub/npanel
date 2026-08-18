@@ -14,9 +14,10 @@ looks the way it does.
 src/                    server (Bun/Node, Hono, Kysely)
   server.ts             entry point; wires everything together
   app.ts                Host-based routing: dashboard vs nsite
-  config.ts             the six environment variables
+  config.ts             the seven environment variables
   hostname.ts           hostname validation and root-domain rules (tldts)
   rate-limit.ts         token buckets, used to meter certificate authorization
+  bunker/               the NIP-46 gateway, in its own worker thread
   settings.ts           runtime settings, DB-backed and live-reloading
   nsite-address.ts      address parsing; also imported by the dashboard
   manifest.ts           manifest event parsing
@@ -32,6 +33,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   api/                  the JSON API
   db/                   dialect, schema, migrations
   test/harness.ts       shared test harness
+  test/nip46.ts         a fake NIP-46 signer, for bunker tests
 scripts/                make-admin.ts, prune-blobs.ts
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api
@@ -67,15 +69,16 @@ through Bun, and nothing in the repo needs Node or npm installed.
 
 ## Configuration
 
-Only six things are environment variables: `PORT`, `BIND_ADDRESS`,
-`TLS_CHECK_PORT`, `DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else
-belongs in the `settings` table so
-admins can change it from the dashboard without a restart.
+Only seven things are environment variables: `PORT`, `BIND_ADDRESS`,
+`TLS_CHECK_PORT`, `DASHBOARD_HOST`, `SECRET_KEY`, `LOG_LEVEL`, `DATA_DIR`.
+Everything else belongs in the `settings` table so
+admins can change it from the dashboard without a restart. `SECRET_KEY` is there
+only because a key kept beside the rows it encrypts is not protecting them.
 
 When adding a setting: add the key to `SettingsValues`, a zod schema to
 `SCHEMAS`, a default to `DEFAULT_SETTINGS`, and — if anything needs to react to
-it — a branch in the `settings.onChange` handler in `SyncWorker.start`. Then
-surface it on the dashboard's Settings page.
+it — a branch in the `settings.onChange` handler in `SyncWorker.start` or
+`BunkerService.start`. Then surface it on the dashboard's Settings page.
 
 ## Tests
 
