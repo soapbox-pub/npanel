@@ -305,6 +305,55 @@ test("preflights are answered, plain OPTIONS is still a 405", async () => {
   assert.equal(plain.headers.get("allow"), "GET, HEAD");
 });
 
+test("sites are served under a content security policy by default", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const csp = (await harness.site("docs.example.com", "/")).headers.get("content-security-policy") ?? "";
+
+  // Scripts from the site's own origin only: the directive the whole policy
+  // exists for, and the one that can break a site that didn't expect it.
+  assert.match(csp, /script-src 'self'(;|$)/);
+  assert.match(csp, /default-src 'none'/);
+  // A hostname npanel doesn't serve is still an origin a browser is on.
+  const missing = await harness.site("nope.example.com", "/");
+  assert.equal(missing.status, 404);
+  assert.match(missing.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+});
+
+test("turning nsite_csp off stops sending the policy", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  await harness.settings.update({ nsite_csp: false }, PUBKEY);
+
+  const response = await harness.site("docs.example.com", "/");
+  assert.equal(response.headers.get("content-security-policy"), null);
+});
+
+test("a host's own csp setting overrides the instance default either way", async () => {
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const setCsp = async (csp: number | null) => {
+    await harness.db.updateTable("hosts").set({ csp }).where("id", "=", hostId).execute();
+    return (await harness.site("docs.example.com", "/")).headers.get("content-security-policy");
+  };
+
+  assert.equal(await setCsp(0), null);
+  assert.match((await setCsp(1)) ?? "", /default-src 'none'/);
+
+  await harness.settings.update({ nsite_csp: false }, PUBKEY);
+
+  // The override is what a site said about itself, so the instance setting
+  // moving underneath it must not quietly undo it.
+  assert.match((await setCsp(1)) ?? "", /default-src 'none'/);
+  assert.equal(await setCsp(null), null);
+});
+
 test("last-modified never runs ahead of when the manifest was seen", async () => {
   const { harness } = await setup({
     versions: [

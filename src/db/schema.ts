@@ -51,6 +51,8 @@ export interface HostsTable {
   redirect_www: Generated<number>;
   /** 0/1. Serve the site's shell with a 200 for paths it has no file for. */
   spa: Generated<number>;
+  /** 0/1 to force the `Content-Security-Policy` off or on, null to follow `nsite_csp`. */
+  csp: Generated<number | null>;
   created_by: string;
   created_at: number;
   updated_at: number;

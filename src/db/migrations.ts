@@ -189,6 +189,14 @@ const MIGRATIONS: Migration[] = [
         ('bunker_relays', 'bunker_request_timeout', 'bunker_max_relays', 'bunker_rate_limit')`,
     ],
   },
+  {
+    // Nullable, unlike every other 0/1 flag on `hosts`: this one has a third
+    // state. NULL means "whatever the instance setting says", which is what an
+    // admin flipping `nsite_csp` expects to reach every site that was never
+    // decided about individually.
+    name: "008_hosts_csp",
+    statements: ["ALTER TABLE hosts ADD COLUMN csp INTEGER"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

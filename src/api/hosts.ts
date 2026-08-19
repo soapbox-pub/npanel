@@ -25,6 +25,8 @@ const createSchema = z.object({
   redirect_www: z.boolean().optional(),
   /** Serve the site's shell for paths it has no file for. Off by default. */
   spa: z.boolean().optional(),
+  /** Force the CSP on or off for this site. Null, the default, follows `nsite_csp`. */
+  csp: z.boolean().nullable().optional(),
 });
 
 const updateSchema = z.object({
@@ -34,6 +36,7 @@ const updateSchema = z.object({
   hidden: z.boolean().optional(),
   redirect_www: z.boolean().optional(),
   spa: z.boolean().optional(),
+  csp: z.boolean().nullable().optional(),
   /** Event id to pin, or null to follow the newest ready version. */
   pinned_event_id: z.string().nullable().optional(),
 });
@@ -110,6 +113,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         hidden: body.data.hidden ? 1 : 0,
         redirect_www: body.data.redirect_www === false ? 0 : 1,
         spa: body.data.spa ? 1 : 0,
+        csp: override(body.data.csp),
         created_by: user.pubkey,
         created_at: now,
         updated_at: now,
@@ -208,6 +212,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     if (body.data.spa !== undefined) {
       patch.spa = body.data.spa ? 1 : 0;
+    }
+
+    if (body.data.csp !== undefined) {
+      patch.csp = override(body.data.csp);
     }
 
     if (body.data.pinned_event_id !== undefined && body.data.address === undefined) {
@@ -481,8 +489,14 @@ function hostSummary(host: Host) {
     hidden: host.hidden,
     redirect_www: host.redirect_www,
     spa: host.spa,
+    csp: host.csp,
     pinned_event_id: host.pinned_event_id,
   };
+}
+
+/** A per-site flag that may also decline to decide, leaving the setting in charge. */
+function override(value: boolean | null | undefined): number | null {
+  return value === undefined || value === null ? null : value ? 1 : 0;
 }
 
 function clamp(value: number, min: number, max: number): number {

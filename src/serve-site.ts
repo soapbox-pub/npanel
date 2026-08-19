@@ -2,16 +2,18 @@ import { extname } from "node:path/posix";
 import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import type { BlobStore } from "./blobs.ts";
-import type { Database } from "./db/schema.ts";
+import type { Database, Host } from "./db/schema.ts";
 import { wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { encodeNaddr } from "./nsite-address.ts";
+import type { SettingsService } from "./settings.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
+  settings: SettingsService;
   log: Logger;
 }
 
@@ -43,6 +45,34 @@ const EXPOSED_HEADERS = ["accept-ranges", "content-length", "content-range", "et
 const PREFLIGHT_MAX_AGE = "86400";
 
 /**
+ * The policy sites are served under, unless it's switched off.
+ *
+ * This is verbatim the `<meta>` policy mkstack ships in its `index.html`, which
+ * is what most sites reaching an npanel gateway are built from. Sent as a
+ * header it also covers everything a meta tag can't: responses that aren't
+ * HTML, and the document's own `<meta>` being reached only after the parser
+ * has already run whatever came before it.
+ *
+ * A site that ships its own policy still gets it — a document under two
+ * policies must satisfy both — so this can only tighten a site, never loosen
+ * one. That is also why it can break a site that expected neither: `script-src
+ * 'self'` forbids inline scripts and CDN script tags outright. Per-site `csp`
+ * exists for those.
+ */
+const CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "frame-src 'self' https:",
+  "font-src 'self'",
+  "base-uri 'self'",
+  "manifest-src 'self'",
+  "connect-src 'self' blob: https: wss:",
+  "img-src 'self' data: blob: https:",
+  "media-src 'self' https:",
+].join("; ");
+
+/**
  * Serve a request for one of the configured hostnames.
  *
  * Everything is read from the local blob store — npanel never proxies a
@@ -50,7 +80,7 @@ const PREFLIGHT_MAX_AGE = "86400";
  * every relay and Blossom server it came from is offline.
  */
 export function createSiteServer(deps: SiteServerDeps) {
-  const { db, blobs, log } = deps;
+  const { db, blobs, settings, log } = deps;
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -84,7 +114,29 @@ export function createSiteServer(deps: SiteServerDeps) {
     });
   }
 
+  /**
+   * Whether this site is served under {@link CSP}.
+   *
+   * A host that made its own decision keeps it; anything else — including a
+   * hostname with no host row at all — follows the instance setting, so
+   * turning `nsite_csp` off is enough to be rid of the policy everywhere.
+   */
+  function cspEnabled(host: Host | undefined): boolean {
+    return host?.csp === null || host?.csp === undefined ? settings.get("nsite_csp") : host.csp === 1;
+  }
+
   async function handle(request: Request, hostname: string): Promise<Response> {
+    const host = await findHost(db, hostname);
+    const response = await respond(request, hostname, host);
+
+    if (cspEnabled(host)) {
+      response.headers.set("content-security-policy", CSP);
+    }
+
+    return response;
+  }
+
+  async function respond(request: Request, hostname: string, host: Host | undefined): Promise<Response> {
     if (request.method !== "GET" && request.method !== "HEAD") {
       // An nsite is a pile of files. There is nothing to POST to.
       return new Response("This site only serves GET and HEAD requests.", {
@@ -92,8 +144,6 @@ export function createSiteServer(deps: SiteServerDeps) {
         headers: { "content-type": "text/plain; charset=utf-8", allow: "GET, HEAD" },
       });
     }
-
-    const host = await findHost(db, hostname);
 
     if (!host) {
       const redirect = await wwwRedirect(request, hostname);

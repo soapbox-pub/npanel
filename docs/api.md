@@ -155,6 +155,7 @@ A host object:
   "hidden": false,
   "redirect_www": true,
   "spa": false,
+  "csp": null,
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -197,7 +198,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": null }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -226,6 +227,7 @@ Any subset of:
   "hidden": true,
   "redirect_www": true,
   "spa": true,
+  "csp": false,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -254,6 +256,10 @@ one. On, a *document* request — a path with no extension, or one ending
 with a `200`, so a client-side router can decide what the page is. Requests for
 anything else still `404` either way: a script or stylesheet that answers `200`
 with a page of HTML doesn't render the site, it fails somewhere harder to read.
+
+`csp` overrides [`nsite_csp`](configuration.md#nsite_csp) for this one site:
+`true` always sends the `Content-Security-Policy` header, `false` never does,
+and `null` — the default — follows the setting.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -391,7 +397,8 @@ back in if it ever happens anyway.)
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600,
     "contact_npub": "",
-    "public_site_list": false
+    "public_site_list": false,
+    "nsite_csp": true
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

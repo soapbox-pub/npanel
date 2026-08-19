@@ -25,6 +25,7 @@ interface Draft {
   tlsCheckLimitTotal?: string;
   contactNpub?: string;
   publicSiteList?: boolean;
+  nsiteCsp?: boolean;
 }
 
 /**
@@ -60,6 +61,7 @@ export function SettingsPage() {
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
+  const nsiteCsp = draft.nsiteCsp ?? current?.nsite_csp ?? true;
 
   const save = async () => {
     try {
@@ -75,6 +77,7 @@ export function SettingsPage() {
         tls_check_limit_total: Number(tlsCheckLimitTotal),
         contact_npub: contactNpub.trim(),
         public_site_list: publicSiteList,
+        nsite_csp: nsiteCsp,
       });
 
       setDraft({});
@@ -140,6 +143,27 @@ export function SettingsPage() {
               onCheckedChange={(checked) => setDraft({ ...draft, publicSiteList: checked })}
             />
             {publicSiteList ? 'Listed publicly' : 'Not listed'}
+          </label>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Content Security Policy</CardTitle>
+          <CardDescription>
+            Serve every site with a restrictive <code className="font-mono">Content-Security-Policy</code>{' '}
+            header — the same policy mkstack ships, so sites built with it are unaffected. It allows
+            scripts only from the site's own domain, which will break a site that relies on inline
+            scripts or a CDN. Any site can be switched over individually on its own settings tab.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <label className="flex items-center gap-3 text-sm">
+            <Switch
+              checked={nsiteCsp}
+              onCheckedChange={(checked) => setDraft({ ...draft, nsiteCsp: checked })}
+            />
+            {nsiteCsp ? 'Sent with every site' : 'Not sent'}
           </label>
         </CardContent>
       </Card>

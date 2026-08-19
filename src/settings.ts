@@ -67,6 +67,16 @@ export interface SettingsValues {
    * `hidden` flag.
    */
   public_site_list: boolean;
+  /**
+   * Whether served nsites carry a restrictive `Content-Security-Policy`.
+   *
+   * On by default: a gateway serves sites written by other people, and every
+   * site on it shares an origin model with the dashboard's visitors. The policy
+   * is the one mkstack ships, so sites built with it are unaffected — but it
+   * forbids inline and remote scripts, which a site not written against it may
+   * depend on. Turn it off for a deployment that serves such sites.
+   */
+  nsite_csp: boolean;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -202,6 +212,7 @@ const SCHEMAS = {
   tls_check_limit_total: z.number().int().min(1).max(100_000),
   contact_npub: contactNpub,
   public_site_list: z.boolean(),
+  nsite_csp: z.boolean(),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -220,6 +231,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   tls_check_limit_total: 600,
   contact_npub: "",
   public_site_list: false,
+  nsite_csp: true,
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

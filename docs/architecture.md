@@ -176,7 +176,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa, csp |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
@@ -222,9 +222,20 @@ a `404` into a `200` does not.
 
 Responses carry an `ETag` of the blob hash (so conditional requests are free and
 exact), `Last-Modified` from the event's `created_at` — capped at when npanel
-saw it, since an author can date a manifest however they please — and
-`X-Npanel-Pubkey` / `X-Npanel-Event` headers identifying exactly what was
-served. Range requests are supported, including suffix ranges.
+saw it, since an author can date a manifest however they please — and an
+`X-Nsite-Addr` header naming the nsite the hostname resolved to. Range requests
+are supported, including suffix ranges.
+
+Sites are also served under a `Content-Security-Policy`, the same one mkstack
+puts in its `index.html`. A gateway runs other people's code on domains you own,
+and `script-src 'self'` is what keeps a compromised deploy or a careless
+`innerHTML` from being an XSS on an origin your visitors — and their Nostr keys
+— trust. It is a header rather than a meta tag because a meta tag is only read
+once the parser reaches it, and doesn't apply to responses that aren't HTML. The
+policy costs something: it breaks inline scripts and CDN script tags, so
+`nsite_csp` turns it off instance-wide and a host's `csp` column overrides it
+for one site in either direction. `null` there, the default, means *follow the
+setting* — hence a nullable column beside four plain 0/1 flags.
 
 Caching splits by what a file is. A site's URLs are stable across deploys while
 the blobs behind them are not, so documents are sent `no-cache` and revalidate
