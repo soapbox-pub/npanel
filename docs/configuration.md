@@ -294,42 +294,18 @@ this setting, and is the way to keep one domain quiet on a gateway that
 otherwise publishes its list. Neither this setting nor the flag affects who can
 *visit* a site; a served site is public either way.
 
-### `nsite_csp`
+## Not a setting: the Content Security Policy
 
-Default `true`. Whether every served site carries a `Content-Security-Policy`
-header:
+Served sites carry a restrictive `Content-Security-Policy`, and there is no
+instance-wide switch for it — deliberately. See
+[the `csp` flag](api.md#patch-apihostshostname), which is per site.
 
-```
-default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
-frame-src 'self' https:; font-src 'self'; base-uri 'self'; manifest-src 'self';
-connect-src 'self' blob: https: wss:; img-src 'self' data: blob: https:;
-media-src 'self' https:
-```
-
-That is verbatim the policy [mkstack](https://mkstack.xyz) ships as a `<meta>`
-tag, which is what most sites reaching an npanel gateway are built from. Sent as
-a header instead, it also covers what a meta tag can't: responses that aren't
-HTML, and the fact that a document's own `<meta>` is only reached after the
-parser has already run whatever came before it.
-
-On by default because a gateway serves other people's code under domains you
-own. A site whose author publishes a compromised deploy — or who is careless
-with `innerHTML` — is running scripts on an origin your visitors trust, and on
-Nostr an XSS on the wrong origin costs somebody their key. The policy is
-defense in depth, not a substitute for trusting who you point a hostname at.
-
-The catch is `script-src 'self'`: it forbids inline `<script>` blocks and
-scripts loaded from a CDN. A site built with mkstack, or any bundler that emits
-external scripts, is unaffected. A hand-written page with an inline script is
-not, and will break. A site that ships its own policy still gets that one too —
-a document under two policies must satisfy both — so this setting can only
-tighten a site, never loosen one.
-
-Turning it off drops the header everywhere. To keep it on but exempt the one
-site that needs inline scripts, leave the setting alone and set that host's
-**Content Security Policy** to *Never send* on its settings tab (`csp` in the
-API). A host's own choice always wins; hosts left at *Instance default* follow
-this setting as it changes.
+A gateway serves other people's code under domains you own, so the blast radius
+of one careless deploy is one hostname, not all of them. A global off switch
+would turn that into a single tick-box that disarms every site at once, which is
+the one mistake a security default shouldn't make easy. The site that needs
+inline scripts turns the policy off for itself and everything else stays
+protected.
 
 ## Precedence and validation
 

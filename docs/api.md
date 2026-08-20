@@ -155,7 +155,7 @@ A host object:
   "hidden": false,
   "redirect_www": true,
   "spa": false,
-  "csp": null,
+  "csp": true,
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -198,7 +198,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": null }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -257,9 +257,31 @@ with a `200`, so a client-side router can decide what the page is. Requests for
 anything else still `404` either way: a script or stylesheet that answers `200`
 with a page of HTML doesn't render the site, it fails somewhere harder to read.
 
-`csp` overrides [`nsite_csp`](configuration.md#nsite_csp) for this one site:
-`true` always sends the `Content-Security-Policy` header, `false` never does,
-and `null` — the default — follows the setting.
+`csp` decides whether this site is served under a `Content-Security-Policy`,
+and defaults to `true` — including for hosts created before the flag existed.
+The policy is:
+
+```
+default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
+frame-src 'self' https:; font-src 'self'; base-uri 'self'; manifest-src 'self';
+connect-src 'self' blob: https: wss:; img-src 'self' data: blob: https:;
+media-src 'self' https:
+```
+
+That is verbatim the policy [mkstack](https://mkstack.xyz) ships as a `<meta>`
+tag, which is what most sites reaching an npanel gateway are built from. Sent as
+a header it also covers what a meta tag can't: responses that aren't HTML, and
+the fact that a document's own `<meta>` is only reached after the parser has
+already run whatever came before it. A site that ships its own policy still
+gets that one too — a document under two policies must satisfy both — so this
+can only tighten a site, never loosen one.
+
+The catch is `script-src 'self'`: it forbids inline `<script>` blocks and
+scripts loaded from a CDN. A site built with mkstack, or any bundler that emits
+external scripts, is unaffected; a page with an inline script is not, and the
+script silently doesn't run. That is what `false` is for, and it is scoped to
+the one site — there is no instance-wide switch, so turning it off for the site
+that needs it can't accidentally disarm the rest.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -397,8 +419,7 @@ back in if it ever happens anyway.)
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600,
     "contact_npub": "",
-    "public_site_list": false,
-    "nsite_csp": true
+    "public_site_list": false
   },
   "defaults": { "...": "the built-in defaults, for a reset button" }
 }

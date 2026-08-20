@@ -190,12 +190,27 @@ const MIGRATIONS: Migration[] = [
     ],
   },
   {
-    // Nullable, unlike every other 0/1 flag on `hosts`: this one has a third
-    // state. NULL means "whatever the instance setting says", which is what an
-    // admin flipping `nsite_csp` expects to reach every site that was never
-    // decided about individually.
     name: "008_hosts_csp",
     statements: ["ALTER TABLE hosts ADD COLUMN csp INTEGER"],
+  },
+  {
+    // 008 made `csp` a tri-state against an `nsite_csp` setting that could
+    // switch the policy off for the whole instance. That setting is gone: an
+    // admin who wanted one awkward site working could disarm every site with
+    // it, which is the one mistake a security default must not make easy. The
+    // policy is now simply on, and a site opts out for itself.
+    //
+    // NULL meant "follow the setting", and the setting's default was on, so
+    // NULL folds into 1. An explicit 0 was a real decision about a real site
+    // and is kept.
+    name: "009_hosts_csp_default_on",
+    statements: [
+      "ALTER TABLE hosts ADD COLUMN csp_on INTEGER NOT NULL DEFAULT 1",
+      "UPDATE hosts SET csp_on = 0 WHERE csp = 0",
+      "ALTER TABLE hosts DROP COLUMN csp",
+      "ALTER TABLE hosts RENAME COLUMN csp_on TO csp",
+      "DELETE FROM settings WHERE key = 'nsite_csp'",
+    ],
   },
 ];
 

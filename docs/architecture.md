@@ -232,10 +232,10 @@ and `script-src 'self'` is what keeps a compromised deploy or a careless
 `innerHTML` from being an XSS on an origin your visitors — and their Nostr keys
 — trust. It is a header rather than a meta tag because a meta tag is only read
 once the parser reaches it, and doesn't apply to responses that aren't HTML. The
-policy costs something: it breaks inline scripts and CDN script tags, so
-`nsite_csp` turns it off instance-wide and a host's `csp` column overrides it
-for one site in either direction. `null` there, the default, means *follow the
-setting* — hence a nullable column beside four plain 0/1 flags.
+policy costs something: it breaks inline scripts and CDN script tags, so a host
+can turn it off with its `csp` flag, which defaults on. That flag is per host
+and there is no instance-wide equivalent, on purpose — a global off switch makes
+disarming every site at once easier than fixing the one site that needed it.
 
 Caching splits by what a file is. A site's URLs are stable across deploys while
 the blobs behind them are not, so documents are sent `no-cache` and revalidate

@@ -24,13 +24,6 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -272,37 +265,22 @@ export function HostDetailPage() {
               <CardTitle className="text-base">Content Security Policy</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <Select
-                value={data.csp === null ? 'default' : data.csp ? 'on' : 'off'}
-                onValueChange={(value) =>
-                  patch(
-                    { csp: value === 'default' ? null : value === 'on' },
-                    value === 'default'
-                      ? 'Following the instance default'
-                      : value === 'on'
-                        ? 'Content Security Policy on'
-                        : 'Content Security Policy off',
-                  )
-                }
-              >
-                <SelectTrigger className="sm:w-72">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">Instance default</SelectItem>
-                  <SelectItem value="on">Always send</SelectItem>
-                  <SelectItem value="off">Never send</SelectItem>
-                </SelectContent>
-              </Select>
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.csp}
+                  onCheckedChange={(csp) =>
+                    patch(
+                      { csp },
+                      csp ? 'Content Security Policy on' : 'Content Security Policy off',
+                    )
+                  }
+                />
+                {data.csp ? 'Protected' : 'Off for this site'}
+              </label>
               <p className="text-sm text-muted-foreground">
-                {data.csp === null
-                  ? 'Whatever the instance setting says. Override it here if this one site needs the opposite.'
-                  : data.csp
-                    ? 'This site is always served with the policy, even if the instance setting is off.'
-                    : 'This site is never served with the policy, even if the instance setting is on.'}{' '}
-                The policy allows scripts only from {data.hostname} itself — no inline{' '}
-                <code className="font-mono">&lt;script&gt;</code>, no CDN. Turn it off for a site
-                that needs either, and can't be rebuilt to avoid them.
+                {data.csp
+                  ? `Scripts may only load from ${data.hostname} itself — no inline <script>, no CDN — so a bad deploy of this site can't run code against the domain. Turn it off only if the site needs one of those and can't be rebuilt without it.`
+                  : `This site runs without the policy. An inline or third-party script in a future deploy of it will execute on ${data.hostname}. Every other site keeps its own protection.`}
               </p>
             </CardContent>
           </Card>

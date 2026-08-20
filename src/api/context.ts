@@ -134,8 +134,8 @@ export interface HostView {
   redirect_www: boolean;
   /** Whether unknown document paths serve the site's shell instead of a 404. */
   spa: boolean;
-  /** Forces the `Content-Security-Policy` on or off; null follows the `nsite_csp` setting. */
-  csp: boolean | null;
+  /** Whether this site is served under a `Content-Security-Policy`. On unless turned off. */
+  csp: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -173,7 +173,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     hidden: host.hidden === 1,
     redirect_www: host.redirect_www === 1,
     spa: host.spa === 1,
-    csp: host.csp === null ? null : host.csp === 1,
+    csp: host.csp === 1,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
     created_at: host.created_at,

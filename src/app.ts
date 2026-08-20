@@ -25,7 +25,7 @@ export function createApp(deps: AppDeps): Hono {
     dashboardHost: deps.dashboardHost,
     log,
   });
-  const serveSite = createSiteServer({ db: deps.db, blobs: deps.blobs, settings: deps.settings, log });
+  const serveSite = createSiteServer({ db: deps.db, blobs: deps.blobs, log });
 
   const app = new Hono();
 

@@ -29,8 +29,8 @@ export interface Host {
   redirect_www: boolean;
   /** Whether unknown document paths serve the site's shell instead of a 404. */
   spa: boolean;
-  /** Forces the Content-Security-Policy on or off; null follows the `nsite_csp` setting. */
-  csp: boolean | null;
+  /** Whether this site is served under a Content-Security-Policy. On unless turned off. */
+  csp: boolean;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -49,7 +49,7 @@ export interface HostPatch {
   hidden?: boolean;
   redirect_www?: boolean;
   spa?: boolean;
-  csp?: boolean | null;
+  csp?: boolean;
   pinned_event_id?: string | null;
 }
 
@@ -103,7 +103,6 @@ export interface Settings {
   tls_check_limit_total: number;
   contact_npub: string;
   public_site_list: boolean;
-  nsite_csp: boolean;
 }
 
 /** A site as it appears to someone who can't manage it. */

@@ -305,7 +305,7 @@ test("preflights are answered, plain OPTIONS is still a 405", async () => {
   assert.equal(plain.headers.get("allow"), "GET, HEAD");
 });
 
-test("sites are served under a content security policy by default", async () => {
+test("a site nobody configured is still served under the policy", async () => {
   const { harness } = await setup({
     versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
   });
@@ -316,42 +316,66 @@ test("sites are served under a content security policy by default", async () => 
   // exists for, and the one that can break a site that didn't expect it.
   assert.match(csp, /script-src 'self'(;|$)/);
   assert.match(csp, /default-src 'none'/);
+
   // A hostname npanel doesn't serve is still an origin a browser is on.
   const missing = await harness.site("nope.example.com", "/");
   assert.equal(missing.status, 404);
   assert.match(missing.headers.get("content-security-policy") ?? "", /default-src 'none'/);
 });
 
-test("turning nsite_csp off stops sending the policy", async () => {
-  const { harness } = await setup({
-    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
-  });
-
-  await harness.settings.update({ nsite_csp: false }, PUBKEY);
-
-  const response = await harness.site("docs.example.com", "/");
-  assert.equal(response.headers.get("content-security-policy"), null);
-});
-
-test("a host's own csp setting overrides the instance default either way", async () => {
+test("a site can turn the policy off for itself alone", async () => {
   const { harness, hostId } = await setup({
     versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
   });
 
-  const setCsp = async (csp: number | null) => {
-    await harness.db.updateTable("hosts").set({ csp }).where("id", "=", hostId).execute();
-    return (await harness.site("docs.example.com", "/")).headers.get("content-security-policy");
-  };
+  await harness.db
+    .insertInto("hosts")
+    .values({
+      hostname: "other.example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .execute();
 
-  assert.equal(await setCsp(0), null);
-  assert.match((await setCsp(1)) ?? "", /default-src 'none'/);
+  await harness.db.updateTable("hosts").set({ csp: 0 }).where("id", "=", hostId).execute();
 
-  await harness.settings.update({ nsite_csp: false }, PUBKEY);
+  assert.equal((await harness.site("docs.example.com", "/")).headers.get("content-security-policy"), null);
 
-  // The override is what a site said about itself, so the instance setting
-  // moving underneath it must not quietly undo it.
-  assert.match((await setCsp(1)) ?? "", /default-src 'none'/);
-  assert.equal(await setCsp(null), null);
+  // The site next door keeps its own protection: there is no switch that
+  // reaches both, which is the whole point of putting it on the host.
+  const neighbour = await harness.site("other.example.com", "/");
+  assert.match(neighbour.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+});
+
+test("a new host is protected without being asked", async () => {
+  const harness = await createHarness();
+  harnesses.push(harness);
+
+  const host = await harness.db
+    .insertInto("hosts")
+    .values({
+      hostname: "fresh.example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .returningAll()
+    .executeTakeFirstOrThrow();
+
+  // The column default, not something the API or the dashboard remembered to
+  // send: a row inserted by hand is protected too.
+  assert.equal(host.csp, 1);
 });
 
 test("last-modified never runs ahead of when the manifest was seen", async () => {

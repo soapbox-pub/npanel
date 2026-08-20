@@ -7,13 +7,11 @@ import { wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import type { SettingsService } from "./settings.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
-  settings: SettingsService;
   log: Logger;
 }
 
@@ -56,8 +54,9 @@ const PREFLIGHT_MAX_AGE = "86400";
  * A site that ships its own policy still gets it — a document under two
  * policies must satisfy both — so this can only tighten a site, never loosen
  * one. That is also why it can break a site that expected neither: `script-src
- * 'self'` forbids inline scripts and CDN script tags outright. Per-site `csp`
- * exists for those.
+ * 'self'` forbids inline scripts and CDN script tags outright. A site that
+ * needs either turns its own `csp` off; there is deliberately no way to turn
+ * the policy off for the whole gateway at once.
  */
 const CSP = [
   "default-src 'none'",
@@ -80,7 +79,7 @@ const CSP = [
  * every relay and Blossom server it came from is offline.
  */
 export function createSiteServer(deps: SiteServerDeps) {
-  const { db, blobs, settings, log } = deps;
+  const { db, blobs, log } = deps;
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -114,22 +113,13 @@ export function createSiteServer(deps: SiteServerDeps) {
     });
   }
 
-  /**
-   * Whether this site is served under {@link CSP}.
-   *
-   * A host that made its own decision keeps it; anything else — including a
-   * hostname with no host row at all — follows the instance setting, so
-   * turning `nsite_csp` off is enough to be rid of the policy everywhere.
-   */
-  function cspEnabled(host: Host | undefined): boolean {
-    return host?.csp === null || host?.csp === undefined ? settings.get("nsite_csp") : host.csp === 1;
-  }
-
   async function handle(request: Request, hostname: string): Promise<Response> {
     const host = await findHost(db, hostname);
     const response = await respond(request, hostname, host);
 
-    if (cspEnabled(host)) {
+    // On unless this one site turned it off. A hostname with no host row has
+    // nobody to have turned it off, so it gets the policy too.
+    if (host?.csp !== 0) {
       response.headers.set("content-security-policy", CSP);
     }
 
