@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, test } from "node:test";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { requestScheme } from "./app.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { matchesEtag, parseRange } from "./serve-site.ts";
+import { matchesEtag, negotiateEncoding, parseRange } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -457,6 +458,156 @@ test("HEAD returns headers without a body", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-length"), String(body.length));
   assert.equal(await response.text(), "");
+});
+
+/** A body with enough structure to compress well and clear the size floor. */
+const COMPRESSIBLE = "<!doctype html><title>hi</title><p>compress me</p>".repeat(64);
+
+/** A harness serving one compressible file that has its copies stored. */
+async function setupCompressed(path = "/index.html", body = COMPRESSIBLE): Promise<Harness> {
+  const { harness } = await setup({ versions: [{ eventId: "a".repeat(64), files: { [path]: body } }] });
+  await harness.blobs.ensureVariants(sha256(body));
+  return harness;
+}
+
+async function bytes(response: Response): Promise<Buffer> {
+  return Buffer.from(await response.arrayBuffer());
+}
+
+test("serves brotli to a client that accepts it", async () => {
+  const harness = await setupCompressed();
+
+  const response = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "gzip, deflate, br, zstd" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "br");
+  assert.equal(response.headers.get("vary"), "accept-encoding");
+  assert.equal(response.headers.get("etag"), `"${sha256(COMPRESSIBLE)}-br"`);
+
+  const body = await bytes(response);
+  assert.equal(brotliDecompressSync(body).toString(), COMPRESSIBLE);
+  assert.equal(response.headers.get("content-length"), String(body.length));
+  assert.ok(body.length < COMPRESSIBLE.length);
+});
+
+test("serves gzip to a client that cannot take brotli", async () => {
+  // What Tor Browser sends reaching an onion: Firefox withholds `br` from
+  // plain HTTP, so the visitors who gain most are the ones stuck on gzip.
+  const harness = await setupCompressed();
+
+  const response = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "gzip, deflate" },
+  });
+
+  assert.equal(response.headers.get("content-encoding"), "gzip");
+  assert.equal(response.headers.get("etag"), `"${sha256(COMPRESSIBLE)}-gzip"`);
+
+  const body = await bytes(response);
+  assert.equal(gunzipSync(body).toString(), COMPRESSIBLE);
+  assert.ok(body.length < COMPRESSIBLE.length);
+});
+
+test("a client that asks for nothing gets the blob itself", async () => {
+  const harness = await setupCompressed();
+
+  for (const headers of [undefined, { "accept-encoding": "identity" }, { "accept-encoding": "br;q=0, gzip;q=0" }]) {
+    const response = await harness.site("docs.example.com", "/", { headers });
+
+    assert.equal(response.headers.get("content-encoding"), null);
+    assert.equal(response.headers.get("etag"), `"${sha256(COMPRESSIBLE)}"`);
+    assert.equal(await response.text(), COMPRESSIBLE);
+  }
+});
+
+test("vary is set even when there was nothing to negotiate", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/logo.png": "not really a png" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/logo.png", {
+    headers: { "accept-encoding": "gzip, br" },
+  });
+
+  // Nothing was stored to negotiate with, but a cache still has to be told
+  // that this URL is one where the request headers matter.
+  assert.equal(response.headers.get("content-encoding"), null);
+  assert.equal(response.headers.get("vary"), "accept-encoding");
+});
+
+test("revalidation is per encoding", async () => {
+  const harness = await setupCompressed();
+  const hash = sha256(COMPRESSIBLE);
+
+  const matched = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "br", "if-none-match": `"${hash}-br"` },
+  });
+  assert.equal(matched.status, 304);
+  assert.equal(matched.headers.get("content-encoding"), "br");
+
+  // The tag of a copy the client is not being sent must not satisfy it, or a
+  // cache holding brotli would answer a gzip-only client with a 304.
+  const crossed = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "gzip", "if-none-match": `"${hash}-br"` },
+  });
+  assert.equal(crossed.status, 200);
+  assert.equal(crossed.headers.get("content-encoding"), "gzip");
+});
+
+test("a range applies to the copy being served", async () => {
+  const harness = await setupCompressed();
+
+  const whole = await bytes(await harness.site("docs.example.com", "/", { headers: { "accept-encoding": "gzip" } }));
+
+  const partial = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "gzip", range: "bytes=1-4" },
+  });
+
+  assert.equal(partial.status, 206);
+  assert.equal(partial.headers.get("content-encoding"), "gzip");
+  assert.equal(partial.headers.get("content-range"), `bytes 1-4/${whole.length}`);
+  assert.equal(partial.headers.get("content-length"), "4");
+  assert.deepEqual(await bytes(partial), whole.subarray(1, 5));
+});
+
+test("HEAD reports the length of the copy it would have sent", async () => {
+  const harness = await setupCompressed();
+
+  const head = await harness.site("docs.example.com", "/", {
+    method: "HEAD",
+    headers: { "accept-encoding": "br" },
+  });
+  const get = await harness.site("docs.example.com", "/", { headers: { "accept-encoding": "br" } });
+
+  assert.equal(head.headers.get("content-encoding"), "br");
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("content-length"), get.headers.get("content-length"));
+});
+
+test("negotiateEncoding prefers the smallest copy the client will take", async () => {
+  const variants = { identity: 100, br: 60, gzip: 50 };
+
+  // No stated preference: size decides, whichever way it falls.
+  assert.equal(negotiateEncoding("gzip, br", variants), "gzip");
+  assert.equal(negotiateEncoding("gzip, br", { identity: 100, br: 40, gzip: 50 }), "br");
+  assert.equal(negotiateEncoding("*", variants), "gzip");
+
+  // A stated preference outranks size, which is what `q` is for.
+  assert.equal(negotiateEncoding("gzip;q=0.5, br", variants), "br");
+
+  // Zero is a refusal, not a ranking.
+  assert.equal(negotiateEncoding("gzip;q=0, br", variants), "br");
+  assert.equal(negotiateEncoding("gzip;q=0, br;q=0", variants), undefined);
+
+  assert.equal(negotiateEncoding(null, variants), undefined);
+  assert.equal(negotiateEncoding("br", { identity: 100 }), undefined);
+  assert.equal(negotiateEncoding("BR", variants), "br");
+  assert.equal(negotiateEncoding("br;q=bogus", variants), "br");
+
+  // Refusing identity with nothing else on offer still gets identity: a
+  // static file server has no reason to answer 406.
+  assert.equal(negotiateEncoding("identity;q=0", { identity: 100 }), undefined);
 });
 
 test("falls back to the site's 404 page", async () => {

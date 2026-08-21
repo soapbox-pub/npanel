@@ -75,8 +75,8 @@ inside the running container:
 docker compose exec npanel bun run make-admin npub1yourkeyhere
 ```
 
-`prune-blobs` runs the same way. Both are safe against a running server: the
-database is in WAL mode.
+`prune-blobs` and `compress-blobs` run the same way. All three are safe against
+a running server: the database is in WAL mode.
 
 Logs are the same JSON lines on stdout:
 
@@ -262,16 +262,30 @@ https:// {
 	tls {
 		on_demand
 	}
-	encode zstd gzip
 	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }
 ```
 
-`encode` is not optional in practice. npanel serves every blob exactly as it was
-uploaded and never compresses anything, so without it a site's HTML and JS go
-out raw — for a typical SPA bundle that is several megabytes instead of a few
-hundred kilobytes. Caddy's defaults already skip types that are compressed
-already, like images and video.
+The site block has no `encode`, and shouldn't. npanel compresses a site's files
+once, when it downloads them, and picks the copy each visitor can read — so
+there is nothing left for Caddy to compress, and compressing here would only
+help the visitors who arrive through it. Visitors on a site's onion address
+never touch Caddy at all, and they are the ones on the slowest connections.
+
+The dashboard block keeps its `encode`: that's npanel's own built SPA served
+off the local disk, not an nsite, so it isn't part of what gets compressed at
+deploy time.
+
+If you are upgrading an npanel that has already been running, compress what it
+downloaded before you take `encode` out of the site block. Otherwise every site
+it currently serves goes back to shipping raw HTML until it next deploys:
+
+```sh
+bun run compress-blobs
+```
+
+That is safe to re-run and skips anything already done; `--dry-run` reports how
+much is outstanding without writing.
 
 Caddy calls `/tls-check?domain=<name>` before issuing any certificate. npanel
 answers `200` for the dashboard hostname, for every enabled host, and for the
@@ -526,6 +540,24 @@ deletes unreferenced blobs. `--dry-run` reports what would go.
 
 A monthly timer is reasonable. Note that pruning a version also removes the
 history you'd roll back to, so keep more than you think you need.
+
+## Compressing what's already stored
+
+npanel compresses a site's files as it downloads them, so this is only needed
+once, on an npanel that was serving sites before it did that. Sites already
+deployed have no reason to deploy again and would otherwise go on being served
+raw indefinitely.
+
+```sh
+sudo -u npanel bun run compress-blobs --dry-run
+sudo -u npanel bun run compress-blobs
+```
+
+On Docker, `docker compose exec npanel bun run compress-blobs`.
+
+Run it before removing `encode` from the site block of your `Caddyfile`, not
+after. It is safe to re-run and skips blobs that already have their copies, so
+there is no harm in leaving it in a maintenance script.
 
 ## Troubleshooting
 

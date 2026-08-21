@@ -81,7 +81,7 @@ export class SitePreviews {
     const size = await this.blobs.size(sha256);
     if (size === undefined || size === 0) return "";
 
-    const stream = this.blobs.read(sha256, { start: 0, end: Math.min(size, MAX_HTML_BYTES) - 1 });
+    const stream = this.blobs.read(sha256, { range: { start: 0, end: Math.min(size, MAX_HTML_BYTES) - 1 } });
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
       chunks.push(chunk as Buffer);

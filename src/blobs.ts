@@ -1,11 +1,60 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { Readable } from "node:stream";
+import type { Duplex, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { constants, createBrotliCompress, createGzip } from "node:zlib";
 import { isPublicUrl } from "./net.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+
+/**
+ * Compressed copies npanel stores alongside a blob.
+ *
+ * Both, rather than only the better one: Tor Browser reaches an onion over
+ * plain HTTP, and Firefox only offers `br` on HTTPS — so the visitors who gain
+ * most from compression are exactly the ones who can only accept `gzip`.
+ */
+export type Encoding = "br" | "gzip";
+
+export const ENCODINGS: readonly Encoding[] = ["br", "gzip"];
+
+/** File extension each encoding's sidecar gets. */
+const SUFFIX: Record<Encoding, string> = { br: ".br", gzip: ".gz" };
+
+/**
+ * Blobs too small to bother compressing.
+ *
+ * Anything under a TCP segment arrives in one packet either way, so a variant
+ * could only save the client a decompression, never a round trip.
+ */
+const MIN_VARIANT_SIZE = 512;
+
+/**
+ * How much smaller a variant has to be before it's worth keeping.
+ *
+ * A copy that saves a percent or two still costs every visitor a decompression
+ * and costs the disk a second file.
+ */
+const MIN_SAVING = 0.05;
+
+/**
+ * Size above which brotli drops from its slowest setting.
+ *
+ * Quality 11 runs around a megabyte a second, which is a fine price to pay
+ * once for a page or a bundle, and not one to pay for a large dump that would
+ * hold up every other blob in the deploy.
+ */
+const BROTLI_SLOW_ABOVE = 4 * 1024 * 1024;
+
+/** Sizes of a stored blob and whatever compressed copies it has. */
+export interface BlobVariants {
+  /** Size of the blob itself, which is always the one that exists. */
+  identity: number;
+  br?: number;
+  gzip?: number;
+}
 
 /** Redirects followed before giving up on a blob. */
 const MAX_REDIRECTS = 3;
@@ -33,6 +82,12 @@ export class BlobDownloadError extends Error {
  * stream into a temp file and are only renamed into place once the hash
  * matches, so a truncated transfer or a lying server can never leave a bad
  * blob behind, and the rename is atomic so readers never see a partial file.
+ *
+ * Compressed copies sit beside their blob as `<sha256>.br` and `<sha256>.gz`.
+ * They are an attribute of a blob rather than blobs themselves: nothing
+ * references them by name, {@link list} doesn't yield them, and {@link delete}
+ * takes them along — so pruning keeps working on hashes alone and a sidecar
+ * can never outlive what it was made from.
  */
 export class BlobStore {
   private readonly dir: string;
@@ -57,14 +112,14 @@ export class BlobStore {
     return join(this.dir, sha256.slice(0, 2), sha256.slice(2, 4), sha256);
   }
 
+  /** Filesystem path one of a blob's compressed copies occupies. */
+  variantPath(sha256: string, encoding: Encoding): string {
+    return this.path(sha256) + SUFFIX[encoding];
+  }
+
   /** Size in bytes, or undefined when the blob isn't stored. */
   async size(sha256: string): Promise<number | undefined> {
-    try {
-      const stats = await stat(this.path(sha256));
-      return stats.size;
-    } catch {
-      return undefined;
-    }
+    return sizeOf(this.path(sha256));
   }
 
   async has(sha256: string): Promise<boolean> {
@@ -72,10 +127,54 @@ export class BlobStore {
   }
 
   /**
-   * Open a blob for reading, optionally a byte range (inclusive, as in HTTP).
+   * Sizes of a blob and every compressed copy it has, or undefined when the
+   * blob isn't stored.
+   *
+   * All three are stat'd at once because the caller is about to pick the
+   * smallest of them, and it can't know which without asking.
    */
-  read(sha256: string, range?: { start: number; end: number }): Readable {
-    return createReadStream(this.path(sha256), range);
+  async variants(sha256: string): Promise<BlobVariants | undefined> {
+    const [identity, br, gzip] = await Promise.all([
+      this.size(sha256),
+      sizeOf(this.variantPath(sha256, "br")),
+      sizeOf(this.variantPath(sha256, "gzip")),
+    ]);
+
+    if (identity === undefined) return undefined;
+
+    return { identity, br, gzip };
+  }
+
+  /**
+   * Open a blob for reading — or one of its compressed copies, and optionally
+   * a byte range within whichever was asked for (inclusive, as in HTTP).
+   */
+  read(sha256: string, opts: { encoding?: Encoding; range?: { start: number; end: number } } = {}): Readable {
+    const path = opts.encoding ? this.variantPath(sha256, opts.encoding) : this.path(sha256);
+    return createReadStream(path, opts.range);
+  }
+
+  /**
+   * Compress a stored blob, if it isn't already and it's worth doing.
+   *
+   * Returns the encodings written by this call, so an idempotent re-run over a
+   * store that already has them reports nothing rather than pretending to have
+   * done work. Callers decide *whether* to compress — this only knows how.
+   */
+  async ensureVariants(sha256: string): Promise<Encoding[]> {
+    const size = await this.size(sha256);
+    if (size === undefined || size < MIN_VARIANT_SIZE) return [];
+
+    const written: Encoding[] = [];
+
+    // One encoding at a time: a deploy already compresses several blobs at
+    // once, and doubling that again would just contend for the same cores.
+    for (const encoding of ENCODINGS) {
+      if ((await sizeOf(this.variantPath(sha256, encoding))) !== undefined) continue;
+      if (await this.writeVariant(sha256, encoding, size)) written.push(encoding);
+    }
+
+    return written;
   }
 
   /** Store bytes already in memory, verifying them against `sha256`. */
@@ -161,19 +260,24 @@ export class BlobStore {
     return size;
   }
 
-  /** Remove a blob. Returns whether it existed. */
+  /** Remove a blob and its compressed copies. Returns whether it existed. */
   async delete(sha256: string): Promise<boolean> {
-    const path = this.path(sha256);
-    try {
-      await stat(path);
-    } catch {
-      return false;
+    const existed = await this.has(sha256);
+
+    await rm(this.path(sha256), { force: true });
+    for (const encoding of ENCODINGS) {
+      await rm(this.variantPath(sha256, encoding), { force: true });
     }
-    await rm(path, { force: true });
-    return true;
+
+    return existed;
   }
 
-  /** Every sha256 currently stored. Used by blob pruning. */
+  /**
+   * Every sha256 currently stored. Used by blob pruning.
+   *
+   * Compressed sidecars are skipped by the same test that keeps stray files
+   * out: their names carry a suffix, so they are not 64 hex characters.
+   */
   async *list(): AsyncGenerator<string> {
     let outer: string[];
     try {
@@ -207,12 +311,69 @@ export class BlobStore {
     await mkdir(dirname(target), { recursive: true });
     await rename(tmp, target);
   }
+
+  /**
+   * Compress one blob into one encoding. Returns whether the result was worth
+   * keeping.
+   *
+   * Streamed rather than buffered, so a blob at the top of `max_file_size`
+   * costs a fixed amount of memory, and written through a temp file for the
+   * same reason downloads are: an interrupted pass must not leave a truncated
+   * variant behind, because nothing downstream re-checks a sidecar's contents
+   * the way a blob's hash gets re-checked.
+   */
+  private async writeVariant(sha256: string, encoding: Encoding, size: number): Promise<boolean> {
+    const tmp = await this.tempPath();
+
+    try {
+      await pipeline(createReadStream(this.path(sha256)), compressor(encoding, size), createWriteStream(tmp));
+
+      const compressed = await sizeOf(tmp);
+      if (compressed === undefined || compressed > size * (1 - MIN_SAVING)) {
+        await rm(tmp, { force: true });
+        return false;
+      }
+
+      await rename(tmp, this.variantPath(sha256, encoding));
+      return true;
+    } catch (error) {
+      await rm(tmp, { force: true });
+      throw error;
+    }
+  }
 }
 
 function assertSha256(value: string): void {
   if (!SHA256.test(value)) {
     throw new Error(`Not a sha256 hash: ${value}`);
   }
+}
+
+/** Size of a file, or undefined when it isn't there. */
+async function sizeOf(path: string): Promise<number | undefined> {
+  try {
+    const stats = await stat(path);
+    return stats.size;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The compressor for an encoding, tuned for a blob of a known size. */
+function compressor(encoding: Encoding, size: number): Duplex {
+  if (encoding === "gzip") {
+    return createGzip({ level: 9 });
+  }
+
+  return createBrotliCompress({
+    params: {
+      [constants.BROTLI_PARAM_QUALITY]: size > BROTLI_SLOW_ABOVE ? 5 : 11,
+      // A window as large as the input, capped at what every decoder handles
+      // without the large-window extension.
+      [constants.BROTLI_PARAM_LGWIN]: 24,
+      [constants.BROTLI_PARAM_SIZE_HINT]: size,
+    },
+  });
 }
 
 /**

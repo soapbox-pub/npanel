@@ -12,6 +12,7 @@
     "check": "tsc --noEmit",
     "make-admin": "bun run scripts/make-admin.ts",
     "prune-blobs": "bun run scripts/prune-blobs.ts",
+    "compress-blobs": "bun run scripts/compress-blobs.ts",
     "dashboard:install": "cd dashboard && bun install",
     "dashboard:dev": "cd dashboard && bun run dev",
     "dashboard:build": "cd dashboard && bun run build",

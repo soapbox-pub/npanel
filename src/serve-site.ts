@@ -1,7 +1,7 @@
 import { extname } from "node:path/posix";
 import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
-import type { BlobStore } from "./blobs.ts";
+import { type BlobStore, type BlobVariants, ENCODINGS, type Encoding } from "./blobs.ts";
 import type { Database } from "./db/schema.ts";
 import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
@@ -147,6 +147,11 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       response.headers.set("content-security-policy", CSP);
     }
 
+    // Set on everything rather than only on what varied, because a cache has
+    // to be told before it stores the first response, and by then it is too
+    // late to find out that some other path would have negotiated.
+    response.headers.set("vary", "accept-encoding");
+
     advertiseOnion(request, origin, host, response);
 
     return response;
@@ -191,14 +196,19 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return text(404, "Not found.");
     }
 
-    const size = await blobs.size(file.sha256);
-    if (size === undefined) {
+    const variants = await blobs.variants(file.sha256);
+    if (!variants) {
       // The version is marked ready, so this means the blob was removed underneath us.
       log.error("blob_missing", { hostname, path: file.path, sha256: file.sha256 });
       return text(500, "This file is missing from local storage.");
     }
 
-    const etag = `"${file.sha256}"`;
+    // Everything below is about the representation this picks, not the blob:
+    // its size, its `ETag`, and the bytes a `Range` counts from.
+    const encoding = negotiateEncoding(request.headers.get("accept-encoding"), variants);
+    const size = encoding ? (variants[encoding] as number) : variants.identity;
+
+    const etag = etagFor(file.sha256, encoding);
     const headers = new Headers({
       "content-type": contentType(file.path),
       "cache-control": cacheControl(file.path),
@@ -209,6 +219,10 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       // paste anywhere: `naddr` carries the pubkey, kind, and `d` tag at once.
       "x-nsite-addr": encodeNaddr(host),
     });
+
+    if (encoding) {
+      headers.set("content-encoding", encoding);
+    }
 
     if (matchesEtag(request.headers.get("if-none-match"), etag)) {
       return new Response(null, { status: 304, headers });
@@ -234,7 +248,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return new Response(null, { status, headers });
     }
 
-    const stream = blobs.read(file.sha256, range ?? undefined);
+    const stream = blobs.read(file.sha256, { encoding, range: range ?? undefined });
     const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
 
     log.debug("site_request", {
@@ -243,6 +257,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       status,
       sha256: file.sha256,
       bytes: size,
+      encoding,
     });
 
     return new Response(body, { status, headers });
@@ -329,6 +344,73 @@ function preflight(request: Request): Response {
   }
 
   return new Response(null, { status: 204, headers });
+}
+
+/**
+ * Pick which stored copy of a blob to serve.
+ *
+ * `q` is honored the way the header defines it — a ranking, in which zero is a
+ * refusal — but ties are broken by size rather than by any preference of
+ * npanel's own. That tiebreak is the case that actually happens: browsers send
+ * their encodings at equal quality, so this serves the smallest copy the
+ * client can read. Tor Browser reaching an onion offers only `gzip`, because
+ * Firefox withholds `br` from plain HTTP, and gets the gzip copy.
+ *
+ * Returns undefined for the blob itself. A client that refuses `identity` and
+ * accepts nothing stored gets it anyway rather than a 406 — for a static file
+ * a slower answer beats no answer.
+ */
+export function negotiateEncoding(header: string | null, variants: BlobVariants): Encoding | undefined {
+  if (!header) return undefined;
+
+  const quality = parseAcceptEncoding(header);
+  const candidates = ENCODINGS.flatMap((encoding) => {
+    const size = variants[encoding];
+    if (size === undefined) return [];
+
+    const q = quality.get(encoding) ?? quality.get("*") ?? 0;
+    return q > 0 ? [{ encoding, size, q }] : [];
+  });
+
+  if (!candidates.length) return undefined;
+
+  candidates.sort((a, b) => b.q - a.q || a.size - b.size);
+  const best = candidates[0];
+
+  // A copy is only stored when it beat the blob by a margin, but serving one
+  // that doesn't would be worse than pointless.
+  return best.size < variants.identity ? best.encoding : undefined;
+}
+
+/** Quality values by encoding name, lowercased, from an `Accept-Encoding`. */
+function parseAcceptEncoding(header: string): Map<string, number> {
+  const quality = new Map<string, number>();
+
+  for (const entry of header.split(",")) {
+    const [token, ...params] = entry.split(";");
+    const name = token.trim().toLowerCase();
+    if (!name) continue;
+
+    const q = params.map((param) => param.trim().toLowerCase()).find((param) => param.startsWith("q="));
+    const value = q === undefined ? 1 : Number(q.slice(2));
+
+    // A malformed q is treated as absent, which is what the header's own
+    // grammar says to do with a parameter that can't be read.
+    quality.set(name, Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 1);
+  }
+
+  return quality;
+}
+
+/**
+ * The `ETag` for one representation of a blob.
+ *
+ * Encodings need tags of their own: with one tag across all three, a shared
+ * cache that stored the brotli copy would hand it to the next client whose
+ * `If-None-Match` matched, however little brotli that client speaks.
+ */
+export function etagFor(sha256: string, encoding: Encoding | undefined): string {
+  return encoding ? `"${sha256}-${encoding}"` : `"${sha256}"`;
 }
 
 /** Parse a single-range `Range` header. Multi-range requests are ignored. */

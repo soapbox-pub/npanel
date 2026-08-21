@@ -422,6 +422,46 @@ test("skips blobs that are already stored", async () => {
   assert.deepEqual(server.requests, [], "no download was attempted");
 });
 
+/** Long enough to clear the size floor, repetitive enough to compress. */
+const HTML = "<p>compress me</p>".repeat(100);
+const JPEG = "<p>not really a jpeg</p>".repeat(100);
+
+test("a deploy compresses the files worth compressing", async () => {
+  const files = { "/index.html": HTML, "/photo.jpg": JPEG };
+  const server = blossom({ [sha256(HTML)]: HTML, [sha256(JPEG)]: JPEG });
+
+  const { blobs, worker } = await harness();
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  const html = await blobs.variants(sha256(HTML));
+  assert.ok(html?.br && html.br < html.identity);
+  assert.ok(html?.gzip && html.gzip < html.identity);
+
+  // Compressible bytes, but nobody will ever be served them as text: the
+  // gate is what the file is served as, and a second pass over a real JPEG
+  // would be deploy-time CPU spent for nothing.
+  const jpeg = await blobs.variants(sha256(JPEG));
+  assert.equal(jpeg?.br, undefined);
+  assert.equal(jpeg?.gzip, undefined);
+});
+
+test("a blob already on disk still gets compressed", async () => {
+  const files = { "/index.html": HTML };
+  const server = blossom({});
+
+  const { blobs, worker } = await harness();
+  await blobs.put(sha256(HTML), new TextEncoder().encode(HTML));
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  // Nothing was downloaded, so this is the path that carries sites deployed
+  // before npanel compressed anything.
+  assert.deepEqual(server.requests, []);
+  assert.ok((await blobs.variants(sha256(HTML)))?.br);
+});
+
 test("a deploy interrupted by shutdown is never marked ready", async () => {
   const files: Record<string, string> = {};
   // More files than BLOB_CONCURRENCY, so some are still queued when we stop.

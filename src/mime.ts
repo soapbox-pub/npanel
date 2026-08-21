@@ -65,7 +65,41 @@ const TYPES: Record<string, string> = {
   ".toml": "text/plain; charset=utf-8",
 };
 
+/**
+ * Types that are text underneath, without saying so in their name.
+ *
+ * `text/*` is the rule; these are the exceptions worth compressing anyway.
+ * Fonts are here in their uncompressed forms only — `woff` and `woff2` carry
+ * their own compression, and running another pass over them buys nothing.
+ */
+const COMPRESSIBLE_TYPES = new Set([
+  "application/json",
+  "application/ld+json",
+  "application/xml",
+  "application/xhtml+xml",
+  "application/rss+xml",
+  "application/atom+xml",
+  "application/manifest+json",
+  "application/wasm",
+  "image/svg+xml",
+  "font/ttf",
+  "font/otf",
+]);
+
 /** Content type for a site path, defaulting to a safe binary type. */
 export function contentType(path: string): string {
   return TYPES[extname(path).toLowerCase()] ?? "application/octet-stream";
+}
+
+/**
+ * Whether a file is worth storing compressed copies of.
+ *
+ * Decided from the content type rather than a second list of extensions, so
+ * this can't drift from the table above. An extension nobody recognizes ends
+ * up as `application/octet-stream` and is left alone — the cost of guessing
+ * wrong is deploy-time CPU spent on a file that was already compressed.
+ */
+export function isCompressible(path: string): boolean {
+  const type = contentType(path).split(";")[0].trim();
+  return type.startsWith("text/") || COMPRESSIBLE_TYPES.has(type);
 }

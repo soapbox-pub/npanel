@@ -4,6 +4,7 @@ import { BlobDownloadError, type BlobStore } from "./blobs.ts";
 import type { Database, DeployStatus } from "./db/schema.ts";
 import { type LogFields, type Logger, errFields } from "./log.ts";
 import { isSiteManifest, manifestAddress } from "./manifest.ts";
+import { isCompressible } from "./mime.ts";
 import { type NostrService, blobUrl } from "./nostr.ts";
 import { type NsiteAddress, SITE_KINDS } from "./nsite-address.ts";
 import type { SettingsService } from "./settings.ts";
@@ -451,14 +452,22 @@ export class SyncWorker {
       .where("event_id", "=", eventId)
       .execute();
 
+    // Paths come along because the store is keyed by hash and so can't tell
+    // markup from a JPEG, while whether a blob is worth compressing is a
+    // question about the file it is served as. A hash reached by several paths
+    // gets compressed if any one of them wants it.
     const files = await this.db
       .selectFrom("site_files")
-      .select("sha256")
+      .select(["sha256", "path"])
       .where("event_id", "=", eventId)
-      .distinct()
       .execute();
 
-    const hashes = files.map((file) => file.sha256);
+    const compressible = new Set<string>();
+    for (const file of files) {
+      if (isCompressible(file.path)) compressible.add(file.sha256);
+    }
+
+    const hashes = [...new Set(files.map((file) => file.sha256))];
     await this.writeDeployLog(eventId, "info", "deploy_started", {
       files: row.files_total,
       blobs: hashes.length,
@@ -471,6 +480,10 @@ export class SyncWorker {
         missing.push(sha256);
       } else {
         await this.recordBlob(sha256, size);
+        // Already on disk, but not necessarily compressed: it may have been
+        // downloaded before npanel did this, or by a site that serves it under
+        // a name that isn't worth compressing.
+        if (compressible.has(sha256)) await this.compress(eventId, sha256);
       }
     }
 
@@ -504,7 +517,10 @@ export class SyncWorker {
       servers: servers.join(" "),
     });
 
-    const { failed, abandoned } = await this.downloadAll(eventId, missing, servers, hashes.length - missing.length);
+    const { failed, abandoned } = await this.downloadAll(eventId, missing, servers, {
+      compressible,
+      alreadyReady: hashes.length - missing.length,
+    });
 
     if (abandoned) {
       // Shutting down mid-deploy. Marking this ready would serve a site whose
@@ -534,19 +550,22 @@ export class SyncWorker {
     eventId: string,
     missing: string[],
     servers: string[],
-    alreadyReady: number,
+    opts: { compressible: Set<string>; alreadyReady: number },
   ): Promise<{ failed: string[]; abandoned: number }> {
     const maxSize = this.settings.get("max_file_size");
     const queue = [...missing];
     const failed: string[] = [];
-    let ready = alreadyReady;
+    let ready = opts.alreadyReady;
 
     const worker = async (): Promise<void> => {
       while (this.running) {
         const sha256 = queue.shift();
         if (!sha256) return;
 
-        const ok = await this.downloadBlob(eventId, sha256, servers, maxSize);
+        const ok = await this.downloadBlob(eventId, sha256, servers, {
+          maxSize,
+          compress: opts.compressible.has(sha256),
+        });
         if (ok) {
           ready++;
           await this.setProgress(eventId, ready);
@@ -632,13 +651,22 @@ export class SyncWorker {
   }
 
   /** Try each server in turn for one blob. */
-  private async downloadBlob(eventId: string, sha256: string, servers: string[], maxSize: number): Promise<boolean> {
+  private async downloadBlob(
+    eventId: string,
+    sha256: string,
+    servers: string[],
+    opts: { maxSize: number; compress: boolean },
+  ): Promise<boolean> {
     for (const server of servers) {
       const url = blobUrl(server, sha256);
       try {
-        const size = await this.blobs.download(url, sha256, { maxSize, signal: this.controller.signal });
+        const size = await this.blobs.download(url, sha256, {
+          maxSize: opts.maxSize,
+          signal: this.controller.signal,
+        });
         await this.recordBlob(sha256, size);
         await this.writeDeployLog(eventId, "debug", "blob_downloaded", { sha256, server, size });
+        if (opts.compress) await this.compress(eventId, sha256);
         return true;
       } catch (error) {
         const fields: LogFields = {
@@ -659,6 +687,27 @@ export class SyncWorker {
     });
 
     return false;
+  }
+
+  /**
+   * Store compressed copies of a blob.
+   *
+   * Never fatal. The blob itself is downloaded and verified by the time this
+   * runs, and a site serving it uncompressed is a slower site rather than a
+   * broken one — failing the deploy over this would take the whole version
+   * offline to save some bandwidth.
+   */
+  private async compress(eventId: string, sha256: string): Promise<void> {
+    try {
+      const written = await this.blobs.ensureVariants(sha256);
+      if (written.length) {
+        await this.writeDeployLog(eventId, "debug", "blob_compressed", { sha256, encodings: written.join(" ") });
+      }
+    } catch (error) {
+      const fields: LogFields = { sha256, err_msg: message(error) };
+      await this.writeDeployLog(eventId, "warn", "blob_compress_failed", fields);
+      this.log.warn("blob_compress_failed", fields);
+    }
   }
 
   private async recordBlob(sha256: string, size: number): Promise<void> {

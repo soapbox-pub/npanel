@@ -88,7 +88,10 @@ async function pruneBlobs(): Promise<void> {
   for await (const sha256 of blobs.list()) {
     if (referenced.has(sha256)) continue;
 
-    bytes += (await blobs.size(sha256)) ?? 0;
+    // Compressed copies go with the blob, so they count towards what deleting
+    // it reclaims.
+    const variants = await blobs.variants(sha256);
+    bytes += (variants?.identity ?? 0) + (variants?.br ?? 0) + (variants?.gzip ?? 0);
 
     if (!dryRun) {
       await blobs.delete(sha256);

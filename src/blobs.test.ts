@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { text } from "node:stream/consumers";
+import { buffer, text } from "node:stream/consumers";
 import { after, test } from "node:test";
+import { createBrotliDecompress, createGunzip } from "node:zlib";
 import { type BlobDownloadError, BlobStore } from "./blobs.ts";
 import { isPublicUrl } from "./net.ts";
 import { serve } from "./test/serve.ts";
@@ -62,7 +64,7 @@ test("reads byte ranges", async () => {
   const hash = sha256("0123456789");
   await blobs.put(hash, new TextEncoder().encode("0123456789"));
 
-  assert.equal(await text(blobs.read(hash, { start: 2, end: 4 })), "234");
+  assert.equal(await text(blobs.read(hash, { range: { start: 2, end: 4 } })), "234");
 });
 
 test("downloads and verifies a blob", async () => {
@@ -284,4 +286,89 @@ test("rejects paths that are not sha256 hashes", async () => {
   const blobs = await store();
   assert.throws(() => blobs.path("../../etc/passwd"), /Not a sha256/);
   assert.throws(() => blobs.path(""), /Not a sha256/);
+});
+
+/** Enough repetitive markup to compress well and clear the size floor. */
+const HTML = "<!doctype html><title>hello</title><p>compress me</p>".repeat(64);
+
+test("compresses a blob into both encodings", async () => {
+  const blobs = await store();
+  const hash = sha256(HTML);
+  await blobs.put(hash, new TextEncoder().encode(HTML));
+
+  assert.deepEqual(await blobs.ensureVariants(hash), ["br", "gzip"]);
+
+  const variants = await blobs.variants(hash);
+  assert.equal(variants?.identity, HTML.length);
+  assert.ok(variants?.br && variants.br < HTML.length);
+  assert.ok(variants?.gzip && variants.gzip < HTML.length);
+
+  // Whatever brotli and gzip actually produced has to survive a round trip.
+  assert.equal(await text(blobs.read(hash, { encoding: "br" }).pipe(createBrotliDecompress())), HTML);
+  assert.equal(await text(blobs.read(hash, { encoding: "gzip" }).pipe(createGunzip())), HTML);
+});
+
+test("compressing twice writes nothing the second time", async () => {
+  const blobs = await store();
+  const hash = sha256(HTML);
+  await blobs.put(hash, new TextEncoder().encode(HTML));
+
+  assert.equal((await blobs.ensureVariants(hash)).length, 2);
+  assert.deepEqual(await blobs.ensureVariants(hash), []);
+});
+
+test("leaves blobs alone when compressing them would not pay", async () => {
+  const blobs = await store();
+
+  // Under the size floor: one packet either way.
+  const small = sha256("small");
+  await blobs.put(small, new TextEncoder().encode("small"));
+  assert.deepEqual(await blobs.ensureVariants(small), []);
+
+  // Over the floor, but random bytes have nothing to squeeze out.
+  const noise = randomBytes(4096);
+  const hash = createHash("sha256").update(noise).digest("hex");
+  await blobs.put(hash, noise);
+  assert.deepEqual(await blobs.ensureVariants(hash), []);
+
+  const variants = await blobs.variants(hash);
+  assert.equal(variants?.br, undefined);
+  assert.equal(variants?.gzip, undefined);
+});
+
+test("reads a byte range of a compressed copy", async () => {
+  const blobs = await store();
+  const hash = sha256(HTML);
+  await blobs.put(hash, new TextEncoder().encode(HTML));
+  await blobs.ensureVariants(hash);
+
+  const { gzip } = (await blobs.variants(hash)) ?? {};
+  assert.ok(gzip);
+
+  const whole = await buffer(blobs.read(hash, { encoding: "gzip" }));
+  const part = await buffer(blobs.read(hash, { encoding: "gzip", range: { start: 1, end: 4 } }));
+  assert.deepEqual(part, whole.subarray(1, 5));
+});
+
+test("compressed copies are not blobs of their own", async () => {
+  const blobs = await store();
+  const hash = sha256(HTML);
+  await blobs.put(hash, new TextEncoder().encode(HTML));
+  await blobs.ensureVariants(hash);
+
+  // Pruning walks `list()`, so a sidecar showing up here would be deleted as
+  // an unreferenced blob the first time anyone ran it.
+  const listed: string[] = [];
+  for await (const name of blobs.list()) listed.push(name);
+  assert.deepEqual(listed, [hash]);
+
+  assert.equal(await blobs.delete(hash), true);
+  assert.equal(await blobs.variants(hash), undefined);
+  assert.equal(existsSync(blobs.variantPath(hash, "br")), false);
+  assert.equal(existsSync(blobs.variantPath(hash, "gzip")), false);
+});
+
+test("variants reports nothing for a blob that is not stored", async () => {
+  const blobs = await store();
+  assert.equal(await blobs.variants(sha256("absent")), undefined);
 });

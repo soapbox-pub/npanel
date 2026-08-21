@@ -32,7 +32,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   api/                  the JSON API
   db/                   dialect, schema, migrations
   test/harness.ts       shared test harness
-scripts/                make-admin.ts, prune-blobs.ts
+scripts/                make-admin.ts, prune-blobs.ts, compress-blobs.ts
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api
 ```

@@ -211,6 +211,25 @@ Because storage is content-addressed, a file shared between versions or between
 sites is stored once, and rolling back to an old version usually downloads
 nothing.
 
+**Compressed copies** sit beside their blob as `<sha256>.br` and `<sha256>.gz`,
+written during the deploy that downloads it. Compressing once at deploy time
+rather than on every request is the whole point: a gateway serves the same
+bytes to everyone, so paying for brotli's slowest setting once buys a smaller
+transfer for every visitor afterwards, including the ones the proxy in front
+of npanel would never have reached.
+
+Whether a blob is worth compressing is decided from the paths it is served
+under, because the store is keyed by hash and so can't tell markup from a JPEG
+— a blob is compressed if any path referencing it has a content type that is
+text underneath. A copy is kept only if it beats the blob by a real margin, and
+blobs under half a kilobyte are skipped: they arrive in one packet either way.
+
+A sidecar is an attribute of its blob, not a blob of its own. Nothing
+references one by name, `BlobStore.list()` doesn't yield them — the name test
+that keeps stray files out of pruning excludes them, since they aren't 64 hex
+characters — and deleting a blob deletes them with it. Pruning therefore goes
+on working entirely in terms of hashes.
+
 ## Serving a site
 
 `src/serve-site.ts` handles a request in a few steps: find the host, find its
@@ -240,6 +259,27 @@ exact), `Last-Modified` from the event's `created_at` — capped at when npanel
 saw it, since an author can date a manifest however they please — and an
 `X-Nsite-Addr` header naming the nsite the hostname resolved to. Range requests
 are supported, including suffix ranges.
+
+Which of a blob's stored copies gets sent is settled before any of that. The
+client's `Accept-Encoding` is honored as the ranking it is — zero means refused
+— but ties are broken by size rather than by a preference of npanel's own, and
+ties are the case that happens: browsers offer their encodings at equal
+quality, so a client is sent the smallest copy it can read. Tor Browser
+reaching an onion offers only `gzip`, because Firefox withholds `br` from plain
+HTTP, and gets the gzip copy. A client that accepts nothing stored gets the
+blob; there is no 406, since for a static file a slower answer beats no answer.
+
+Everything about the response then describes the copy that won, not the blob:
+its length, its `ETag`, and the bytes a `Range` counts from. The `ETag` has to
+be per encoding — one tag across all three would let a shared cache holding the
+brotli copy hand it to the next client whose `If-None-Match` matched, however
+little brotli that client speaks — and `Vary: Accept-Encoding` goes on every
+site response, including ones that negotiated nothing, because a cache has to
+be told before it stores the first response rather than after.
+
+This is why the sample `Caddyfile` has no `encode` on the site block. There is
+nothing left for the proxy to compress, and a proxy could only ever help the
+visitors who arrive through it — not the ones on a site's onion address.
 
 Sites are also served under a `Content-Security-Policy`, the same one mkstack
 puts in its `index.html`. A gateway runs other people's code on domains you own,

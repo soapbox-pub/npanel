@@ -40,11 +40,17 @@ https:// {
 		on_demand
 	}
 
-	# npanel serves blobs exactly as they were uploaded and never compresses
-	# them, so without this an nsite ships its HTML and JS bundles raw —
-	# megabytes where a few hundred kilobytes would do. Caddy's defaults
-	# already skip types that are compressed already, like images and video.
-	encode zstd gzip
+	# No `encode` here on purpose. npanel compresses a site's files when it
+	# downloads them and serves whichever copy the visitor can read, so there
+	# is nothing left for Caddy to do — and doing it here would only ever
+	# reach visitors arriving through Caddy, which leaves out everyone on a
+	# site's onion address.
+	#
+	# If you are upgrading an npanel that has been running, compress what it
+	# already downloaded before you take this directive out, or the sites it
+	# is serving go back to shipping raw HTML until they next deploy:
+	#
+	#     bun run compress-blobs
 
 	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }

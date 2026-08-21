@@ -503,16 +503,25 @@ rather than a permanent one. See [Tor](deployment.md#tor).
 
 Not part of the JSON API, but worth knowing when debugging a served site:
 
-| Header           | Meaning                                          |
-| ---------------- | ------------------------------------------------ |
-| `ETag`           | The blob's sha256, quoted                        |
-| `Last-Modified`  | The manifest event's `created_at`                |
-| `X-Nsite-Addr`   | Which nsite this hostname serves, as an `naddr`  |
-| `Onion-Location` | The site's onion address, when it has one        |
+| Header             | Meaning                                          |
+| ------------------ | ------------------------------------------------ |
+| `ETag`             | The blob's sha256, quoted, suffixed per encoding |
+| `Last-Modified`    | The manifest event's `created_at`                |
+| `Content-Encoding` | `br` or `gzip`, when a compressed copy was sent  |
+| `Vary`             | Always `Accept-Encoding`                         |
+| `X-Nsite-Addr`     | Which nsite this hostname serves, as an `naddr`  |
+| `Onion-Location`   | The site's onion address, when it has one        |
 
 `X-Nsite-Addr` is the one header naming the site itself. An `naddr` carries the
 pubkey, kind, and `d` tag together, so it is a single value a client can paste
 anywhere rather than three headers to reassemble.
+
+npanel stores compressed copies of a site's text files at deploy time and sends
+whichever the client can read, preferring the smallest when the client states
+no preference of its own. Each encoding has its own `ETag` — `"<sha256>-br"`,
+`"<sha256>-gzip"`, or plain `"<sha256>"` for the blob — so a cache can't answer
+one encoding's conditional request with another's. `Content-Length` and any
+`Content-Range` describe the copy that was sent, not the blob.
 
 `Onion-Location` is how Tor Browser offers a visitor the onion without anyone
 having to hand the address out. It is sent only on a `200` carrying HTML, and
