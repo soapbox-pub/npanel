@@ -30,11 +30,25 @@ Everything hangs off the `Host` header, checked in one middleware in
 `/api` and otherwise to the built dashboard SPA. Any other hostname is served as
 an nsite.
 
-`X-Forwarded-Host` takes precedence over `Host`, since a proxy that rewrites
-`Host` would otherwise make every site unreachable. Ports and the trailing dot
-of an FQDN are stripped and the name is lowercased (`requestHostname`,
-`src/app.ts`). npanel cannot distinguish a proxy's `X-Forwarded-Host` from a
-client's, so it must not be exposed directly.
+Only `Host` is read. Ports and the trailing dot of an FQDN are stripped and the
+name is lowercased (`requestHostname`, `src/hostname.ts`, shared with the Tor
+listener so the two cannot drift). `X-Forwarded-Host` is deliberately ignored:
+npanel cannot tell a proxy's copy of that header from a client's, and a proxy
+that doesn't set one — nginx doesn't — would pass a visitor's straight through,
+letting a request for any site ask for the dashboard instead. A proxy that
+rewrites `Host` has to be configured not to; see
+[deployment](deployment.md#other-proxies).
+
+The scheme is a different matter, and comes from `X-Forwarded-Proto`
+(`requestScheme`, `src/app.ts`), defaulting to `https`. npanel terminates no
+TLS, so the local request always says `http` and redirects built from it would
+downgrade; believing the proxy here costs at worst a redirect to the scheme the
+visitor was already using.
+
+Both are settled in that one middleware and handed to the site server as a
+`RequestOrigin` — nothing downstream reads a header to work out where a request
+came from, which is what lets the same site-serving code be reached from a
+listener with entirely different rules about what may be trusted.
 
 Nothing is exempt from that rule, which is why certificate authorization is not
 on this listener at all. Caddy's `on_demand_tls ask` is a plain request to the
@@ -269,25 +283,27 @@ reconcile interrupted halfway is repaired by the next one instead of leaving a
 site holding an address nobody serves. An unreachable Tor is retried with
 backoff, and everything is republished from stored keys when it comes back.
 
-**Onion traffic gets its own listener, and this is not optional.** The public
-listener prefers `X-Forwarded-Host` over `Host`, which is safe only because a
-reverse proxy is the only thing that can reach it. Tor forwards a visitor's
-bytes unaltered, so on that listener a Tor client could send
-`X-Forwarded-Host: <dashboard host>` and reach the dashboard and the whole JSON
-API through any onion address. The Tor listener therefore reads `Host` alone and
-serves nothing but `.onion` names — the same reasoning that put certificate
-authorization on its own port.
+**Onion traffic gets its own listener, and this is not optional.** Tor forwards
+a visitor's bytes unaltered, so every header in an onion request is the
+visitor's to choose — including `Host`, which on the public listener is enough
+to ask for the dashboard. This listener serves nothing but `.onion` names, so
+the dashboard and the JSON API cannot be reached through an onion however a
+request dresses itself up. Same reasoning that put certificate authorization on
+its own port.
+
+It also states its `RequestOrigin` outright — `scheme: "http"`, because there
+is no proxy and no TLS anywhere on this path — rather than reading
+`X-Forwarded-Proto`, which here would be a header the visitor wrote. Tor
+authenticates and encrypts the connection itself, which is what the scheme
+would otherwise be claiming.
 
 That listener binds loopback on a port the kernel picks. npanel is the one
 issuing `ADD_ONION`, so it tells Tor which port to forward to; nobody else ever
 needs the number, and there is nothing to configure or collide with.
 
-Two consequences elsewhere. `.onion` is in the Public Suffix List, so an onion
+One consequence elsewhere: `.onion` is in the Public Suffix List, so an onion
 address would otherwise read as a root domain and be offered a `www` redirect
-into nothing — `isRootDomain` excludes them. And an onion request arrives with
-no proxy and no TLS, so `requestScheme` answers `http` for one where it assumes
-`https` for everything else; Tor authenticates and encrypts the connection
-itself, which is what the scheme would otherwise be claiming.
+into nothing — `isRootDomain` excludes them.
 
 Clearnet HTML responses carry `Onion-Location`, which is how Tor Browser offers
 the address to a visitor without anyone having to hand it out. It is sent only

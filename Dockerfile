@@ -43,8 +43,8 @@ COPY scripts ./scripts
 COPY --from=dashboard /app/dashboard/dist ./dashboard/dist
 
 # Loopback would make npanel unreachable from any other container, including the
-# proxy. Safe only because nothing publishes this port: npanel trusts
-# X-Forwarded-Host from whoever connects, so it must stay on an internal network.
+# proxy. Safe only because nothing publishes this port: npanel speaks plain
+# HTTP, so it must stay on an internal network.
 ENV BIND_ADDRESS=0.0.0.0
 ENV PORT=3000
 

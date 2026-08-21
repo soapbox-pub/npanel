@@ -65,9 +65,8 @@ if you set it.
 [configuration](configuration.md#bind_address), and is only safe because of what
 compose does *not* do: nothing publishes either port, so both are reachable only
 by Caddy over the project's internal network. Loopback inside the container would
-mean reachable by nothing at all. Keep it that way — npanel trusts
-`X-Forwarded-Host` from whoever connects, and 3001 authorizes certificates for
-anyone who asks.
+mean reachable by nothing at all. Keep it that way — npanel speaks plain HTTP,
+and 3001 authorizes certificates for anyone who asks.
 
 Then bootstrap the first admin, as in [section 3](#3-bootstrap-the-first-admin),
 inside the running container:
@@ -316,17 +315,31 @@ Refusals cost nothing, and the dashboard hostname is never throttled. See
 
 nginx, HAProxy, and friends work, but you'll be managing certificates yourself
 (or with a wildcard cert) since they have no on-demand equivalent. Whatever you
-use must either preserve the `Host` header or set `X-Forwarded-Host`; npanel
-prefers `X-Forwarded-Host` when present. Without one of those, every hostname
-looks like the proxy's address and nothing resolves.
+use must **preserve the `Host` header**, because that is the only thing npanel
+routes on. Caddy's `reverse_proxy` preserves it already; nginx's `proxy_pass`
+rewrites it to the upstream address, so it needs telling:
 
-npanel trusts `X-Forwarded-Host` unconditionally, because it has no way to tell
-a proxy's header from a client's. Your proxy must therefore *set* that header
-rather than pass a client-supplied one through — Caddy and nginx's
-`proxy_set_header` both do — and npanel must not be reachable directly from the
-internet. It listens on `127.0.0.1` unless you change `BIND_ADDRESS`; if the
-proxy is on another machine, set `BIND_ADDRESS=0.0.0.0` and firewall the port
-to it.
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+Without the first, every hostname looks like the proxy's address and nothing
+resolves. The second only matters if you terminate plain HTTP: npanel assumes
+`https` when nothing says otherwise, so without it a plain-HTTP deployment
+issues redirects to a scheme it doesn't serve.
+
+`X-Forwarded-Host` is deliberately ignored, and setting it will not stand in
+for the line above. npanel cannot tell a proxy's copy of that header from a
+client's, and not every proxy overwrites it — nginx doesn't set it at all, so a
+client's copy would pass straight through, and a visitor to any site could then
+reach the dashboard and the whole JSON API by adding one header to a request.
+
+That is one hole closed, not a licence to expose npanel: it still speaks plain
+HTTP and still authorizes certificates without authentication, so keep it off
+the internet. It listens on `127.0.0.1` unless you change `BIND_ADDRESS`; if
+the proxy is on another machine, set `BIND_ADDRESS=0.0.0.0` and firewall the
+port to it.
 
 ## Tor
 

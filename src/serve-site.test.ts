@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, test } from "node:test";
+import { requestScheme } from "./app.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { matchesEtag, parseRange, requestScheme } from "./serve-site.ts";
+import { matchesEtag, parseRange } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -567,18 +568,28 @@ test("the dashboard host serves the SPA", async () => {
   assert.match(await deep.text(), /npanel/);
 });
 
-test("X-Forwarded-Host decides which site is served", async () => {
+test("Host decides which site is served, and X-Forwarded-Host is ignored", async () => {
   const { harness } = await setup({
-    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "proxied" } }],
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "served" } }],
   });
 
-  const response = await harness.app.fetch(
+  // Anything that reaches this port can write that header, so believing it
+  // would be handing out the dashboard hostname to whoever asked.
+  const site = await harness.app.fetch(
+    new Request("http://127.0.0.1/", {
+      headers: { host: "docs.example.com", "x-forwarded-host": "panel.test" },
+    }),
+  );
+  assert.equal(await site.text(), "served");
+
+  // And a proxy that rewrites `Host` doesn't get to make up for it here: the
+  // fix is to configure the proxy, not to believe a second header.
+  const rewritten = await harness.app.fetch(
     new Request("http://127.0.0.1/", {
       headers: { host: "127.0.0.1:3000", "x-forwarded-host": "docs.example.com" },
     }),
   );
-
-  assert.equal(await response.text(), "proxied");
+  assert.equal(rewritten.status, 404);
 });
 
 test("parseRange handles the forms browsers send", () => {
@@ -611,20 +622,20 @@ async function withOnion(hostId: number, harness: Harness): Promise<void> {
     .execute();
 }
 
-test("requestScheme trusts the proxy, and knows Tor has no proxy", () => {
-  const plain = new Request("http://127.0.0.1/");
-  const forwarded = new Request("http://127.0.0.1/", { headers: { "x-forwarded-proto": "https" } });
+test("requestScheme takes the proxy's word, and assumes TLS without one", () => {
+  const scheme = (proto?: string) =>
+    requestScheme(new Request("http://127.0.0.1/", { headers: proto ? { "x-forwarded-proto": proto } : {} }));
 
-  // Nothing said: a clearnet deployment is behind TLS, an onion never is.
-  assert.equal(requestScheme(plain, "docs.example.com"), "https");
-  assert.equal(requestScheme(plain, ONION), "http");
+  // Nothing said: a deployment behind TLS is the ordinary one, and guessing
+  // wrong costs a redirect rather than a downgrade.
+  assert.equal(scheme(), "https");
 
   // A proxy that did say is believed either way.
-  assert.equal(requestScheme(forwarded, "docs.example.com"), "https");
-  assert.equal(
-    requestScheme(new Request("http://127.0.0.1/", { headers: { "x-forwarded-proto": "http" } }), "docs.example.com"),
-    "http",
-  );
+  assert.equal(scheme("https"), "https");
+  assert.equal(scheme("http"), "http");
+
+  // Caddy appends rather than replaces when a hop already set one.
+  assert.equal(scheme("http, https"), "http");
 });
 
 test("a site is served at its onion address", async () => {

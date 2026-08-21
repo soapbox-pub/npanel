@@ -16,8 +16,8 @@ services:
     image: npanel
     restart: unless-stopped
     # Deliberately no `ports`: both listeners exist for the proxy alone. npanel
-    # trusts X-Forwarded-Host from whoever connects, and 3001 authorizes
-    # certificates without asking who wants to know.
+    # speaks plain HTTP, and 3001 authorizes certificates without asking who
+    # wants to know.
     expose:
       - "3000"
       - "3001"

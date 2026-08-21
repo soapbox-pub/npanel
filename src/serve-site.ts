@@ -16,13 +16,28 @@ export interface SiteServerDeps {
 }
 
 /**
- * Serve one request for a site.
+ * Where a request came from, as settled by the listener that accepted it.
  *
- * The hostname is passed in rather than read from the request, because which
- * header carries it depends on how the request arrived: through the proxy, or
- * straight from Tor.
+ * Neither field can be trusted to the request itself. The scheme is not in it
+ * at all — npanel only ever speaks plain HTTP, so behind the proxy it has to
+ * come from `X-Forwarded-Proto`, while a request that arrived over Tor has no
+ * proxy in front of it and no header worth reading, because Tor hands a
+ * visitor's bytes on unaltered. The hostname rides along because it is decided
+ * at the same place, and because the Tor listener has already refused
+ * everything that is not one of its onions by the time it gets here.
+ *
+ * Deciding both once, at the boundary, is what keeps the question of which
+ * headers may be believed out of every line below.
  */
-export type SiteServer = (request: Request, hostname: string) => Promise<Response>;
+export interface RequestOrigin {
+  /** The hostname the client asked for, lowercased and without a port. */
+  hostname: string;
+  /** The scheme the client used, which is not the one npanel was spoken to in. */
+  scheme: "http" | "https";
+}
+
+/** Serve one request for a site, as it reached the listener described by {@link RequestOrigin}. */
+export type SiteServer = (request: Request, origin: RequestOrigin) => Promise<Response>;
 
 /**
  * How long browsers may cache a file.
@@ -96,17 +111,17 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
    * Only reached when no host of that name is configured, so a `www` host
    * someone added deliberately is served rather than redirected away.
    */
-  async function wwwRedirect(request: Request, hostname: string): Promise<Response | undefined> {
-    const apex = wwwApex(hostname);
+  async function wwwRedirect(request: Request, origin: RequestOrigin): Promise<Response | undefined> {
+    const apex = wwwApex(origin.hostname);
     if (!apex) return undefined;
 
     const host = await findHost(db, apex);
     if (!host || host.enabled !== 1 || host.redirect_www !== 1) return undefined;
 
     const url = new URL(request.url);
-    const location = `${requestScheme(request, hostname)}://${apex}${url.pathname}${url.search}`;
+    const location = `${origin.scheme}://${apex}${url.pathname}${url.search}`;
 
-    log.debug("site_www_redirect", { hostname, location });
+    log.debug("site_www_redirect", { hostname: origin.hostname, location });
 
     return new Response(null, {
       status: 301,
@@ -122,9 +137,9 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     });
   }
 
-  async function handle(request: Request, hostname: string): Promise<Response> {
-    const host = await findHost(db, hostname);
-    const response = await respond(request, hostname, host);
+  async function handle(request: Request, origin: RequestOrigin): Promise<Response> {
+    const host = await findHost(db, origin.hostname);
+    const response = await respond(request, origin, host);
 
     // On unless this one site turned it off. A hostname with no host row has
     // nobody to have turned it off, so it gets the policy too.
@@ -132,12 +147,14 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       response.headers.set("content-security-policy", CSP);
     }
 
-    advertiseOnion(request, hostname, host, response);
+    advertiseOnion(request, origin, host, response);
 
     return response;
   }
 
-  async function respond(request: Request, hostname: string, host: ServedHost | undefined): Promise<Response> {
+  async function respond(request: Request, origin: RequestOrigin, host: ServedHost | undefined): Promise<Response> {
+    const { hostname } = origin;
+
     if (request.method !== "GET" && request.method !== "HEAD") {
       // An nsite is a pile of files. There is nothing to POST to.
       return new Response("This site only serves GET and HEAD requests.", {
@@ -147,7 +164,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     }
 
     if (!host) {
-      const redirect = await wwwRedirect(request, hostname);
+      const redirect = await wwwRedirect(request, origin);
       if (redirect) return redirect;
     }
 
@@ -231,10 +248,10 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return new Response(body, { status, headers });
   }
 
-  return async function serveSite(request: Request, hostname: string): Promise<Response> {
+  return async function serveSite(request: Request, origin: RequestOrigin): Promise<Response> {
     if (isPreflight(request)) return preflight(request);
 
-    const response = await handle(request, hostname);
+    const response = await handle(request, origin);
     allowCrossOrigin(response.headers);
 
     return response;
@@ -251,10 +268,15 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
  * browser navigates, and never on a request that already arrived over Tor —
  * that visitor is where the header would be sending them.
  */
-function advertiseOnion(request: Request, hostname: string, host: ServedHost | undefined, response: Response): void {
-  if (!host?.onion || isOnionAddress(hostname)) return;
+function advertiseOnion(
+  request: Request,
+  origin: RequestOrigin,
+  host: ServedHost | undefined,
+  response: Response,
+): void {
+  if (!host?.onion || isOnionAddress(origin.hostname)) return;
   if (response.status !== 200) return;
-  if (requestScheme(request, hostname) !== "https") return;
+  if (origin.scheme !== "https") return;
   if (!response.headers.get("content-type")?.startsWith("text/html")) return;
 
   const url = new URL(request.url);
@@ -307,29 +329,6 @@ function preflight(request: Request): Response {
   }
 
   return new Response(null, { status: 204, headers });
-}
-
-/**
- * The scheme the client used, for building an absolute redirect.
- *
- * npanel is always behind a proxy that terminates TLS, so the URL this process
- * sees is `http://` even when the request that reached the proxy was `https://`
- * — redirecting to the scheme of the local request would downgrade every
- * redirect. `X-Forwarded-Proto` is the proxy's word for it, and `https` is the
- * assumption when the proxy didn't say, since a plain-HTTP deployment is the
- * unusual one and the wrong guess there costs a redirect rather than a
- * downgrade.
- *
- * An onion request is the exception, and inverts that reasoning: it reaches
- * npanel straight from the Tor daemon, with no proxy and no TLS anywhere, so
- * `https` would be wrong every time. Tor authenticates and encrypts the
- * connection itself, which is what the scheme would otherwise be claiming.
- */
-export function requestScheme(request: Request, hostname: string): string {
-  const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  if (forwarded === "http" || forwarded === "https") return forwarded;
-
-  return isOnionAddress(hostname) ? "http" : "https";
 }
 
 /** Parse a single-range `Range` header. Multi-range requests are ignored. */

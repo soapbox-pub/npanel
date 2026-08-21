@@ -26,6 +26,27 @@ export function normalizeHostname(input: string): string {
   return input.trim().toLowerCase().replace(/\.$/, "");
 }
 
+/**
+ * The hostname a request asked for, from its `Host` header.
+ *
+ * `X-Forwarded-Host` is deliberately not consulted. npanel has no way to tell
+ * a proxy's copy of that header from a client's, and not every proxy sets one
+ * — nginx does not — so honouring it would let a visitor to any site reach the
+ * dashboard and the whole JSON API by adding one header. A proxy that rewrites
+ * `Host` has to be configured not to; see docs/deployment.md.
+ *
+ * That is also what lets both listeners share this function. Tor hands a
+ * visitor's bytes on unaltered, so a listener that read forwarding headers
+ * would be reading the visitor's own.
+ *
+ * The port a client may have appended is dropped, along with the trailing dot
+ * of a fully-qualified name.
+ */
+export function requestHostname(request: Request): string {
+  // Port first: in `example.com.:443` the trailing dot is not trailing yet.
+  return normalizeHostname((request.headers.get("host") ?? "").trim().replace(/:\d+$/, ""));
+}
+
 /** Whether an already-normalized string is a usable hostname. */
 export function isHostname(value: string): boolean {
   return value.length <= 253 && HOSTNAME.test(value);

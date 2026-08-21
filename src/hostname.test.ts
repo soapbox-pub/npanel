@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isOnionAddress, isRootDomain, parseHostname, recordName, wwwApex } from "./hostname.ts";
+import { isOnionAddress, isRootDomain, parseHostname, recordName, requestHostname, wwwApex } from "./hostname.ts";
+
+test("requestHostname reads Host, and nothing else", () => {
+  const hostname = (headers: Record<string, string>) => requestHostname(new Request("http://127.0.0.1/", { headers }));
+
+  assert.equal(hostname({ host: "Docs.Example.COM" }), "docs.example.com");
+  assert.equal(hostname({ host: "docs.example.com:8443" }), "docs.example.com");
+  // A fully-qualified name with a port has both to strip, in that order.
+  assert.equal(hostname({ host: "docs.example.com.:8443" }), "docs.example.com");
+  assert.equal(hostname({}), "");
+
+  // The one header a client on either listener could have written itself.
+  assert.equal(hostname({ host: "docs.example.com", "x-forwarded-host": "panel.example.com" }), "docs.example.com");
+});
 
 test("parseHostname normalizes and rejects what isn't a domain", () => {
   assert.equal(parseHostname("  Docs.Example.COM. ", []), "docs.example.com");

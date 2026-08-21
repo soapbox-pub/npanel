@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { apiRoutes } from "./api/index.ts";
 import type { ApiDeps } from "./api/index.ts";
 import { createDashboardServer } from "./dashboard.ts";
+import { requestHostname } from "./hostname.ts";
 import { errFields } from "./log.ts";
 import type { SiteServer } from "./serve-site.ts";
 
@@ -37,7 +38,7 @@ export function createApp(deps: AppDeps): Hono {
     const hostname = requestHostname(c.req.raw);
 
     if (hostname !== deps.dashboardHost) {
-      return await serveSite(c.req.raw, hostname);
+      return await serveSite(c.req.raw, { hostname, scheme: requestScheme(c.req.raw) });
     }
 
     await next();
@@ -70,19 +71,28 @@ export function createApp(deps: AppDeps): Hono {
 }
 
 /**
- * The hostname the client asked for.
+ * The scheme the client used to reach the proxy.
  *
- * `X-Forwarded-Host` wins because a reverse proxy that rewrites `Host` would
- * otherwise make every site unreachable. This trusts whatever proxy sits in
- * front of npanel to overwrite a client-supplied value — Caddy and nginx both
- * do — so npanel must not be exposed to the internet directly.
+ * npanel is always behind a proxy that terminates TLS, so the URL this process
+ * sees says `http://` even when the request that reached the proxy was
+ * `https://` — building a redirect from the local request's scheme would
+ * downgrade every one of them. `X-Forwarded-Proto` is the proxy's word for it,
+ * and `https` is the assumption when the proxy didn't say, since a plain-HTTP
+ * deployment is the unusual one and the wrong guess there costs a redirect
+ * rather than a downgrade.
  *
- * The trailing dot of a fully-qualified name is dropped, since `example.com.`
- * and `example.com` are the same host.
+ * This is believed where `X-Forwarded-Host` is not, and the difference is what
+ * a lie buys: a proxy that doesn't overwrite `X-Forwarded-Host` lets a visitor
+ * to any site ask for the dashboard hostname instead, while the worst a forged
+ * scheme achieves is a redirect to the one the visitor was already using.
+ *
+ * Even so, only this listener asks. A request that arrived over Tor came
+ * through no proxy at all, so {@link file://./tor.ts} states its scheme rather
+ * than reading a header its visitor wrote.
  */
-export function requestHostname(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-host")?.split(",")[0];
-  const header = forwarded || request.headers.get("host") || "";
+export function requestScheme(request: Request): "http" | "https" {
+  const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded === "http" || forwarded === "https") return forwarded;
 
-  return header.trim().toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
+  return "https";
 }

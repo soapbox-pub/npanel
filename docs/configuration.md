@@ -29,9 +29,9 @@ Default `127.0.0.1`. The address the HTTP server listens on. Must be an IP
 address, not a hostname, or startup fails.
 
 Loopback by default because npanel is only ever meant to be reachable by the
-reverse proxy: it trusts `X-Forwarded-Host` from whoever connects to it, and
-`/api/tls-check` answers without authentication on any hostname. Exposed
-directly, either of those is a hole.
+reverse proxy: it speaks plain HTTP with no certificate of its own, and
+certificate authorization on [`TLS_CHECK_PORT`](#tls_check_port) answers
+without authentication. Exposed directly, either of those is a hole.
 
 Set `0.0.0.0` when the proxy runs on another machine or in another container,
 and firewall the port to it.

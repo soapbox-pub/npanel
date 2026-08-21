@@ -1,6 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Database } from "./db/schema.ts";
-import { isOnionAddress } from "./hostname.ts";
+import { isOnionAddress, requestHostname } from "./hostname.ts";
 import { type Logger, errFields } from "./log.ts";
 import type { SiteServer } from "./serve-site.ts";
 import type { SettingsService } from "./settings.ts";
@@ -334,23 +334,26 @@ export class TorService {
   /**
    * Serve one request that arrived over Tor.
    *
-   * `Host` is read directly rather than through `requestHostname`, and this is
-   * the reason this listener exists at all. The public one takes
-   * `X-Forwarded-Host` over `Host` because a proxy sets it, which is safe only
-   * as long as a proxy is the only thing that can connect. Tor forwards a
-   * visitor's bytes unaltered, so here that header is whatever the visitor felt
-   * like sending — and honouring it would let anyone reach the dashboard, the
-   * API, or any other site through any onion address.
+   * Tor hands a visitor's bytes on unaltered, so every header here is the
+   * visitor's to choose and nothing about the request may be taken on trust.
+   * That is why this listener exists rather than the onions pointing at the
+   * public one: onion addresses are the only hostnames it will answer for, so
+   * the dashboard and the JSON API cannot be reached through one however a
+   * request dresses itself up.
+   *
+   * `http` is the truthful scheme on this path — there is no proxy and no TLS
+   * anywhere on it. Tor authenticates and encrypts the connection itself,
+   * which is what the scheme would otherwise be claiming.
    */
   private async handle(request: Request): Promise<Response> {
-    const hostname = (request.headers.get("host") ?? "").trim().toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "");
+    const hostname = requestHostname(request);
 
     if (!isOnionAddress(hostname)) {
       this.log.debug("tor_unknown_host", { hostname });
       return new Response("Not found.", { status: 404, headers: TEXT });
     }
 
-    return await this.serveSite(request, hostname);
+    return await this.serveSite(request, { hostname, scheme: "http" });
   }
 
   private async shutDown(): Promise<void> {

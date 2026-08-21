@@ -182,7 +182,7 @@ describe("TorService", () => {
   });
 
   describe("the listener Tor forwards to", () => {
-    it("ignores X-Forwarded-Host, which a visitor controls", async () => {
+    it("serves onion addresses and nothing else, whatever headers a visitor sends", async () => {
       const one = await start();
       await one.addHost("a.example.com");
       await one.tor.start();

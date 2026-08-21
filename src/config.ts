@@ -38,9 +38,9 @@ export class Config {
    * Address the HTTP server listens on.
    *
    * Loopback by default, because npanel is meant to be reachable only by the
-   * reverse proxy: it trusts `X-Forwarded-Host` from whoever connects, and
-   * `/api/tls-check` answers without authentication. Set `0.0.0.0` when the
-   * proxy runs on another machine, and firewall the port.
+   * reverse proxy: it speaks plain HTTP, and certificate authorization on
+   * {@link Config.tlsCheckPort} answers without authentication. Set `0.0.0.0`
+   * when the proxy runs on another machine, and firewall the port.
    */
   get bindAddress(): string {
     const value = this.env.get("BIND_ADDRESS");
