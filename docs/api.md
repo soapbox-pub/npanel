@@ -503,14 +503,16 @@ rather than a permanent one. See [Tor](deployment.md#tor).
 
 Not part of the JSON API, but worth knowing when debugging a served site:
 
-| Header               | Meaning                                   |
-| -------------------- | ----------------------------------------- |
-| `ETag`               | The blob's sha256, quoted                 |
-| `Last-Modified`      | The manifest event's `created_at`         |
-| `X-Npanel-Pubkey`    | The nsite author                          |
-| `X-Npanel-Event`     | The exact version served                  |
-| `X-Npanel-Identifier`| The `d` tag, for named sites              |
-| `Onion-Location`     | The site's onion address, when it has one |
+| Header           | Meaning                                          |
+| ---------------- | ------------------------------------------------ |
+| `ETag`           | The blob's sha256, quoted                        |
+| `Last-Modified`  | The manifest event's `created_at`                |
+| `X-Nsite-Addr`   | Which nsite this hostname serves, as an `naddr`  |
+| `Onion-Location` | The site's onion address, when it has one        |
+
+`X-Nsite-Addr` is the one header naming the site itself. An `naddr` carries the
+pubkey, kind, and `d` tag together, so it is a single value a client can paste
+anywhere rather than three headers to reassemble.
 
 `Onion-Location` is how Tor Browser offers a visitor the onion without anyone
 having to hand the address out. It is sent only on a `200` carrying HTML, and
@@ -519,9 +521,10 @@ point the visitor at an onion of its own choosing. Requests that already arrived
 over Tor never carry it.
 
 Every site response is readable from any origin: `Access-Control-Allow-Origin`
-is always `*`, and `Access-Control-Expose-Headers` covers the headers above
-along with `Accept-Ranges`, `Content-Range`, and `Content-Length`, so a
-cross-origin `fetch` can revalidate and resume like a same-origin one.
+is always `*`, and `Access-Control-Expose-Headers` covers `ETag` and
+`X-Nsite-Addr` along with `Accept-Ranges`, `Content-Range`, and
+`Content-Length`, so a cross-origin `fetch` can revalidate and resume like a
+same-origin one.
 Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing to
 configure — a site is public files with no credential attached.
 
