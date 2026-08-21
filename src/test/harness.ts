@@ -14,8 +14,10 @@ import type { Database, UserRole } from "../db/schema.ts";
 import { type DnsResolver, DnsTargets } from "../dns.ts";
 import { Logger } from "../log.ts";
 import type { NostrService } from "../nostr.ts";
+import { createSiteServer } from "../serve-site.ts";
 import { SettingsService } from "../settings.ts";
 import { SyncWorker } from "../sync.ts";
+import { TorService } from "../tor.ts";
 
 export const DASHBOARD_HOST = "panel.test";
 
@@ -116,6 +118,11 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     resolver: opts.resolver ?? fakeResolver(),
   });
 
+  const serveSite = createSiteServer({ db, blobs, log });
+  // Inert unless a test turns `tor_enabled` on: with no control connection its
+  // reconciles return immediately and it binds no port.
+  const tor = new TorService({ db, settings, log, serveSite });
+
   const app = createApp({
     db,
     settings,
@@ -123,6 +130,8 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     blobs,
     dns,
     log,
+    tor,
+    serveSite,
     dashboardHost: DASHBOARD_HOST,
     dashboardDir,
   });

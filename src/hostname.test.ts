@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isRootDomain, parseHostname, recordName, wwwApex } from "./hostname.ts";
+import { isOnionAddress, isRootDomain, parseHostname, recordName, wwwApex } from "./hostname.ts";
 
 test("parseHostname normalizes and rejects what isn't a domain", () => {
   assert.equal(parseHostname("  Docs.Example.COM. ", []), "docs.example.com");
@@ -49,4 +49,35 @@ test("recordName says what to type in a DNS provider's name field", () => {
   assert.equal(recordName("a.b.example.com"), "a.b");
 
   assert.equal(recordName("localhost"), undefined);
+});
+
+test("isOnionAddress matches a v3 address and nothing else", () => {
+  const v3 = "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion";
+  assert.equal(isOnionAddress(v3), true);
+
+  assert.equal(isOnionAddress("example.com"), false);
+  // v2 addresses were 16 characters. Tor dropped them in 2021.
+  assert.equal(isOnionAddress("expyuzz4wqqyqhjn.onion"), false);
+  // `1` and `8` are not in base32's alphabet.
+  assert.equal(isOnionAddress(`${"1".repeat(56)}.onion`), false);
+  assert.equal(isOnionAddress(`www.${v3}`), false);
+});
+
+test("onion addresses are npanel's to hand out, not staff's to type", () => {
+  const v3 = "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion";
+
+  assert.throws(() => parseHostname(v3, []), /npanel gives each site its own/);
+  // A mistyped one gets the same sentence, rather than being read as a domain
+  // under an unusual TLD and rejected for some unrelated reason.
+  assert.throws(() => parseHostname("mysite.onion", []), /npanel gives each site its own/);
+});
+
+test("an onion address is not a domain with a www in front of it", () => {
+  const v3 = "vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd.onion";
+
+  // `onion` is in the public suffix list, so without a guard tldts reads this
+  // as an apex and npanel would offer a www redirect into nothing.
+  assert.equal(isRootDomain(v3), false);
+  assert.equal(wwwApex(`www.${v3}`), undefined);
+  assert.equal(recordName(v3), undefined);
 });

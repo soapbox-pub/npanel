@@ -181,6 +181,7 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
       blobs: blobs.length,
       blob_bytes: blobs.reduce((total, blob) => total + blob.size, 0),
       relays: settings.get("relays"),
+      tor: deps.tor.status(),
     });
   });
 

@@ -1,0 +1,26 @@
+# Tor as npanel drives it: a control port and nothing else.
+#
+# npanel creates one onion service per site over this port with ADD_ONION, and
+# holds the keys itself. Tor is never told about a site any other way — there
+# are no HiddenServiceDir lines here, and nothing in this file changes when a
+# site is added.
+
+ControlPort 9051
+CookieAuthentication 1
+
+# npanel is a separate container running as uid/gid 1000, and reads the cookie
+# from the volume both containers mount at this path. Tor writes it 0640 owned
+# by the group of the user Tor runs as, which is why the entrypoint gives that
+# user gid 1000. Without both of these lines the file is 0600 and npanel cannot
+# read it.
+CookieAuthFileGroupReadable 1
+DataDirectoryGroupReadable 1
+
+DataDirectory /var/lib/tor
+
+# npanel downloads blobs over the clearnet, so nothing needs a SOCKS proxy, and
+# an open one on this network would be a liability rather than a feature.
+SocksPort 0
+
+# One line per event on stdout, where `docker compose logs` finds it.
+Log notice stdout

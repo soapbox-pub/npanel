@@ -6,6 +6,21 @@ const HOSTNAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?
 /** The one subdomain npanel offers to fold into the domain beneath it. */
 const WWW = "www.";
 
+/**
+ * A v3 onion address: 56 characters of base32, then `.onion`.
+ *
+ * The label is a public key, a version byte and a checksum, so the length and
+ * alphabet are fixed and there is no such thing as a short one. v2 addresses
+ * were 16 characters; Tor stopped supporting them in 2021 and they are
+ * deliberately not matched here.
+ */
+const ONION = /^[a-z2-7]{56}\.onion$/;
+
+/** Whether an already-normalized string is a v3 onion address. */
+export function isOnionAddress(value: string): boolean {
+  return ONION.test(value);
+}
+
 /** Lowercase and drop the trailing dot, since `example.com.` is `example.com`. */
 export function normalizeHostname(input: string): string {
   return input.trim().toLowerCase().replace(/\.$/, "");
@@ -42,6 +57,13 @@ export function parseHostname(input: string, allowedSuffixes: string[]): string 
   if (hostname.length > 253) {
     throw new Error("Domain is too long.");
   }
+  if (hostname.endsWith(".onion")) {
+    // npanel mints these itself, one per site, and a key it did not generate is
+    // an address it cannot answer at. Matched on the suffix rather than on
+    // `isOnionAddress` so that a mistyped address gets this sentence too,
+    // instead of being read as an ordinary domain under an unusual TLD.
+    throw new Error("npanel gives each site its own .onion address. Add the site's regular domain instead.");
+  }
   if (allowedSuffixes.length && !allowedSuffixes.some((suffix) => matchesSuffix(hostname, suffix))) {
     throw new Error(
       `${hostname} is outside the domains this gateway serves (${allowedSuffixes.join(", ")}). An admin can change that under Settings.`,
@@ -64,8 +86,16 @@ export function parseHostname(input: string, allowedSuffixes: string[]): string 
  * This is what gates the www redirect: folding `www.docs.example.com` into
  * `docs.example.com` is a guess about someone else's subdomain layout, while
  * doing it for an apex is the near-universal convention.
+ *
+ * Onion addresses are excluded even though `onion` is in the list. Tor reads
+ * the whole label as a key, so `www.<address>.onion` is not a name with a
+ * subdomain in front of it — it is not an onion address at all, and no Tor
+ * client will resolve it. Without this the dashboard would offer a www switch
+ * for every site's onion and the redirect would point into nothing.
  */
 export function isRootDomain(hostname: string): boolean {
+  if (hostname.endsWith(".onion")) return false;
+
   const parsed = parse(hostname);
   return parsed.domain !== null && !parsed.subdomain;
 }
@@ -88,9 +118,12 @@ export function wwwApex(hostname: string): string | undefined {
  * `@` for a root domain, the subdomain otherwise.
  *
  * `undefined` when the name has no recognizable public suffix, since a guess
- * staff paste into a DNS form is worse than showing them nothing.
+ * staff paste into a DNS form is worse than showing them nothing — and for an
+ * onion address, which is reached without DNS at all.
  */
 export function recordName(hostname: string): string | undefined {
+  if (hostname.endsWith(".onion")) return undefined;
+
   const parsed = parse(hostname);
   if (parsed.domain === null) return undefined;
 

@@ -47,7 +47,7 @@ const grantsSchema = z.object({
 
 /** Routes for the hostname → nsite mappings that are npanel's whole point. */
 export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
-  const { db, settings, sync, log } = deps;
+  const { db, settings, sync, tor, log } = deps;
   const app = new Hono<ApiEnv>();
 
   app.get("/", async (c) => {
@@ -137,6 +137,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     log.info("host_created", { hostname, pubkey: address.pubkey, actor: user.pubkey });
 
     void sync.hostsChanged();
+    void tor.hostsChanged();
 
     const host = await db.selectFrom("hosts").selectAll().where("id", "=", inserted.id).executeTakeFirstOrThrow();
 
@@ -264,6 +265,12 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       void sync.hostsChanged();
     }
 
+    // A narrower condition than the sync worker's: Tor publishes a name, and
+    // does not care which nsite is behind it.
+    if (patch.enabled !== undefined) {
+      void tor.hostsChanged();
+    }
+
     const updated = await db.selectFrom("hosts").selectAll().where("id", "=", host.id).executeTakeFirstOrThrow();
 
     return c.json({ host: await serializeHost(db, updated) });
@@ -283,6 +290,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     log.info("host_deleted", { hostname: host.hostname, actor: user.pubkey });
 
     void sync.hostsChanged();
+    void tor.hostsChanged();
 
     return c.json({ ok: true });
   });

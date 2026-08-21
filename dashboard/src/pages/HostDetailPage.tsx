@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowLeft, ExternalLink, RefreshCw } from 'lucide-react';
+import { ArrowLeft, Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -157,6 +157,10 @@ export function HostDetailPage() {
           </Button>
         </CardContent>
       </Card>
+
+      {/* Only once Tor has actually published one. An empty card on every site
+          would say nothing on the instances where Tor is switched off. */}
+      {data.onion && <OnionCard address={data.onion} />}
 
       <Tabs defaultValue="versions">
         <TabsList>
@@ -344,6 +348,55 @@ export function HostDetailPage() {
         )}
       </Tabs>
     </div>
+  );
+}
+
+/** The site's Tor address. npanel assigned it; nobody chooses or types one. */
+function OnionCard({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(`http://${address}`);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard access needs a secure context, which a plain-HTTP dashboard isn't.
+      toast({ title: "Couldn't copy", description: 'Select the address and copy it manually.' });
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Tor</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-2">
+          <code className="min-w-0 flex-1 break-all rounded-md bg-muted p-3 text-xs">{address}</code>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            onClick={copy}
+            aria-label={`Copy ${address}`}
+          >
+            {copied ? (
+              <Check className="size-3" aria-hidden />
+            ) : (
+              <Copy className="size-3" aria-hidden />
+            )}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          The same site, reached over Tor. It opens in Tor Browser; an ordinary browser can't resolve
+          a .onion address. Visitors who are already using Tor Browser are offered this address on
+          their own, so there is nothing to hand out.
+        </p>
+      </CardContent>
+    </Card>
   );
 }
 

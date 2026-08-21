@@ -294,6 +294,55 @@ this setting, and is the way to keep one domain quiet on a gateway that
 otherwise publishes its list. Neither this setting nor the flag affects who can
 *visit* a site; a served site is public either way.
 
+### `tor_enabled`
+
+Default `false`. Whether every enabled site also gets a Tor onion address of its
+own.
+
+Turning it on is the whole of the setup: npanel connects to a Tor daemon, asks
+it for one onion service per site, and keeps the key each one is named by. There
+is nothing to configure per site and nothing for staff to do — a site added
+afterwards has an address within a second or two of being created, and a site
+removed loses its address with it.
+
+The addresses are stable, because npanel stores the keys rather than Tor. Tor
+itself is told nothing that outlives the connection: services are registered
+over the control port at every connect and disappear when it drops, which is
+what stops an onion from answering at an address whose server is gone.
+
+Off by default because it needs a Tor daemon this instance can reach, and
+because an upgrade shouldn't start publishing a gateway's sites somewhere their
+admin never asked for. See [deployment](deployment.md#tor) for the daemon.
+
+Sites cannot opt out individually. An onion address is a second door to files
+that are already public on the first one, and it is the gateway operator's
+decision whether this gateway has one.
+
+### `tor_control_url`
+
+Default `tcp://127.0.0.1:9051`. Where Tor listens for control connections,
+either `tcp://host:port` or `unix:/path/to/socket`.
+
+The default is right for both usual installs. In `compose.yaml` the Tor
+container shares npanel's network namespace precisely so that its control port
+is on the same loopback a Tor installed beside npanel would use.
+
+Distribution packages ship with the control port switched off, so a Tor
+installed from `apt` needs a line enabling one either way; `ControlPort 9051` is
+the one that matches this default. If you enable a `ControlSocket` instead,
+Debian and Ubuntu put it at `/run/tor/control`, making this
+`unix:/run/tor/control`.
+
+### `tor_control_password`
+
+Default empty. Only needed when Tor's control port is guarded by a
+`HashedControlPassword`.
+
+Leave it empty for either of the usual setups: both authenticate with Tor's
+cookie file, whose path Tor names itself when npanel asks how to authenticate.
+npanel only has to be able to read it — see
+[deployment](deployment.md#tor) for the group that grants.
+
 ## Not a setting: the Content Security Policy
 
 Served sites carry a restrictive `Content-Security-Policy`, and there is no

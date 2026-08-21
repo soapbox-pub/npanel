@@ -3,6 +3,7 @@ import type { NostrEvent } from "@nostrify/nostrify";
 import type { Kysely } from "kysely";
 import type { Database } from "./db/schema.ts";
 import type { DeployStatus, Host, SiteEvent } from "./db/schema.ts";
+import { isOnionAddress } from "./hostname.ts";
 import { getManifestPaths, manifestAddress } from "./manifest.ts";
 import type { NsiteAddress } from "./nsite-address.ts";
 
@@ -23,9 +24,31 @@ export async function listConfiguredSites(db: Kysely<Database>): Promise<NsiteAd
   return rows;
 }
 
-/** Look up a host by its hostname. */
-export async function findHost(db: Kysely<Database>, hostname: string): Promise<Host | undefined> {
-  return await db.selectFrom("hosts").selectAll().where("hostname", "=", hostname.toLowerCase()).executeTakeFirst();
+/** A host, with the onion address it also answers at if Tor has given it one. */
+export type ServedHost = Host & { onion: string | null };
+
+/**
+ * Look up a host by any name it answers to: its hostname, or its onion address.
+ *
+ * Both in one query, because the onion address is also what the
+ * `Onion-Location` header needs, and asking for it separately would put a
+ * second round trip on every clearnet request. Which column to match is decided
+ * by the shape of the name, which is unambiguous: `parseHostname` refuses to
+ * store a `.onion` as a hostname, so the two namespaces cannot overlap.
+ */
+export async function findHost(db: Kysely<Database>, hostname: string): Promise<ServedHost | undefined> {
+  const name = hostname.toLowerCase();
+
+  const query = db
+    .selectFrom("hosts")
+    .leftJoin("onion_services", "onion_services.host_id", "hosts.id")
+    .selectAll("hosts")
+    .select("onion_services.address as onion");
+
+  return await (isOnionAddress(name)
+    ? query.where("onion_services.address", "=", name)
+    : query.where("hosts.hostname", "=", name)
+  ).executeTakeFirst();
 }
 
 /**

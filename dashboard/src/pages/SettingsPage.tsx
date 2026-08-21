@@ -11,6 +11,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
+import type { TorStatus as TorStatusView } from '@/lib/api-types';
 import { decodePubkey, formatBytes } from '@/lib/format';
 
 interface Draft {
@@ -25,6 +26,9 @@ interface Draft {
   tlsCheckLimitTotal?: string;
   contactNpub?: string;
   publicSiteList?: boolean;
+  torEnabled?: boolean;
+  torControlUrl?: string;
+  torControlPassword?: string;
 }
 
 /**
@@ -60,6 +64,9 @@ export function SettingsPage() {
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
+  const torEnabled = draft.torEnabled ?? current?.tor_enabled ?? false;
+  const torControlUrl = draft.torControlUrl ?? current?.tor_control_url ?? '';
+  const torControlPassword = draft.torControlPassword ?? current?.tor_control_password ?? '';
 
   const save = async () => {
     try {
@@ -75,6 +82,9 @@ export function SettingsPage() {
         tls_check_limit_total: Number(tlsCheckLimitTotal),
         contact_npub: contactNpub.trim(),
         public_site_list: publicSiteList,
+        tor_enabled: torEnabled,
+        tor_control_url: torControlUrl.trim(),
+        tor_control_password: torControlPassword,
       });
 
       setDraft({});
@@ -141,6 +151,65 @@ export function SettingsPage() {
             />
             {publicSiteList ? 'Listed publicly' : 'Not listed'}
           </label>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Tor</CardTitle>
+          <CardDescription>
+            Give every site a .onion address of its own. npanel asks a Tor daemon for one per site
+            and keeps the key, so an address survives restarts — there is nothing to configure per
+            site and nothing for staff to do. Visitors already using Tor Browser are offered the
+            address on their own. Needs a Tor daemon npanel can reach; see docs/deployment.md.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-3 text-sm">
+            <Switch
+              checked={torEnabled}
+              onCheckedChange={(checked) => setDraft({ ...draft, torEnabled: checked })}
+            />
+            {torEnabled ? 'Every site also served over Tor' : 'Off'}
+          </label>
+
+          {current?.tor_enabled && <TorStatus status={status.data?.tor} />}
+
+          <div className="space-y-2">
+            <Label htmlFor="tor-control-url">Control address</Label>
+            <Input
+              id="tor-control-url"
+              value={torControlUrl}
+              onChange={(event) => setDraft({ ...draft, torControlUrl: event.target.value })}
+              placeholder="tcp://127.0.0.1:9051"
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Where Tor listens for control connections — <code>tcp://host:port</code>, or{' '}
+              <code>unix:/run/tor/control</code> for the socket a distribution's Tor package
+              usually opens. The default suits both the bundled container and a Tor installed
+              beside npanel.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="tor-control-password">Control password</Label>
+            <Input
+              id="tor-control-password"
+              type="password"
+              value={torControlPassword}
+              onChange={(event) => setDraft({ ...draft, torControlPassword: event.target.value })}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono text-sm"
+            />
+            <p className="text-xs text-muted-foreground">
+              Only for a control port guarded by a <code>HashedControlPassword</code>. Leave it
+              empty to authenticate with Tor's cookie file, which is what both usual setups do.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -329,6 +398,27 @@ export function SettingsPage() {
 }
 
 /** Who the pasted identifier turns out to be, before it's saved. */
+/** Whether npanel is actually reaching Tor, which only it can tell you. */
+function TorStatus({ status }: { status: TorStatusView | undefined }) {
+  if (!status) return null;
+
+  if (status.connected) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Connected. {status.services} {status.services === 1 ? 'site is' : 'sites are'} published
+        over Tor.
+      </p>
+    );
+  }
+
+  return (
+    <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs">
+      {status.error || 'Not connected to Tor.'} npanel keeps trying, so fixing this needs no
+      restart.
+    </p>
+  );
+}
+
 function ContactPreview({ value }: { value: string }) {
   const pubkey = decodePubkey(value);
 

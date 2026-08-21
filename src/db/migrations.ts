@@ -212,6 +212,30 @@ const MIGRATIONS: Migration[] = [
       "DELETE FROM settings WHERE key = 'nsite_csp'",
     ],
   },
+  {
+    // One onion service per host, holding the key Tor generated for it.
+    //
+    // The key is what makes the address stable: an onion service is named by
+    // its public key, so keeping it is the only way a site keeps the address
+    // people bookmarked across a restart, a disable, or a move to another box.
+    // Tor itself stores nothing — npanel re-adds every service over the control
+    // port each time it connects.
+    //
+    // ON DELETE CASCADE is real here (`PRAGMA foreign_keys = ON` in
+    // src/db/sqlite.ts), so deleting a host disposes of its key with it. That
+    // is the intended reading: the address belonged to that host, and handing
+    // it to whoever registers the hostname next would be a different site
+    // answering at an address people trusted.
+    name: "010_tor_onions",
+    statements: [
+      `CREATE TABLE onion_services (
+        host_id INTEGER PRIMARY KEY REFERENCES hosts (id) ON DELETE CASCADE,
+        address TEXT NOT NULL UNIQUE,
+        secret_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )`,
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

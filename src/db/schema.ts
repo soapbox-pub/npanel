@@ -21,6 +21,7 @@ export interface Database {
   settings: SettingsTable;
   audit_log: AuditLogTable;
   deploy_log: DeployLogTable;
+  onion_services: OnionServicesTable;
 }
 
 export interface UsersTable {
@@ -113,6 +114,22 @@ export interface AuditLogTable {
   created_at: number;
 }
 
+/**
+ * The Tor onion service a host is reachable through, one per host.
+ *
+ * Kept out of `hosts` because of `secret_key`: `findHost` selects every column
+ * on the serving path, and `hostSummary` copies them into the audit log. A key
+ * on that table would ride along into both.
+ */
+export interface OnionServicesTable {
+  host_id: number;
+  /** The v3 address, including the `.onion` suffix. Derived from the key by Tor. */
+  address: string;
+  /** `ED25519-V3` key material, as Tor's control protocol hands it over. */
+  secret_key: string;
+  created_at: number;
+}
+
 export interface DeployLogTable {
   id: Generated<number>;
   event_id: string;
@@ -130,6 +147,8 @@ export type UserUpdate = Updateable<UsersTable>;
 export type Host = Selectable<HostsTable>;
 export type NewHost = Insertable<HostsTable>;
 export type HostUpdate = Updateable<HostsTable>;
+
+export type OnionService = Selectable<OnionServicesTable>;
 
 export type SiteEvent = Selectable<SiteEventsTable>;
 export type SiteFile = Selectable<SiteFilesTable>;

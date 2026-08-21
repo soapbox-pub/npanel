@@ -67,6 +67,30 @@ export interface SettingsValues {
    * `hidden` flag.
    */
   public_site_list: boolean;
+  /**
+   * Whether every site also gets a Tor onion address.
+   *
+   * Off by default, because it needs a Tor daemon this instance can reach and
+   * an upgrade should not start publishing sites somewhere their admin didn't
+   * ask for. Turning it on takes effect immediately: npanel connects, mints an
+   * address for each site that has none, and re-publishes the rest.
+   */
+  tor_enabled: boolean;
+  /**
+   * The Tor control endpoint, as `tcp://host:port` or `unix:/path/to/socket`.
+   *
+   * npanel drives Tor over this rather than writing `torrc`, so nothing needs
+   * a Tor restart and no configuration file is shared between the two.
+   */
+  tor_control_url: string;
+  /**
+   * Password for the control port, when Tor is configured with a
+   * `HashedControlPassword`.
+   *
+   * Usually empty: both the bundled container and a distribution's Tor package
+   * authenticate with a cookie file instead, which npanel finds on its own.
+   */
+  tor_control_password: string;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -177,6 +201,44 @@ const contactNpub = z
     }
   });
 
+/**
+ * Where Tor listens for control connections.
+ *
+ * Two spellings because the two ways of installing Tor differ: a distribution
+ * package usually offers a unix socket owned by a group, while the container
+ * npanel ships with opens a TCP port on loopback.
+ */
+const torControlUrl = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    if (value.startsWith("unix:")) {
+      const path = value.slice("unix:".length);
+      if (!path.startsWith("/")) {
+        ctx.addIssue({ code: "custom", message: `A unix socket needs an absolute path: ${value}` });
+        return z.NEVER;
+      }
+      return `unix:${path}`;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      ctx.addIssue({ code: "custom", message: `Not a Tor control address: ${value}` });
+      return z.NEVER;
+    }
+    if (url.protocol !== "tcp:") {
+      ctx.addIssue({ code: "custom", message: `Tor control address must be tcp:// or unix:: ${value}` });
+      return z.NEVER;
+    }
+    if (!url.hostname || !url.port) {
+      ctx.addIssue({ code: "custom", message: `Tor control address needs a host and a port: ${value}` });
+      return z.NEVER;
+    }
+    return `tcp://${url.hostname}:${url.port}`;
+  });
+
 /** Per-key validation. Values are stored as JSON in the `settings` table. */
 const SCHEMAS = {
   relays: z.array(relayUrl).min(1, "At least one relay is required."),
@@ -202,6 +264,9 @@ const SCHEMAS = {
   tls_check_limit_total: z.number().int().min(1).max(100_000),
   contact_npub: contactNpub,
   public_site_list: z.boolean(),
+  tor_enabled: z.boolean(),
+  tor_control_url: torControlUrl,
+  tor_control_password: z.string(),
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -220,6 +285,12 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   tls_check_limit_total: 600,
   contact_npub: "",
   public_site_list: false,
+  tor_enabled: false,
+  // Tor's own default control port. Correct both for a Tor installed beside
+  // npanel and for the container in compose.yaml, which shares npanel's network
+  // namespace precisely so that this address needs no changing.
+  tor_control_url: "tcp://127.0.0.1:9051",
+  tor_control_password: "",
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

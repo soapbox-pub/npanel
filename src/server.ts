@@ -8,9 +8,11 @@ import { openDatabase } from "./db/index.ts";
 import { DnsTargets } from "./dns.ts";
 import { Logger, errFields } from "./log.ts";
 import { NostrService } from "./nostr.ts";
+import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SyncWorker } from "./sync.ts";
 import { startTlsCheckServer } from "./tls-check.ts";
+import { TorService } from "./tor.ts";
 
 const config = new Config({
   get(key) {
@@ -26,8 +28,16 @@ const blobs = new BlobStore(config.blobsDir);
 const nostr = new NostrService(settings, log);
 const sync = new SyncWorker({ db, blobs, nostr, settings, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
+const serveSite = createSiteServer({ db, blobs, log });
+const tor = new TorService({ db, settings, log, serveSite });
 
 await sync.start();
+
+// Onion services, if an admin has turned them on. Everything here is driven by
+// the setting, so a gateway with Tor off never opens a socket for it. Not
+// awaited: an unreachable Tor retries on its own, and no other listener should
+// wait for it.
+void tor.start();
 
 // A second listener, on its own port, so the proxy can ask which hostnames may
 // have a certificate without that question being answerable from the internet.
@@ -43,6 +53,8 @@ const app = createApp({
   blobs,
   dns,
   log,
+  tor,
+  serveSite,
   dashboardHost: config.dashboardHost,
   dashboardDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dashboard", "dist"),
 });
@@ -65,6 +77,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 async function shutdown(): Promise<void> {
   try {
     await tlsCheck.stop();
+    await tor.stop();
     await sync.stop();
     await db.destroy();
   } catch (error) {

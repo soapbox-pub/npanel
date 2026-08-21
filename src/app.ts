@@ -3,11 +3,16 @@ import { apiRoutes } from "./api/index.ts";
 import type { ApiDeps } from "./api/index.ts";
 import { createDashboardServer } from "./dashboard.ts";
 import { errFields } from "./log.ts";
-import { createSiteServer } from "./serve-site.ts";
+import type { SiteServer } from "./serve-site.ts";
 
 export interface AppDeps extends ApiDeps {
   /** Directory holding the built dashboard. */
   dashboardDir: string;
+  /**
+   * Serves nsites. Built outside so that the Tor listener, which reaches sites
+   * by a different route, serves them through exactly the same code.
+   */
+  serveSite: SiteServer;
 }
 
 /**
@@ -19,13 +24,12 @@ export interface AppDeps extends ApiDeps {
  * listens on its own port instead — see {@link file://./tls-check.ts}.
  */
 export function createApp(deps: AppDeps): Hono {
-  const { log } = deps;
+  const { log, serveSite } = deps;
   const serveDashboard = createDashboardServer({
     dir: deps.dashboardDir,
     dashboardHost: deps.dashboardHost,
     log,
   });
-  const serveSite = createSiteServer({ db: deps.db, blobs: deps.blobs, log });
 
   const app = new Hono();
 

@@ -2,18 +2,27 @@ import { extname } from "node:path/posix";
 import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import type { BlobStore } from "./blobs.ts";
-import type { Database, Host } from "./db/schema.ts";
-import { wwwApex } from "./hostname.ts";
+import type { Database } from "./db/schema.ts";
+import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
+import { type ServedHost, activeEvent, findHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
   log: Logger;
 }
+
+/**
+ * Serve one request for a site.
+ *
+ * The hostname is passed in rather than read from the request, because which
+ * header carries it depends on how the request arrived: through the proxy, or
+ * straight from Tor.
+ */
+export type SiteServer = (request: Request, hostname: string) => Promise<Response>;
 
 /**
  * How long browsers may cache a file.
@@ -78,7 +87,7 @@ const CSP = [
  * Blossom server at request time — so a served site keeps working even if
  * every relay and Blossom server it came from is offline.
  */
-export function createSiteServer(deps: SiteServerDeps) {
+export function createSiteServer(deps: SiteServerDeps): SiteServer {
   const { db, blobs, log } = deps;
 
   /**
@@ -95,7 +104,7 @@ export function createSiteServer(deps: SiteServerDeps) {
     if (!host || host.enabled !== 1 || host.redirect_www !== 1) return undefined;
 
     const url = new URL(request.url);
-    const location = `${requestScheme(request)}://${apex}${url.pathname}${url.search}`;
+    const location = `${requestScheme(request, hostname)}://${apex}${url.pathname}${url.search}`;
 
     log.debug("site_www_redirect", { hostname, location });
 
@@ -123,10 +132,12 @@ export function createSiteServer(deps: SiteServerDeps) {
       response.headers.set("content-security-policy", CSP);
     }
 
+    advertiseOnion(request, hostname, host, response);
+
     return response;
   }
 
-  async function respond(request: Request, hostname: string, host: Host | undefined): Promise<Response> {
+  async function respond(request: Request, hostname: string, host: ServedHost | undefined): Promise<Response> {
     if (request.method !== "GET" && request.method !== "HEAD") {
       // An nsite is a pile of files. There is nothing to POST to.
       return new Response("This site only serves GET and HEAD requests.", {
@@ -231,6 +242,26 @@ export function createSiteServer(deps: SiteServerDeps) {
 }
 
 /**
+ * Tell Tor Browser that this site has an onion address of its own.
+ *
+ * Sent only over HTTPS, which is what Tor Browser requires before it acts on
+ * the header: on a plain-HTTP hop anything in the path could rewrite it and
+ * send the visitor to an onion of its choosing, and the whole point is that the
+ * address comes from the site. Only on a document, since that is what the
+ * browser navigates, and never on a request that already arrived over Tor —
+ * that visitor is where the header would be sending them.
+ */
+function advertiseOnion(request: Request, hostname: string, host: ServedHost | undefined, response: Response): void {
+  if (!host?.onion || isOnionAddress(hostname)) return;
+  if (response.status !== 200) return;
+  if (requestScheme(request, hostname) !== "https") return;
+  if (!response.headers.get("content-type")?.startsWith("text/html")) return;
+
+  const url = new URL(request.url);
+  response.headers.set("onion-location", `http://${host.onion}${url.pathname}${url.search}`);
+}
+
+/**
  * Let any origin read any site.
  *
  * A site is a pile of public files, served identically to everyone and with no
@@ -288,11 +319,17 @@ function preflight(request: Request): Response {
  * assumption when the proxy didn't say, since a plain-HTTP deployment is the
  * unusual one and the wrong guess there costs a redirect rather than a
  * downgrade.
+ *
+ * An onion request is the exception, and inverts that reasoning: it reaches
+ * npanel straight from the Tor daemon, with no proxy and no TLS anywhere, so
+ * `https` would be wrong every time. Tor authenticates and encrypts the
+ * connection itself, which is what the scheme would otherwise be claiming.
  */
-export function requestScheme(request: Request): string {
+export function requestScheme(request: Request, hostname: string): string {
   const forwarded = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (forwarded === "http" || forwarded === "https") return forwarded;
 
-  return forwarded === "http" || forwarded === "https" ? forwarded : "https";
+  return isOnionAddress(hostname) ? "http" : "https";
 }
 
 /** Parse a single-range `Range` header. Multi-range requests are ignored. */

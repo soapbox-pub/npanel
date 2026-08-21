@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { after, test } from "node:test";
 import { encodeNaddr } from "./nsite-address.ts";
-import { matchesEtag, parseRange } from "./serve-site.ts";
+import { matchesEtag, parseRange, requestScheme } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -599,4 +599,85 @@ test("matchesEtag compares weak and strong tags", () => {
   assert.equal(matchesEtag("*", '"abc"'), true);
   assert.equal(matchesEtag('"other"', '"abc"'), false);
   assert.equal(matchesEtag(null, '"abc"'), false);
+});
+
+const ONION = `${"a".repeat(56)}.onion`;
+
+/** A host that Tor has published, as the reconciler would leave it. */
+async function withOnion(hostId: number, harness: Harness): Promise<void> {
+  await harness.db
+    .insertInto("onion_services")
+    .values({ host_id: hostId, address: ONION, secret_key: "ED25519-V3:secret", created_at: 1 })
+    .execute();
+}
+
+test("requestScheme trusts the proxy, and knows Tor has no proxy", () => {
+  const plain = new Request("http://127.0.0.1/");
+  const forwarded = new Request("http://127.0.0.1/", { headers: { "x-forwarded-proto": "https" } });
+
+  // Nothing said: a clearnet deployment is behind TLS, an onion never is.
+  assert.equal(requestScheme(plain, "docs.example.com"), "https");
+  assert.equal(requestScheme(plain, ONION), "http");
+
+  // A proxy that did say is believed either way.
+  assert.equal(requestScheme(forwarded, "docs.example.com"), "https");
+  assert.equal(
+    requestScheme(new Request("http://127.0.0.1/", { headers: { "x-forwarded-proto": "http" } }), "docs.example.com"),
+    "http",
+  );
+});
+
+test("a site is served at its onion address", async () => {
+  const body = "<h1>hello</h1>";
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": body } }],
+  });
+  await withOnion(hostId, harness);
+
+  const response = await harness.site(ONION, "/");
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), body);
+});
+
+test("a document over https advertises the site's onion address", async () => {
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/deep/page.html": "page", "/app.js": "code" } }],
+  });
+  await withOnion(hostId, harness);
+
+  // The path and query are carried over, so the visitor lands where they were.
+  const document = await harness.site("docs.example.com", "/deep/page?q=1", {
+    headers: { "x-forwarded-proto": "https" },
+  });
+  assert.equal(document.headers.get("onion-location"), `http://${ONION}/deep/page?q=1`);
+
+  // Not on an asset: the browser acts on this when it navigates.
+  const asset = await harness.site("docs.example.com", "/app.js", { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(asset.headers.get("onion-location"), null);
+});
+
+test("the onion is advertised only where a browser will act on it", async () => {
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+  await withOnion(hostId, harness);
+
+  // Over plain HTTP anything on the path could rewrite the header, so Tor
+  // Browser ignores it and npanel does not pretend otherwise.
+  const insecure = await harness.site("docs.example.com", "/", { headers: { "x-forwarded-proto": "http" } });
+  assert.equal(insecure.headers.get("onion-location"), null);
+
+  // And a visitor already on the onion is where the header would send them.
+  const onion = await harness.site(ONION, "/");
+  assert.equal(onion.headers.get("onion-location"), null);
+});
+
+test("a site with no onion advertises none", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/", { headers: { "x-forwarded-proto": "https" } });
+  assert.equal(response.headers.get("onion-location"), null);
 });

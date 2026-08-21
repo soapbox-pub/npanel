@@ -31,6 +31,11 @@ export interface Host {
   spa: boolean;
   /** Whether this site is served under a Content-Security-Policy. On unless turned off. */
   csp: boolean;
+  /**
+   * The site's Tor address, or null when Tor is off or hasn't published it yet.
+   * Assigned by npanel, not by staff, and stable once it exists.
+   */
+  onion: string | null;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -103,6 +108,18 @@ export interface Settings {
   tls_check_limit_total: number;
   contact_npub: string;
   public_site_list: boolean;
+  tor_enabled: boolean;
+  tor_control_url: string;
+  tor_control_password: string;
+}
+
+/** Whether npanel is reaching Tor, and what it has published there. */
+export interface TorStatus {
+  enabled: boolean;
+  connected: boolean;
+  services: number;
+  /** Why Tor is unreachable, as a sentence, or empty when it isn't. */
+  error: string;
 }
 
 /** A site as it appears to someone who can't manage it. */
@@ -147,4 +164,5 @@ export interface ServerStatus {
   blobs: number;
   blob_bytes: number;
   relays: string[];
+  tor: TorStatus;
 }

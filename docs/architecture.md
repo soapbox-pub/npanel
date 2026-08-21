@@ -184,6 +184,7 @@ The tables:
 | `settings`    | Runtime configuration, JSON-encoded                         |
 | `audit_log`   | Every change to a host, user, or setting                    |
 | `deploy_log`  | Per-version deploy trace, capped at 500 entries             |
+| `onion_services` | A host's Tor address and the key it is named by          |
 
 **Blobs** live on the filesystem at `DATA_DIR/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
@@ -245,6 +246,54 @@ to by name, get an hour. Nothing is cached long enough to outlive a deploy.
 Nothing is proxied at request time. Every byte comes from local disk, which is
 why a served site survives its relays and Blossom servers going offline.
 
+## Tor
+
+With `tor_enabled` on, every enabled site is also published as a v3 onion
+service. Staff do nothing: adding a site mints an address for it, removing one
+takes its address away with it.
+
+npanel drives a Tor daemon over its control port rather than writing `torrc`.
+`ADD_ONION` registers a service immediately, with no restart and no
+configuration file shared between two processes, and it hands back the key Tor
+generated. **npanel keeps the keys and Tor keeps nothing**: services are
+registered at every connect and are deliberately not created with
+`Flags=Detach`, so they disappear with the control connection. That is the
+right way round — the key is what an address is made of, so storing it is what
+makes the address survive a restart, while an onion that outlived npanel would
+answer at an address whose server is gone.
+
+Sites are *reconciled*, not tracked. Connecting, adding or removing a host, and
+changing a setting all run the same routine: ask the database which hosts are
+enabled, and make Tor match. Nothing is remembered between two runs, so a
+reconcile interrupted halfway is repaired by the next one instead of leaving a
+site holding an address nobody serves. An unreachable Tor is retried with
+backoff, and everything is republished from stored keys when it comes back.
+
+**Onion traffic gets its own listener, and this is not optional.** The public
+listener prefers `X-Forwarded-Host` over `Host`, which is safe only because a
+reverse proxy is the only thing that can reach it. Tor forwards a visitor's
+bytes unaltered, so on that listener a Tor client could send
+`X-Forwarded-Host: <dashboard host>` and reach the dashboard and the whole JSON
+API through any onion address. The Tor listener therefore reads `Host` alone and
+serves nothing but `.onion` names — the same reasoning that put certificate
+authorization on its own port.
+
+That listener binds loopback on a port the kernel picks. npanel is the one
+issuing `ADD_ONION`, so it tells Tor which port to forward to; nobody else ever
+needs the number, and there is nothing to configure or collide with.
+
+Two consequences elsewhere. `.onion` is in the Public Suffix List, so an onion
+address would otherwise read as a root domain and be offered a `www` redirect
+into nothing — `isRootDomain` excludes them. And an onion request arrives with
+no proxy and no TLS, so `requestScheme` answers `http` for one where it assumes
+`https` for everything else; Tor authenticates and encrypts the connection
+itself, which is what the scheme would otherwise be claiming.
+
+Clearnet HTML responses carry `Onion-Location`, which is how Tor Browser offers
+the address to a visitor without anyone having to hand it out. It is sent only
+over HTTPS, because on a plain-HTTP hop anything in the path could rewrite it
+and point the visitor at an onion of its own choosing.
+
 ## Authentication
 
 NIP-98: the client signs a kind 27235 event naming the method and URL, and sends
@@ -286,5 +335,5 @@ timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
-Nothing in the settings UI requires a restart, which is the point: the five
+Nothing in the settings UI requires a restart, which is the point: the six
 environment variables are the only things that do.

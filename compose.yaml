@@ -30,6 +30,31 @@ services:
     volumes:
       # The database and the blob store. This is the volume to back up.
       - npanel-data:/data
+      # Tor's control cookie, which npanel reads to authenticate. Read-only, and
+      # mounted at the same path Tor uses because Tor names that path itself when
+      # asked how to authenticate.
+      - tor-data:/var/lib/tor:ro
+
+  # Tor, for the onion address every site gets once an admin turns it on under
+  # Settings. Sharing npanel's network namespace puts both the control port and
+  # the port Tor forwards onion traffic to on plain loopback — the same
+  # addresses Tor installed beside npanel would use, so the default settings are
+  # already right and neither port is reachable from anywhere else.
+  #
+  # The cost of sharing a namespace is that restarting npanel takes this
+  # container down with it. `unless-stopped` brings it back.
+  tor:
+    build: ./tor
+    image: npanel-tor
+    restart: unless-stopped
+    network_mode: "service:npanel"
+    depends_on:
+      - npanel
+    volumes:
+      # Tor's own state, and the control cookie shared with npanel. Onion keys
+      # are not here — npanel keeps those in its database, which is what makes
+      # an address survive this volume being lost.
+      - tor-data:/var/lib/tor
 
   caddy:
     image: caddy:2-alpine
@@ -59,5 +84,6 @@ services:
 
 volumes:
   npanel-data:
+  tor-data:
   caddy-data:
   caddy-config:

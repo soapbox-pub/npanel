@@ -9,6 +9,7 @@ import type { SettingsService } from "../settings.ts";
 import type { SitePreview, SitePreviews } from "../site-preview.ts";
 import { activeEvent, newestEvent, resolveSitePath } from "../sites.ts";
 import type { SyncWorker } from "../sync.ts";
+import type { TorService } from "../tor.ts";
 
 export interface ApiDeps {
   db: Kysely<Database>;
@@ -17,6 +18,7 @@ export interface ApiDeps {
   blobs: BlobStore;
   dns: DnsTargets;
   log: Logger;
+  tor: TorService;
   dashboardHost: string;
 }
 
@@ -136,6 +138,11 @@ export interface HostView {
   spa: boolean;
   /** Whether this site is served under a `Content-Security-Policy`. On unless turned off. */
   csp: boolean;
+  /**
+   * The site's Tor address, or null when Tor is off or has not published it
+   * yet. Assigned by npanel, not by staff, and stable once it exists.
+   */
+  onion: string | null;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -160,7 +167,11 @@ export interface VersionView {
 /** Shape a host row for the API, including its deploy state. */
 export async function serializeHost(db: Kysely<Database>, host: Host): Promise<HostView> {
   const address = { pubkey: host.pubkey, kind: host.kind, identifier: host.identifier };
-  const [active, latest] = await Promise.all([activeEvent(db, host), newestEvent(db, address)]);
+  const [active, latest, onion] = await Promise.all([
+    activeEvent(db, host),
+    newestEvent(db, address),
+    db.selectFrom("onion_services").select("address").where("host_id", "=", host.id).executeTakeFirst(),
+  ]);
 
   return {
     hostname: host.hostname,
@@ -174,6 +185,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     redirect_www: host.redirect_www === 1,
     spa: host.spa === 1,
     csp: host.csp === 1,
+    onion: onion?.address ?? null,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
     created_at: host.created_at,

@@ -156,6 +156,7 @@ A host object:
   "redirect_www": true,
   "spa": false,
   "csp": true,
+  "onion": "abc…xyz.onion",
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -164,6 +165,14 @@ A host object:
   "latest": { "...": "the newest known version, or null" }
 }
 ```
+
+`onion` is read-only, and `null` unless
+[`tor_enabled`](configuration.md#tor_enabled) is on. npanel assigns it, not
+staff: enabling Tor gives every enabled host an address, a host added afterwards
+gets one a moment after it is created, and deleting a host takes its address
+with it for good. It is stable otherwise — a restart of npanel or of Tor
+republishes the same address. There is no field to set it and no per-host way to
+opt out.
 
 A version object:
 
@@ -472,11 +481,23 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
   "ready_versions": 30,
   "blobs": 1840,
   "blob_bytes": 419430400,
-  "relays": ["wss://relay.ditto.pub"]
+  "relays": ["wss://relay.ditto.pub"],
+  "tor": {
+    "enabled": true,
+    "connected": true,
+    "services": 12,
+    "error": ""
+  }
 }
 ```
 
 Available to any authenticated user.
+
+`tor.enabled` is the setting; `connected` is whether npanel currently has a
+control connection, and `services` how many onion addresses are published over
+it. `error` is empty while connected and otherwise says why not, as a sentence —
+npanel keeps retrying with backoff, so a false `connected` is a live condition
+rather than a permanent one. See [Tor](deployment.md#tor).
 
 ## Site responses
 
@@ -489,6 +510,13 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 | `X-Npanel-Pubkey`    | The nsite author                          |
 | `X-Npanel-Event`     | The exact version served                  |
 | `X-Npanel-Identifier`| The `d` tag, for named sites              |
+| `Onion-Location`     | The site's onion address, when it has one |
+
+`Onion-Location` is how Tor Browser offers a visitor the onion without anyone
+having to hand the address out. It is sent only on a `200` carrying HTML, and
+only over HTTPS — on a plain-HTTP hop anything in the path could rewrite it and
+point the visitor at an onion of its own choosing. Requests that already arrived
+over Tor never carry it.
 
 Every site response is readable from any origin: `Access-Control-Allow-Origin`
 is always `*`, and `Access-Control-Expose-Headers` covers the headers above
