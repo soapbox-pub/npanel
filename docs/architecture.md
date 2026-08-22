@@ -281,16 +281,28 @@ This is why the sample `Caddyfile` has no `encode` on the site block. There is
 nothing left for the proxy to compress, and a proxy could only ever help the
 visitors who arrive through it — not the ones on a site's onion address.
 
-Sites are also served under a `Content-Security-Policy`, the same one mkstack
-puts in its `index.html`. A gateway runs other people's code on domains you own,
-and `script-src 'self'` is what keeps a compromised deploy or a careless
-`innerHTML` from being an XSS on an origin your visitors — and their Nostr keys
-— trust. It is a header rather than a meta tag because a meta tag is only read
-once the parser reaches it, and doesn't apply to responses that aren't HTML. The
-policy costs something: it breaks inline scripts and CDN script tags, so a host
-can turn it off with its `csp` flag, which defaults on. That flag is per host
-and there is no instance-wide equivalent, on purpose — a global off switch makes
-disarming every site at once easier than fixing the one site that needed it.
+Sites are also served under a `Content-Security-Policy`. Which one is the site's
+to say: if its `/index.html` declares a policy in a `<meta http-equiv>` tag,
+that is what npanel sends, on every response for the host. A site that declares
+nothing gets the gateway's, which is the same policy mkstack puts in its
+`index.html` — a static site is exactly the thing with no business running an
+inline script, and `script-src 'self'` is what keeps a compromised deploy or a
+careless `innerHTML` from being an XSS on an origin your visitors, and their
+Nostr keys, trust.
+
+Either way it goes out as a header rather than being left to the meta tag,
+because a meta tag is only read once the parser reaches it and doesn't apply to
+responses that aren't HTML. A declared policy replaces the gateway's rather than
+joining it, which means a site can widen its own — that is the author's call
+about their own hostname, and it reaches no other host. The policy is read from
+`/index.html` on the first request for a version and cached against its
+`event_id`, which is safe because a version's file list is written once and
+never edited.
+
+The `csp` flag, which defaults on, turns the header off entirely for one host —
+for a site that needs something neither policy allows. It is per host and there
+is no instance-wide equivalent, on purpose: a global off switch makes disarming
+every site at once easier than fixing the one site that needed it.
 
 Caching splits by what a file is. A site's URLs are stable across deploys while
 the blobs behind them are not, so documents are sent `no-cache` and revalidate

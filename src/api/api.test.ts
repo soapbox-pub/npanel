@@ -715,6 +715,54 @@ test("dashboard responses refuse to be framed", async () => {
   assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
 });
 
+test("a host reports which policy it is actually served under", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  const detail = async () => (await (await harness.request(admin, "GET", "/api/hosts/docs.example.com")).json()).host;
+
+  // Nothing deployed, so there is no site to have declared anything.
+  const bare = await detail();
+  assert.equal(bare.csp_source, "gateway");
+  assert.match(bare.csp_policy, /default-src 'none'/);
+
+  const index = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'self'">`;
+  const sha256 = createHash("sha256").update(index).digest("hex");
+  const eventId = "a".repeat(64);
+
+  await harness.db
+    .insertInto("site_events")
+    .values({
+      event_id: eventId,
+      pubkey: PUBKEY,
+      kind: ROOT_SITE_KIND,
+      identifier: "",
+      created_at: 1000,
+      event: "{}",
+      status: "ready",
+      files_total: 1,
+      files_ready: 1,
+      error: null,
+      fetched_at: 1,
+      ready_at: 1,
+    })
+    .execute();
+  await harness.db.insertInto("site_files").values({ event_id: eventId, path: "/index.html", sha256 }).execute();
+  await harness.blobs.put(sha256, new TextEncoder().encode(index));
+
+  const declared = await detail();
+  assert.equal(declared.csp_source, "site");
+  assert.equal(declared.csp_policy, "default-src 'self'");
+
+  // The flag still decides whether anything is sent at all.
+  await harness.request(admin, "PATCH", "/api/hosts/docs.example.com", { csp: false });
+
+  const off = await detail();
+  assert.equal(off.csp_source, "off");
+  assert.equal(off.csp_policy, null);
+});
+
 test("a token signed for one route does not work on another", async () => {
   const { harness, admin } = await setup();
 

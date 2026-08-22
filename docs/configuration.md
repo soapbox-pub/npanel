@@ -345,9 +345,9 @@ npanel only has to be able to read it — see
 
 ## Not a setting: the Content Security Policy
 
-Served sites carry a restrictive `Content-Security-Policy`, and there is no
-instance-wide switch for it — deliberately. See
-[the `csp` flag](api.md#patch-apihostshostname), which is per site.
+Served sites carry a `Content-Security-Policy`, and there is no instance-wide
+switch for it — deliberately. See [the `csp` flag](api.md#patch-apihostshostname),
+which is per site.
 
 A gateway serves other people's code under domains you own, so the blast radius
 of one careless deploy is one hostname, not all of them. A global off switch
@@ -355,6 +355,12 @@ would turn that into a single tick-box that disarms every site at once, which is
 the one mistake a security default shouldn't make easy. The site that needs
 inline scripts turns the policy off for itself and everything else stays
 protected.
+
+Nor is the policy itself a setting. A site that declares one in the `<meta>`
+tags of its `/index.html` is served under that one; a site that declares none
+gets a restrictive default. Neither is an admin's to write, and there is nothing
+to configure here — the site decides, per deploy, and the host page in the
+dashboard shows which policy each one ended up with.
 
 ## Precedence and validation
 

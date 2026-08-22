@@ -29,7 +29,7 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
-import type { HostPatch } from '@/lib/api-types';
+import type { Host, HostPatch } from '@/lib/api-types';
 import { isRootDomain } from '@shared/hostname';
 
 /** Everything about one site: what it points at, its versions, its access. */
@@ -279,13 +279,18 @@ export function HostDetailPage() {
                     )
                   }
                 />
-                {data.csp ? 'Protected' : 'Off for this site'}
+                {cspLabel(data.csp_source)}
               </label>
               <p className="text-sm text-muted-foreground">
-                {data.csp
-                  ? `Scripts may only load from ${data.hostname} itself — no inline <script>, no CDN — so a bad deploy of this site can't run code against the domain. Turn it off only if the site needs one of those and can't be rebuilt without it.`
-                  : `This site runs without the policy. An inline or third-party script in a future deploy of it will execute on ${data.hostname}. Every other site keeps its own protection.`}
+                {data.csp_source === 'off'
+                  ? `This site runs without a policy. An inline or third-party script in a future deploy of it will execute on ${data.hostname}. Every other site keeps its own protection.`
+                  : data.csp_source === 'site'
+                    ? `This site declares a policy in the <meta> tags of its index.html, and npanel sends that one instead of its own. The site decides what may run on ${data.hostname} — including, if its policy is a loose one, less than npanel would have allowed. Redeploy the site to change it.`
+                    : `Scripts may only load from ${data.hostname} itself — no inline <script>, no CDN — so a bad deploy of this site can't run code against the domain. A site that declares its own policy in its index.html is served under that one instead. Turn this off only for a site that needs neither and can't be rebuilt.`}
               </p>
+              {data.csp_policy && (
+                <p className="font-mono text-xs break-all text-muted-foreground">{data.csp_policy}</p>
+              )}
             </CardContent>
           </Card>
 
@@ -349,6 +354,12 @@ export function HostDetailPage() {
       </Tabs>
     </div>
   );
+}
+
+/** Who the policy in force came from, in the words the switch is read with. */
+function cspLabel(source: Host['csp_source']): string {
+  if (source === 'off') return 'Off for this site';
+  return source === 'site' ? "The site's own policy" : 'Protected';
 }
 
 /** The site's Tor address. npanel assigned it; nobody chooses or types one. */

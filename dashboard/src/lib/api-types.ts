@@ -31,6 +31,13 @@ export interface Host {
   spa: boolean;
   /** Whether this site is served under a Content-Security-Policy. On unless turned off. */
   csp: boolean;
+  /** The policy it is actually served under, or null when the flag is off. */
+  csp_policy: string | null;
+  /**
+   * Who wrote that policy: the site, in a `<meta>` tag of its own
+   * index.html, or the gateway, standing in for a site that wrote none.
+   */
+  csp_source: 'site' | 'gateway' | 'off';
   /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.

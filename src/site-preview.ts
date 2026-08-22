@@ -1,6 +1,7 @@
 import { decodeHTML } from "entities";
 import { parse } from "node-html-parser";
 import type { BlobStore } from "./blobs.ts";
+import { readHtmlHead } from "./html.ts";
 
 /**
  * A card's worth of a site, read from the `<head>` of its own `index.html`.
@@ -22,15 +23,6 @@ interface RawMeta {
   description?: string;
   image?: string;
 }
-
-/**
- * How much of a document npanel will read looking for meta tags.
- *
- * The tags that matter are in `<head>`, so this only has to cover a large one.
- * Sites are free to inline a megabyte of CSS below it; nothing is gained by
- * parsing that, and a homepage listing twenty sites would pay for all of it.
- */
-const MAX_HTML_BYTES = 128 * 1024;
 
 /** Caps on what a site can put on someone else's homepage. */
 const MAX_TITLE = 200;
@@ -59,7 +51,7 @@ export class SitePreviews {
     let meta = this.cache.get(sha256);
 
     if (!meta) {
-      meta = extractMeta(await this.readHtml(sha256));
+      meta = extractMeta(await readHtmlHead(this.blobs, sha256));
 
       // Oldest first, so this drops the least recently added entry.
       if (this.cache.size >= MAX_CACHED) {
@@ -74,20 +66,6 @@ export class SitePreviews {
       description: meta.description ?? null,
       image: resolveImage(meta.image, origin),
     };
-  }
-
-  /** The first {@link MAX_HTML_BYTES} of a stored blob, as text. */
-  private async readHtml(sha256: string): Promise<string> {
-    const size = await this.blobs.size(sha256);
-    if (size === undefined || size === 0) return "";
-
-    const stream = this.blobs.read(sha256, { range: { start: 0, end: Math.min(size, MAX_HTML_BYTES) - 1 } });
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      chunks.push(chunk as Buffer);
-    }
-
-    return Buffer.concat(chunks).toString("utf8");
   }
 }
 

@@ -5,7 +5,9 @@ import type { Database, Host } from "../db/schema.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
+import { CSP } from "../serve-site.ts";
 import type { SettingsService } from "../settings.ts";
+import type { SiteCsp } from "../site-csp.ts";
 import type { SitePreview, SitePreviews } from "../site-preview.ts";
 import { activeEvent, newestEvent, resolveSitePath } from "../sites.ts";
 import type { SyncWorker } from "../sync.ts";
@@ -19,6 +21,8 @@ export interface ApiDeps {
   dns: DnsTargets;
   log: Logger;
   tor: TorService;
+  /** Shared with the serving path, so both answer with the same policy. */
+  siteCsp: SiteCsp;
   dashboardHost: string;
 }
 
@@ -138,6 +142,13 @@ export interface HostView {
   spa: boolean;
   /** Whether this site is served under a `Content-Security-Policy`. On unless turned off. */
   csp: boolean;
+  /** The policy it is actually served under, or null when the flag is off. */
+  csp_policy: string | null;
+  /**
+   * Who wrote that policy: the site, in a `<meta>` tag of its own
+   * `index.html`, or the gateway, standing in for a site that wrote none.
+   */
+  csp_source: "site" | "gateway" | "off";
   /**
    * The site's Tor address, or null when Tor is off or has not published it
    * yet. Assigned by npanel, not by staff, and stable once it exists.
@@ -165,13 +176,17 @@ export interface VersionView {
 }
 
 /** Shape a host row for the API, including its deploy state. */
-export async function serializeHost(db: Kysely<Database>, host: Host): Promise<HostView> {
+export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: SiteCsp): Promise<HostView> {
   const address = { pubkey: host.pubkey, kind: host.kind, identifier: host.identifier };
   const [active, latest, onion] = await Promise.all([
     activeEvent(db, host),
     newestEvent(db, address),
     db.selectFrom("onion_services").select("address").where("host_id", "=", host.id).executeTakeFirst(),
   ]);
+
+  // The same question the serving path asks, answered the same way, so what
+  // the dashboard shows is what a visitor is actually served under.
+  const declared = active && host.csp === 1 ? await siteCsp.policy(active.event_id) : null;
 
   return {
     hostname: host.hostname,
@@ -185,6 +200,8 @@ export async function serializeHost(db: Kysely<Database>, host: Host): Promise<H
     redirect_www: host.redirect_www === 1,
     spa: host.spa === 1,
     csp: host.csp === 1,
+    csp_policy: host.csp === 1 ? (declared ?? CSP) : null,
+    csp_source: host.csp !== 1 ? "off" : declared ? "site" : "gateway",
     onion: onion?.address ?? null,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,

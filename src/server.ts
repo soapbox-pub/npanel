@@ -10,6 +10,7 @@ import { Logger, errFields } from "./log.ts";
 import { NostrService } from "./nostr.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
+import { SiteCsp } from "./site-csp.ts";
 import { SyncWorker } from "./sync.ts";
 import { startTlsCheckServer } from "./tls-check.ts";
 import { TorService } from "./tor.ts";
@@ -28,7 +29,9 @@ const blobs = new BlobStore(config.blobsDir);
 const nostr = new NostrService(settings, log);
 const sync = new SyncWorker({ db, blobs, nostr, settings, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
-const serveSite = createSiteServer({ db, blobs, log });
+// One instance, so the serving path and the dashboard share its cache.
+const siteCsp = new SiteCsp(db, blobs, log);
+const serveSite = createSiteServer({ db, blobs, siteCsp, log });
 const tor = new TorService({ db, settings, log, serveSite });
 
 await sync.start();
@@ -54,6 +57,7 @@ const app = createApp({
   dns,
   log,
   tor,
+  siteCsp,
   serveSite,
   dashboardHost: config.dashboardHost,
   dashboardDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dashboard", "dist"),

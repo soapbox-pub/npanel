@@ -2,16 +2,19 @@ import { extname } from "node:path/posix";
 import { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import { type BlobStore, type BlobVariants, ENCODINGS, type Encoding } from "./blobs.ts";
-import type { Database } from "./db/schema.ts";
+import type { Database, SiteEvent } from "./db/schema.ts";
 import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { encodeNaddr } from "./nsite-address.ts";
+import type { SiteCsp } from "./site-csp.ts";
 import { type ServedHost, activeEvent, findHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
+  /** Reads the policy a site declares for itself. Shared, so its cache is. */
+  siteCsp: SiteCsp;
   log: Logger;
 }
 
@@ -67,22 +70,22 @@ const EXPOSED_HEADERS = ["accept-ranges", "content-length", "content-range", "et
 const PREFLIGHT_MAX_AGE = "86400";
 
 /**
- * The policy sites are served under, unless it's switched off.
+ * The policy sites are served under, unless they declare one or it's switched
+ * off.
  *
  * This is verbatim the `<meta>` policy mkstack ships in its `index.html`, which
- * is what most sites reaching an npanel gateway are built from. Sent as a
- * header it also covers everything a meta tag can't: responses that aren't
- * HTML, and the document's own `<meta>` being reached only after the parser
- * has already run whatever came before it.
+ * is what most sites reaching an npanel gateway are built from. It stands in
+ * for the site that declared nothing, because a static site is exactly the
+ * thing that has no business running an inline script, and a gateway hosts
+ * other people's code on domains you own.
  *
- * A site that ships its own policy still gets it — a document under two
- * policies must satisfy both — so this can only tighten a site, never loosen
- * one. That is also why it can break a site that expected neither: `script-src
- * 'self'` forbids inline scripts and CDN script tags outright. A site that
- * needs either turns its own `csp` off; there is deliberately no way to turn
- * the policy off for the whole gateway at once.
+ * A site that does declare a policy gets that one instead, delivered as a
+ * header — see {@link file://./site-csp.ts}. Sending it rather than leaving it
+ * to the `<meta>` tag covers what a meta tag can't: responses that aren't HTML,
+ * and a document's own `<meta>` being reached only after the parser has already
+ * run whatever came before it.
  */
-const CSP = [
+export const CSP = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'",
@@ -103,7 +106,7 @@ const CSP = [
  * every relay and Blossom server it came from is offline.
  */
 export function createSiteServer(deps: SiteServerDeps): SiteServer {
-  const { db, blobs, log } = deps;
+  const { db, blobs, siteCsp, log } = deps;
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -139,12 +142,19 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
   async function handle(request: Request, origin: RequestOrigin): Promise<Response> {
     const host = await findHost(db, origin.hostname);
-    const response = await respond(request, origin, host);
+
+    // Resolved here rather than inside `respond`, because the policy below is
+    // the version's and applies to every answer this host gives — including
+    // the ones that never reach a file.
+    const version = host?.enabled === 1 ? await activeEvent(db, host) : undefined;
+    const response = await respond(request, origin, host, version);
 
     // On unless this one site turned it off. A hostname with no host row has
-    // nobody to have turned it off, so it gets the policy too.
+    // nobody to have turned it off, so it gets the policy too — and gets the
+    // gateway's, since there is no version to have declared another.
     if (host?.csp !== 0) {
-      response.headers.set("content-security-policy", CSP);
+      const declared = version && (await siteCsp.policy(version.event_id));
+      response.headers.set("content-security-policy", declared || CSP);
     }
 
     // Set on everything rather than only on what varied, because a cache has
@@ -157,7 +167,12 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return response;
   }
 
-  async function respond(request: Request, origin: RequestOrigin, host: ServedHost | undefined): Promise<Response> {
+  async function respond(
+    request: Request,
+    origin: RequestOrigin,
+    host: ServedHost | undefined,
+    version: SiteEvent | undefined,
+  ): Promise<Response> {
     const { hostname } = origin;
 
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -178,7 +193,6 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return text(404, "This domain is not configured.");
     }
 
-    const version = await activeEvent(db, host);
     if (!version) {
       // Nothing servable yet: either the first deploy is still running or it failed.
       log.debug("site_not_deployed", { hostname });

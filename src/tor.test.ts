@@ -10,6 +10,7 @@ import type { Database } from "./db/schema.ts";
 import { Logger } from "./log.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
+import { SiteCsp } from "./site-csp.ts";
 import { type FakeTorDaemon, startFakeTorDaemon } from "./test/fake-tor.ts";
 import { TorService } from "./tor.ts";
 
@@ -46,7 +47,7 @@ async function setup(): Promise<Setup> {
     db,
     settings,
     log,
-    serveSite: createSiteServer({ db, blobs, log }),
+    serveSite: createSiteServer({ db, blobs, siteCsp: new SiteCsp(db, blobs, log), log }),
     // No test should sit through a reconnect's backoff.
     retryBackoff: 0,
   });

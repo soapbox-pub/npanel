@@ -156,6 +156,8 @@ A host object:
   "redirect_www": true,
   "spa": false,
   "csp": true,
+  "csp_policy": "default-src 'none'; script-src 'self'; …",
+  "csp_source": "gateway",
   "onion": "abc…xyz.onion",
   "pinned_event_id": null,
   "created_by": "<hex>",
@@ -266,9 +268,19 @@ with a `200`, so a client-side router can decide what the page is. Requests for
 anything else still `404` either way: a script or stylesheet that answers `200`
 with a page of HTML doesn't render the site, it fails somewhere harder to read.
 
-`csp` decides whether this site is served under a `Content-Security-Policy`,
-and defaults to `true` — including for hosts created before the flag existed.
-The policy is:
+`csp` decides whether this site is served under a `Content-Security-Policy` at
+all, and defaults to `true` — including for hosts created before the flag
+existed. *Which* policy is the site's own decision, and the read-only
+`csp_source` says which of the two it got:
+
+`"site"` — the site declares a policy in a `<meta http-equiv>` tag of its
+`/index.html`, and npanel sends that one, verbatim, on every response for the
+host. Multiple tags become the comma-separated list the header defines, which is
+how a browser reads several meta policies anyway. A `-Report-Only` tag is not a
+declaration and is skipped, and so is a policy carrying a newline or one longer
+than 8 KB — those fall back to the gateway's.
+
+`"gateway"` — the site declares nothing, so it gets npanel's own:
 
 ```
 default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
@@ -281,16 +293,24 @@ That is verbatim the policy [mkstack](https://mkstack.xyz) ships as a `<meta>`
 tag, which is what most sites reaching an npanel gateway are built from. Sent as
 a header it also covers what a meta tag can't: responses that aren't HTML, and
 the fact that a document's own `<meta>` is only reached after the parser has
-already run whatever came before it. A site that ships its own policy still
-gets that one too — a document under two policies must satisfy both — so this
-can only tighten a site, never loosen one.
+already run whatever came before it.
 
-The catch is `script-src 'self'`: it forbids inline `<script>` blocks and
-scripts loaded from a CDN. A site built with mkstack, or any bundler that emits
-external scripts, is unaffected; a page with an inline script is not, and the
-script silently doesn't run. That is what `false` is for, and it is scoped to
-the one site — there is no instance-wide switch, so turning it off for the site
-that needs it can't accidentally disarm the rest.
+`csp_policy` is the policy actually in force, whichever it came from, and `null`
+when the flag is off. Both fields are computed from the version being served, so
+they change when the site redeploys.
+
+Because a declared policy replaces rather than joins the gateway's, a site can
+widen its own: publishing `script-src 'unsafe-inline'` in `/index.html` is
+enough. That is the site author's call to make about their own hostname — it is
+their code running either way — and it reaches no other host. What it does mean
+is that `csp: true` is a promise that *a* policy is sent, not that npanel's is.
+
+Turning the flag off sends no policy at all, meta tag or not. It is there for
+the site that needs one the gateway's forbids — `script-src 'self'` blocks
+inline `<script>` blocks and CDN scripts, and the script silently doesn't run —
+and that can't be rebuilt or given a policy of its own. It is scoped to the one
+site: there is no instance-wide switch, so turning it off for the site that
+needs it can't accidentally disarm the rest.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -503,18 +523,24 @@ rather than a permanent one. See [Tor](deployment.md#tor).
 
 Not part of the JSON API, but worth knowing when debugging a served site:
 
-| Header             | Meaning                                          |
-| ------------------ | ------------------------------------------------ |
-| `ETag`             | The blob's sha256, quoted, suffixed per encoding |
-| `Last-Modified`    | The manifest event's `created_at`                |
-| `Content-Encoding` | `br` or `gzip`, when a compressed copy was sent  |
-| `Vary`             | Always `Accept-Encoding`                         |
-| `X-Nsite-Addr`     | Which nsite this hostname serves, as an `naddr`  |
-| `Onion-Location`   | The site's onion address, when it has one        |
+| Header                    | Meaning                                          |
+| ------------------------- | ------------------------------------------------ |
+| `ETag`                    | The blob's sha256, quoted, suffixed per encoding |
+| `Last-Modified`           | The manifest event's `created_at`                |
+| `Content-Encoding`        | `br` or `gzip`, when a compressed copy was sent  |
+| `Vary`                    | Always `Accept-Encoding`                         |
+| `Content-Security-Policy` | The site's own policy, or npanel's               |
+| `X-Nsite-Addr`            | Which nsite this hostname serves, as an `naddr`  |
+| `Onion-Location`          | The site's onion address, when it has one        |
 
 `X-Nsite-Addr` is the one header naming the site itself. An `naddr` carries the
 pubkey, kind, and `d` tag together, so it is a single value a client can paste
 anywhere rather than three headers to reassemble.
+
+`Content-Security-Policy` is whatever the site declared in the `<meta>` tags of
+its `/index.html`, or a restrictive default when it declared nothing. It is the
+same on every response for a host, documents and assets alike, and absent
+entirely for a host whose [`csp` flag](#patch-apihostshostname) is off.
 
 npanel stores compressed copies of a site's text files at deploy time and sends
 whichever the client can read, preferring the smallest when the client states

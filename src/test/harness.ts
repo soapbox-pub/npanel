@@ -16,6 +16,7 @@ import { Logger } from "../log.ts";
 import type { NostrService } from "../nostr.ts";
 import { createSiteServer } from "../serve-site.ts";
 import { SettingsService } from "../settings.ts";
+import { SiteCsp } from "../site-csp.ts";
 import { SyncWorker } from "../sync.ts";
 import { TorService } from "../tor.ts";
 
@@ -118,7 +119,8 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     resolver: opts.resolver ?? fakeResolver(),
   });
 
-  const serveSite = createSiteServer({ db, blobs, log });
+  const siteCsp = new SiteCsp(db, blobs, log);
+  const serveSite = createSiteServer({ db, blobs, siteCsp, log });
   // Inert unless a test turns `tor_enabled` on: with no control connection its
   // reconciles return immediately and it binds no port.
   const tor = new TorService({ db, settings, log, serveSite });
@@ -131,6 +133,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     dns,
     log,
     tor,
+    siteCsp,
     serveSite,
     dashboardHost: DASHBOARD_HOST,
     dashboardDir,

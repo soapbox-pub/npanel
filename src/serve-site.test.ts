@@ -355,6 +355,71 @@ test("a site can turn the policy off for itself alone", async () => {
   assert.match(neighbour.headers.get("content-security-policy") ?? "", /default-src 'none'/);
 });
 
+/** A site whose landing page declares a policy of its own. */
+const DECLARED = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.example";
+
+async function declaresPolicy() {
+  return await setup({
+    versions: [
+      {
+        eventId: "a".repeat(64),
+        files: {
+          "/index.html": `<!doctype html><meta http-equiv="Content-Security-Policy" content="${DECLARED}"><title>page</title>`,
+          "/app.css": "body{color:red}",
+        },
+      },
+    ],
+  });
+}
+
+test("a site that declares its own policy is served under that one", async () => {
+  const { harness } = await declaresPolicy();
+
+  const page = await harness.site("docs.example.com", "/");
+  assert.equal(page.headers.get("content-security-policy"), DECLARED);
+
+  // The header covers the whole site, not just the document that declared it:
+  // a policy that only reached index.html would leave every other response
+  // under a different set of rules than the page that asked for them.
+  const asset = await harness.site("docs.example.com", "/app.css");
+  assert.equal(asset.status, 200);
+  assert.equal(asset.headers.get("content-security-policy"), DECLARED);
+
+  // Including the answers that never reach a file.
+  const missing = await harness.site("docs.example.com", "/nope");
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("content-security-policy"), DECLARED);
+});
+
+test("a site's own policy is what it says, loose directives and all", async () => {
+  const { harness } = await declaresPolicy();
+
+  const csp = (await harness.site("docs.example.com", "/")).headers.get("content-security-policy") ?? "";
+
+  // The gateway's policy is gone rather than added to it. This is the whole
+  // consequence of honouring a site's own: `script-src 'self'` no longer
+  // applies, because the site said something else.
+  assert.doesNotMatch(csp, /default-src 'none'/);
+  assert.match(csp, /https:\/\/cdn\.example/);
+});
+
+test("turning the policy off beats a site declaring one", async () => {
+  const { harness, hostId } = await declaresPolicy();
+
+  await harness.db.updateTable("hosts").set({ csp: 0 }).where("id", "=", hostId).execute();
+
+  assert.equal((await harness.site("docs.example.com", "/")).headers.get("content-security-policy"), null);
+});
+
+test("a site with no index.html of its own falls back to the gateway's policy", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/feed.xml": "<rss/>" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/feed.xml");
+  assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+});
+
 test("a new host is protected without being asked", async () => {
   const harness = await createHarness();
   harnesses.push(harness);
