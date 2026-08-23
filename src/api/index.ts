@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, SETTING_KEYS, type SettingKey } from "../settings.ts"
 import { SitePreviews } from "../site-preview.ts";
 import { type ApiDeps, type ApiEnv, audit, listedHosts, siteCard } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
+import { nip05Routes } from "./nip05.ts";
 import { userRoutes } from "./users.ts";
 
 export type { ApiDeps } from "./context.ts";
@@ -116,6 +117,10 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   });
 
   app.route("/hosts", hostRoutes(deps));
+  // A second router under the same prefix, because NIP-05 names are a subject
+  // of their own rather than another field of a host. Both sets of paths are
+  // registered side by side, and `nip05` collides with none of them.
+  app.route("/hosts", nip05Routes(deps));
   app.route("/users", userRoutes(deps));
 
   app.get("/settings", requireAdmin(), (c) => {

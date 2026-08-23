@@ -25,7 +25,9 @@
       "@/*": ["./src/*"],
       "@shared/nsite-address": ["../src/nsite-address.ts"],
       "@shared/pubkey": ["../src/pubkey.ts"],
-      "@shared/hostname": ["../src/hostname.ts"]
+      "@shared/hostname": ["../src/hostname.ts"],
+      "@shared/nip05": ["../src/nip05.ts"],
+      "@shared/relay-url": ["../src/relay-url.ts"]
     }
   },
   "include": ["src"]

@@ -19,6 +19,8 @@ src/                    server (Bun/Node, Hono, Kysely)
   rate-limit.ts         token buckets, used to meter certificate authorization
   settings.ts           runtime settings, DB-backed and live-reloading
   nsite-address.ts      address parsing; also imported by the dashboard
+  relay-url.ts          one relay URL normalizer, shared with the dashboard
+  nip05.ts              NIP-05 names and the nostr.json document
   manifest.ts           manifest event parsing
   nostr.ts              relay pool, relay/server list caches
   sync.ts               the sync worker: subscribe, resync, deploy

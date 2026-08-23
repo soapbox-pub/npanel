@@ -8,6 +8,7 @@ import { DnsRecords } from '@/components/DnsRecords';
 import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
+import { Nip05Editor } from '@/components/host/Nip05Editor';
 import { VersionList } from '@/components/host/VersionList';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { StatusBadge } from '@/components/StatusBadge';
@@ -166,6 +167,7 @@ export function HostDetailPage() {
         <TabsList>
           <TabsTrigger value="versions">Versions</TabsTrigger>
           <TabsTrigger value="files">Files</TabsTrigger>
+          <TabsTrigger value="nip05">NIP-05</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
           {me.data?.role === 'admin' && <TabsTrigger value="access">Access</TabsTrigger>}
         </TabsList>
@@ -179,6 +181,14 @@ export function HostDetailPage() {
         <TabsContent value="files" className="pt-4">
           <Card>
             <FileList hostname={data.hostname} />
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="nip05" className="pt-4">
+          <Card>
+            <CardContent className="pt-6">
+              <Nip05Editor hostname={data.hostname} />
+            </CardContent>
           </Card>
         </TabsContent>
 

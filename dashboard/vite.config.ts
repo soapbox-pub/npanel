@@ -58,6 +58,11 @@ export default defineConfig(() => ({
       // The same Public Suffix List rules the server applies, so the dashboard
       // offers the www redirect exactly where the server will honour it.
       "@shared/hostname": path.resolve(import.meta.dirname, "../src/hostname.ts"),
+      // NIP-05 names and relay URLs are validated once, so a name the form
+      // accepts is a name the server will store rather than a round trip away
+      // from a 400.
+      "@shared/nip05": path.resolve(import.meta.dirname, "../src/nip05.ts"),
+      "@shared/relay-url": path.resolve(import.meta.dirname, "../src/relay-url.ts"),
     },
   },
 }));

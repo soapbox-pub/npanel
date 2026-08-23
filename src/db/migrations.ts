@@ -236,6 +236,30 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    // NIP-05 names, per host, served at `/.well-known/nostr.json`.
+    //
+    // The primary key is what makes a name unique to one host rather than to
+    // the instance: `bob` on two domains is two people, and there is nothing
+    // odd about a gateway serving both.
+    //
+    // CASCADE for the same reason as the onion above. A name is an assertion
+    // the domain makes about who someone is, so it should not outlive the
+    // domain's registration here and greet whoever configures the hostname
+    // next with a set of identities they never vouched for.
+    name: "011_nip05_names",
+    statements: [
+      `CREATE TABLE nip05_names (
+        host_id INTEGER NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        pubkey TEXT NOT NULL,
+        relays TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (host_id, name)
+      )`,
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

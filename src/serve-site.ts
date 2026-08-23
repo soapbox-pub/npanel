@@ -6,6 +6,7 @@ import type { Database, SiteEvent } from "./db/schema.ts";
 import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
+import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./nip05.ts";
 import { encodeNaddr } from "./nsite-address.ts";
 import type { SiteCsp } from "./site-csp.ts";
 import { type ServedHost, activeEvent, findHost, resolveSitePath } from "./sites.ts";
@@ -167,6 +168,46 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return response;
   }
 
+  /**
+   * A host's NIP-05 names, as the document {@link NIP05_PATH} serves.
+   *
+   * Undefined when the host has none, which is what lets a site that published
+   * its own `nostr.json` go on serving it: npanel shadows that file only once
+   * somebody has actually put a name in the database, and removing the last one
+   * hands the path straight back.
+   *
+   * A request naming one gets that one; a request naming nothing gets the lot,
+   * which is what makes a domain's names discoverable by anything that wants to
+   * know who a gateway hosts. That is the same list a static `nostr.json` would
+   * have handed over, so the choice was made when the names were added.
+   */
+  async function nip05Names(request: Request, host: ServedHost, url: URL): Promise<Response | undefined> {
+    const entries = await listNip05Names(db, host.id);
+    if (!entries.length) return undefined;
+
+    const requested = url.searchParams.get("name");
+    const wanted: Nip05Entry[] =
+      requested === null ? entries : entries.filter((entry) => entry.name === requested.trim().toLowerCase());
+
+    // A name nobody here answers for is an empty document rather than a 404:
+    // the question was answered, and the answer is that this domain does not
+    // know them.
+    const body = new TextEncoder().encode(JSON.stringify(nip05Document(wanted)));
+
+    const headers = new Headers({
+      "content-type": "application/json; charset=utf-8",
+      // Generated per request, so there is no blob hash to make an `ETag` from.
+      // A minute bounds how long a name survives being changed, and absorbs the
+      // repeat lookups every client that renders the identifier performs.
+      "cache-control": "public, max-age=60",
+      "content-length": String(body.byteLength),
+    });
+
+    log.debug("site_nip05", { hostname: host.hostname, name: requested, names: wanted.length });
+
+    return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
+  }
+
   async function respond(
     request: Request,
     origin: RequestOrigin,
@@ -193,6 +234,16 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return text(404, "This domain is not configured.");
     }
 
+    const url = new URL(request.url);
+
+    // Ahead of the deploy check below, because these names are npanel's and not
+    // the site's: one added here resolves straight away, whether or not the
+    // site behind the hostname has ever finished deploying.
+    if (url.pathname === NIP05_PATH) {
+      const names = await nip05Names(request, host, url);
+      if (names) return names;
+    }
+
     if (!version) {
       // Nothing servable yet: either the first deploy is still running or it failed.
       log.debug("site_not_deployed", { hostname });
@@ -202,7 +253,6 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    const url = new URL(request.url);
     const file = await resolveSitePath(db, version.event_id, url.pathname, { spa: host.spa === 1 });
 
     if (!file) {

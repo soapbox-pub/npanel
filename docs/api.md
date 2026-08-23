@@ -389,6 +389,52 @@ relay round trips take seconds, so poll the host or its versions for the result.
 Replaces the grant list wholesale. Every pubkey must be hex and must already be
 an npanel user. Returns `{ "grants": [...] }`.
 
+### `GET /api/hosts/:hostname/nip05`
+
+The NIP-05 names this host answers for, ordered by name.
+
+```json
+{
+  "names": [
+    {
+      "name": "bob",
+      "pubkey": "<hex>",
+      "relays": ["wss://relay.example.com"],
+      "created_at": 1754000000,
+      "updated_at": 1754000000
+    }
+  ]
+}
+```
+
+Not admin-only. A name is a setting of the site, so anyone with a grant on the
+site manages its names.
+
+### `PUT /api/hosts/:hostname/nip05/:name`
+
+```json
+{ "pubkey": "npub1… | nprofile1… | <hex>", "relays": ["wss://relay.example.com"] }
+```
+
+Adds the name, or replaces whatever was stored under it — `201` for the first,
+`200` for a replacement. Either way the response is the whole list, in the shape
+`GET` returns.
+
+`name` is the local part, lowercased: the `bob` in `bob@example.com`. NIP-05
+restricts it to `a-z0-9-_.`, and anything else is a `400` rather than something
+escaped, since a name outside that set is one no client will ever look up. `_`
+is legal and is the identifier clients render as the bare domain.
+
+`relays` is optional, at most ten, and each must be `ws://` or `wss://`. They
+are normalized and deduplicated, so the same relay written two ways is stored
+once. The pubkey is stored and served as hex whatever form it arrives in — the
+NIP forbids `npub` in the document itself.
+
+### `DELETE /api/hosts/:hostname/nip05/:name`
+
+Removes one name; `404` if the host never had it. Returns the remaining list.
+Deleting the host deletes its names with it.
+
 ## Users — admin
 
 ### `GET /api/users`
@@ -562,6 +608,34 @@ is always `*`, and `Access-Control-Expose-Headers` covers `ETag` and
 same-origin one.
 Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing to
 configure — a site is public files with no credential attached.
+
+### `/.well-known/nostr.json`
+
+A host with [NIP-05 names](#get-apihostshostnamenip05) serves them here, in
+place of any `nostr.json` its site deployed. A host with none serves the file
+if the site published one, and otherwise `404`s like any other missing path.
+
+```
+GET https://example.com/.well-known/nostr.json?name=bob
+{ "names": { "bob": "<hex>" }, "relays": { "<hex>": ["wss://relay.example.com"] } }
+```
+
+A `name` that this host doesn't answer for is `{ "names": {} }` with a `200` —
+the question was answered, and the answer is that the domain doesn't know them.
+A request with **no** `name` returns every name the host has, which is what lets
+a crawler discover who a domain hosts; that is the same list a static
+`nostr.json` would have handed over. `relays` is omitted when no name carries
+one.
+
+The response is `application/json`, cached for a minute, and readable from any
+origin like every other site response — which NIP-05 requires, since a
+browser-only client can't tell a CORS refusal from a missing file. It is served
+even before the site behind the hostname has finished its first deploy: the
+names belong to npanel, not to the manifest.
+
+No redirect is ever issued here, per the NIP. Note that `www.example.com` still
+redirects to `example.com` when that host asked for it, and a fetcher must
+ignore the redirect — so publish `_@example.com`, not `_@www.example.com`.
 
 Range requests are supported. A `503` with `Retry-After` means no version is
 ready yet; a `404` means the hostname isn't configured, or the path isn't in the

@@ -9,6 +9,7 @@ import type {
   HostVersion,
   Instance,
   Me,
+  Nip05Name,
   NpanelUser,
   PublicSite,
   SiteCard,
@@ -145,6 +146,23 @@ export class ApiClient {
     return this.request('PUT', `/api/hosts/${path(hostname)}/grants`, { pubkeys });
   }
 
+  nip05Names(hostname: string): Promise<{ names: Nip05Name[] }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/nip05`);
+  }
+
+  /** Adds the name, or replaces the one already stored under it. */
+  setNip05Name(
+    hostname: string,
+    name: string,
+    input: { pubkey: string; relays: string[] },
+  ): Promise<{ names: Nip05Name[] }> {
+    return this.request('PUT', `/api/hosts/${path(hostname)}/nip05/${path(name)}`, input);
+  }
+
+  deleteNip05Name(hostname: string, name: string): Promise<{ names: Nip05Name[] }> {
+    return this.request('DELETE', `/api/hosts/${path(hostname)}/nip05/${path(name)}`);
+  }
+
   users(): Promise<{ users: NpanelUser[] }> {
     return this.request('GET', '/api/users');
   }
@@ -206,13 +224,13 @@ export async function fetchSites(): Promise<{ sites: SiteCard[] }> {
 }
 
 /**
- * A hostname as one path segment.
+ * A hostname or name as one path segment.
  *
  * A no-op for anything the server would accept, but it keeps a stray slash in
- * a hostname the dashboard was handed from turning into a different endpoint.
+ * a value the dashboard was handed from turning into a different endpoint.
  */
-function path(hostname: string): string {
-  return encodeURIComponent(hostname);
+function path(value: string): string {
+  return encodeURIComponent(value);
 }
 
 async function errorMessage(response: Response): Promise<string> {

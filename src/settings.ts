@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { Database } from "./db/schema.ts";
 import { isHostname, normalizeHostname } from "./hostname.ts";
 import type { Logger } from "./log.ts";
+import { parseRelayUrl } from "./relay-url.ts";
 
 /** Runtime configuration, editable by admins from the dashboard. */
 export interface SettingsValues {
@@ -99,18 +100,12 @@ const relayUrl = z
   .string()
   .trim()
   .transform((value, ctx) => {
-    let url: URL;
     try {
-      url = new URL(value);
-    } catch {
-      ctx.addIssue({ code: "custom", message: `Invalid relay URL: ${value}` });
+      return parseRelayUrl(value);
+    } catch (error) {
+      ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : String(error) });
       return z.NEVER;
     }
-    if (url.protocol !== "wss:" && url.protocol !== "ws:") {
-      ctx.addIssue({ code: "custom", message: `Relay URL must be ws:// or wss://: ${value}` });
-      return z.NEVER;
-    }
-    return url.toString().replace(/\/$/, "");
   });
 
 const blossomUrl = z

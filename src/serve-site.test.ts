@@ -908,3 +908,133 @@ test("a site with no onion advertises none", async () => {
   const response = await harness.site("docs.example.com", "/", { headers: { "x-forwarded-proto": "https" } });
   assert.equal(response.headers.get("onion-location"), null);
 });
+
+/** Give a host some NIP-05 names, as the API would. */
+async function withNames(
+  hostId: number,
+  harness: Harness,
+  names: { name: string; pubkey: string; relays?: string[] }[],
+): Promise<void> {
+  for (const entry of names) {
+    await harness.db
+      .insertInto("nip05_names")
+      .values({
+        host_id: hostId,
+        name: entry.name,
+        pubkey: entry.pubkey,
+        relays: JSON.stringify(entry.relays ?? []),
+        created_at: 1,
+        updated_at: 1,
+      })
+      .execute();
+  }
+}
+
+test("a host with no names serves whatever the site published there", async () => {
+  const { harness } = await setup({
+    versions: [
+      {
+        eventId: "a".repeat(64),
+        files: { "/index.html": "page", "/.well-known/nostr.json": '{"names":{"deployed":"ff"}}' },
+      },
+    ],
+  });
+
+  const response = await harness.site("docs.example.com", "/.well-known/nostr.json");
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { names: { deployed: "ff" } });
+});
+
+test("a host with no names and no file 404s, as any other path would", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/.well-known/nostr.json");
+
+  assert.equal(response.status, 404);
+});
+
+test("stored names shadow the file the site deployed", async () => {
+  const { harness, hostId } = await setup({
+    versions: [
+      {
+        eventId: "a".repeat(64),
+        files: { "/index.html": "page", "/.well-known/nostr.json": '{"names":{"deployed":"ff"}}' },
+      },
+    ],
+  });
+  await withNames(hostId, harness, [{ name: "alice", pubkey: PUBKEY, relays: ["wss://relay.example.com"] }]);
+
+  const response = await harness.site("docs.example.com", "/.well-known/nostr.json");
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.deepEqual(await response.json(), {
+    names: { alice: PUBKEY },
+    relays: { [PUBKEY]: ["wss://relay.example.com"] },
+  });
+});
+
+test("a name parameter narrows the answer to that one", async () => {
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+  await withNames(hostId, harness, [
+    { name: "alice", pubkey: PUBKEY },
+    { name: "bob", pubkey: "b".repeat(64), relays: ["wss://relay.example.com"] },
+  ]);
+
+  const bob = await harness.site("docs.example.com", "/.well-known/nostr.json?name=BOB");
+  assert.deepEqual(await bob.json(), {
+    names: { bob: "b".repeat(64) },
+    relays: { ["b".repeat(64)]: ["wss://relay.example.com"] },
+  });
+
+  // A name this domain doesn't know is an empty document, not a 404: the
+  // question was answered.
+  const stranger = await harness.site("docs.example.com", "/.well-known/nostr.json?name=carol");
+  assert.equal(stranger.status, 200);
+  assert.deepEqual(await stranger.json(), { names: {} });
+
+  // And asking after nobody in particular lists everyone, which is what makes
+  // a domain's names discoverable.
+  const all = await harness.site("docs.example.com", "/.well-known/nostr.json");
+  assert.deepEqual(Object.keys(((await all.json()) as { names: Record<string, string> }).names), ["alice", "bob"]);
+});
+
+test("names resolve before the site behind them has deployed", async () => {
+  const { harness, hostId } = await setup();
+  await withNames(hostId, harness, [{ name: "_", pubkey: PUBKEY }]);
+
+  const names = await harness.site("docs.example.com", "/.well-known/nostr.json");
+  assert.equal(names.status, 200);
+  assert.deepEqual(await names.json(), { names: { _: PUBKEY } });
+
+  // Everything else about the host is still waiting on that first deploy.
+  const page = await harness.site("docs.example.com", "/");
+  assert.equal(page.status, 503);
+});
+
+test("a disabled host answers for nobody", async () => {
+  const { harness, hostId } = await setup({ enabled: false });
+  await withNames(hostId, harness, [{ name: "alice", pubkey: PUBKEY }]);
+
+  const response = await harness.site("docs.example.com", "/.well-known/nostr.json");
+
+  assert.equal(response.status, 404);
+});
+
+test("names are readable by the JavaScript clients that look them up", async () => {
+  const { harness, hostId } = await setup();
+  await withNames(hostId, harness, [{ name: "alice", pubkey: PUBKEY }]);
+
+  const response = await harness.site("docs.example.com", "/.well-known/nostr.json");
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+
+  const head = await harness.site("docs.example.com", "/.well-known/nostr.json", { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("content-length"), String(JSON.stringify({ names: { alice: PUBKEY } }).length));
+});

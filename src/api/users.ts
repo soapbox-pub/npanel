@@ -3,7 +3,7 @@ import { nip19 } from "nostr-tools";
 import { z } from "zod";
 import { requireAdmin } from "../auth.ts";
 import { parsePubkey } from "../pubkey.ts";
-import { type ApiDeps, type ApiEnv, audit } from "./context.ts";
+import { type ApiDeps, type ApiEnv, audit, message } from "./context.ts";
 
 const createSchema = z.object({
   /** npub, nprofile, or hex pubkey. */
@@ -140,8 +140,4 @@ export function userRoutes(deps: ApiDeps): Hono<ApiEnv> {
 async function adminCount(db: ApiDeps["db"]): Promise<number> {
   const rows = await db.selectFrom("users").select("pubkey").where("role", "=", "admin").execute();
   return rows.length;
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

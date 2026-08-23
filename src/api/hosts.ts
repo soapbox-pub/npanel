@@ -11,6 +11,8 @@ import {
   audit,
   canAccessHost,
   listedSites,
+  loadHost,
+  message,
   serializeHost,
   serializeVersion,
 } from "./context.ts";
@@ -477,12 +479,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     return c.json({ grants: pubkeys });
   });
 
-  // A host is addressed by its hostname, which is unique and is the thing staff
-  // actually recognise. The row id stays inside the server, where a URL someone
-  // pastes into chat can't turn into a guess at what host 12 might be.
-  async function load(hostname: string): Promise<Host | undefined> {
-    return await db.selectFrom("hosts").selectAll().where("hostname", "=", hostname.toLowerCase()).executeTakeFirst();
-  }
+  const load = (hostname: string) => loadHost(db, hostname);
 
   return app;
 }
@@ -505,8 +502,4 @@ function hostSummary(host: Host) {
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(Math.max(Math.trunc(value), min), max);
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

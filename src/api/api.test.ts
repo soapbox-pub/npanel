@@ -774,3 +774,111 @@ test("a token signed for one route does not work on another", async () => {
 
   assert.equal(response.status, 401);
 });
+
+test("manages a host's NIP-05 names", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  const empty = await harness.request(admin, "GET", "/api/hosts/docs.example.com/nip05");
+  assert.equal(empty.status, 200);
+  assert.deepEqual((await empty.json()).names, []);
+
+  const created = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/Bob", {
+    pubkey: NPUB,
+    relays: ["wss://relay.example.com/", "wss://relay.example.com"],
+  });
+  assert.equal(created.status, 201);
+
+  const [name] = (await created.json()).names;
+  assert.equal(name.name, "bob");
+  // Stored as hex, which the NIP requires, and the relay written two ways is
+  // one relay.
+  assert.equal(name.pubkey, PUBKEY);
+  assert.deepEqual(name.relays, ["wss://relay.example.com"]);
+
+  // The same name again replaces it rather than adding a second row.
+  const updated = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bob", {
+    pubkey: NPUB,
+    relays: [],
+  });
+  assert.equal(updated.status, 200);
+  const names = (await updated.json()).names;
+  assert.equal(names.length, 1);
+  assert.deepEqual(names[0].relays, []);
+
+  const removed = await harness.request(admin, "DELETE", "/api/hosts/docs.example.com/nip05/bob");
+  assert.equal(removed.status, 200);
+  assert.deepEqual((await removed.json()).names, []);
+
+  const missing = await harness.request(admin, "DELETE", "/api/hosts/docs.example.com/nip05/bob");
+  assert.equal(missing.status, 404);
+});
+
+test("a NIP-05 name has to be one a client could look up", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  const spaced = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bo%20b", {
+    pubkey: NPUB,
+  });
+  assert.equal(spaced.status, 400);
+  assert.match((await spaced.json()).error, /letters, digits/);
+
+  const notAPubkey = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bob", {
+    pubkey: "who?",
+  });
+  assert.equal(notAPubkey.status, 400);
+  assert.match((await notAPubkey.json()).error, /valid pubkey/);
+
+  const notARelay = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bob", {
+    pubkey: NPUB,
+    relays: ["https://relay.example.com"],
+  });
+  assert.equal(notARelay.status, 400);
+  assert.match((await notARelay.json()).error, /wss:\/\//);
+
+  const tooMany = await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bob", {
+    pubkey: NPUB,
+    relays: Array.from({ length: 11 }, (_, index) => `wss://relay${index}.example.com`),
+  });
+  assert.equal(tooMany.status, 400);
+  assert.match((await tooMany.json()).error, /at most 10 relays/);
+});
+
+test("NIP-05 names follow the site's own access, not a role", async () => {
+  const { harness, admin, staff } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+
+  const forbidden = await harness.request(staff, "GET", `/api/hosts/${host.hostname}/nip05`);
+  assert.equal(forbidden.status, 403);
+
+  await harness.request(admin, "PUT", `/api/hosts/${host.hostname}/grants`, { pubkeys: [staff.pubkey] });
+
+  // A grant is the whole permission: no admin has to be in the loop to name
+  // somebody on a site staff already run.
+  const allowed = await harness.request(staff, "PUT", `/api/hosts/${host.hostname}/nip05/bob`, {
+    pubkey: NPUB,
+  });
+  assert.equal(allowed.status, 201);
+
+  const missingHost = await harness.request(admin, "GET", "/api/hosts/nope.example.com/nip05");
+  assert.equal(missingHost.status, 404);
+});
+
+test("deleting a host takes its names with it", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+  await harness.request(admin, "PUT", "/api/hosts/docs.example.com/nip05/bob", { pubkey: NPUB });
+  await harness.request(admin, "DELETE", "/api/hosts/docs.example.com");
+
+  const rows = await harness.db.selectFrom("nip05_names").selectAll().execute();
+  assert.deepEqual(rows, []);
+});

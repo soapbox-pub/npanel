@@ -199,6 +199,7 @@ The tables:
 | `audit_log`   | Every change to a host, user, or setting                    |
 | `deploy_log`  | Per-version deploy trace, capped at 500 entries             |
 | `onion_services` | A host's Tor address and the key it is named by          |
+| `nip05_names` | The NIP-05 names a host answers for                        |
 
 **Blobs** live on the filesystem at `DATA_DIR/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
@@ -311,6 +312,39 @@ to by name, get an hour. Nothing is cached long enough to outlive a deploy.
 
 Nothing is proxied at request time. Every byte comes from local disk, which is
 why a served site survives its relays and Blossom servers going offline.
+
+## NIP-05 names
+
+A host can also answer for a set of NIP-05 names, kept in `nip05_names` and
+served at `/.well-known/nostr.json`. Staff add them on the site's own tab in the
+dashboard, and anyone with a grant on the site can, because a name is a setting
+of that site rather than of the instance.
+
+The rule at the path is simple: if the host has names, npanel serves them and
+the site's own `nostr.json` is shadowed; if it has none, the path resolves like
+any other, serving the deployed file or a `404`. Removing the last name hands
+the path straight back. That way round because a `nostr.json` in a repository is
+a file every deploy has to remember to carry, and forgetting it quietly unnames
+everyone in it — whereas the database survives a deploy that knows nothing about
+it.
+
+The names are answered before the deploy check, so one resolves the moment it is
+added, whether or not the site behind the hostname has ever finished deploying.
+They are the gateway's data, not the manifest's. A disabled host still answers
+for nobody, since that hostname isn't served at all.
+
+A request naming a name gets that one, and a request naming none gets the whole
+list — which is what lets other tools discover who a domain hosts, and is the
+same list a static file would have handed over. A name the host doesn't have is
+an empty document under a `200` rather than a `404`: the question was answered.
+Every site response is already `Access-Control-Allow-Origin: *`, which NIP-05
+requires, because a browser-only client cannot tell a CORS refusal apart from a
+missing file.
+
+Names live in a table of their own keyed by host id rather than hostname, so
+renaming a site carries them along and deleting it takes them with it — the
+same `ON DELETE CASCADE` reasoning as the onion keys. The next site to be given
+that hostname never made those assertions about anyone.
 
 ## Tor
 

@@ -28,6 +28,27 @@ export interface ApiDeps {
 
 export type ApiEnv = { Variables: { user: AuthUser } };
 
+/**
+ * Find a host by the name every route addresses it with.
+ *
+ * A host is addressed by its hostname, which is unique and is the thing staff
+ * actually recognise. The row id stays inside the server, where a URL someone
+ * pastes into chat can't turn into a guess at what host 12 might be.
+ */
+export async function loadHost(db: Kysely<Database>, hostname: string): Promise<Host | undefined> {
+  return await db.selectFrom("hosts").selectAll().where("hostname", "=", hostname.toLowerCase()).executeTakeFirst();
+}
+
+/**
+ * The sentence a parser threw, for handing back as a 400.
+ *
+ * The parsers in `src/` throw errors written for the person reading them in the
+ * dashboard, so the message is the whole error response — a zod message never is.
+ */
+export function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Whether a user may see and manage a host. */
 export async function canAccessHost(db: Kysely<Database>, user: AuthUser, hostId: number): Promise<boolean> {
   if (user.role === "admin") return true;

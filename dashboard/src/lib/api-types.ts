@@ -80,6 +80,16 @@ export interface SiteFile {
   stored: boolean;
 }
 
+/** One NIP-05 name a site answers for at `/.well-known/nostr.json`. */
+export interface Nip05Name {
+  /** The local part — the `bob` in `bob@example.com`. `_` means the domain itself. */
+  name: string;
+  pubkey: string;
+  relays: string[];
+  created_at: number;
+  updated_at: number;
+}
+
 export interface NpanelUser {
   pubkey: string;
   npub: string;

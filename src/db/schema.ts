@@ -22,6 +22,7 @@ export interface Database {
   audit_log: AuditLogTable;
   deploy_log: DeployLogTable;
   onion_services: OnionServicesTable;
+  nip05_names: Nip05NamesTable;
 }
 
 export interface UsersTable {
@@ -130,6 +131,25 @@ export interface OnionServicesTable {
   created_at: number;
 }
 
+/**
+ * The NIP-05 names a host answers for at `/.well-known/nostr.json`.
+ *
+ * Keyed by host rather than by hostname so renaming a site carries its names
+ * along, and deleted with the host: the names were assertions that domain was
+ * making, and the next site to be given the hostname never made them.
+ */
+export interface Nip05NamesTable {
+  host_id: number;
+  /** The local part, lowercased — the `bob` in `bob@example.com`. */
+  name: string;
+  /** Hex pubkey. Served as-is; NIP-05 forbids `npub` in the document. */
+  pubkey: string;
+  /** JSON array of relay URLs, possibly empty. */
+  relays: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface DeployLogTable {
   id: Generated<number>;
   event_id: string;
@@ -149,6 +169,8 @@ export type NewHost = Insertable<HostsTable>;
 export type HostUpdate = Updateable<HostsTable>;
 
 export type OnionService = Selectable<OnionServicesTable>;
+
+export type Nip05NameRow = Selectable<Nip05NamesTable>;
 
 export type SiteEvent = Selectable<SiteEventsTable>;
 export type SiteFile = Selectable<SiteFilesTable>;

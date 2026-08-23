@@ -142,6 +142,17 @@ export function useGrants(hostname: string | undefined, enabled = true) {
   });
 }
 
+/** The NIP-05 names this site serves, which shadow any `nostr.json` it deploys. */
+export function useNip05Names(hostname: string | undefined, enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('nip05', hostname ?? ''),
+    queryFn: async () => (await api!.nip05Names(hostname!)).names,
+    enabled: !!api && !!hostname && enabled,
+  });
+}
+
 export function useUsers(enabled = true) {
   const api = useApi();
 
@@ -228,6 +239,28 @@ export function useSetGrants() {
 
   return useMutation({
     mutationFn: (input: { hostname: string; pubkeys: string[] }) => api!.setGrants(input.hostname, input.pubkeys),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetNip05Name() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { hostname: string; name: string; pubkey: string; relays: string[] }) =>
+      api!.setNip05Name(input.hostname, input.name, { pubkey: input.pubkey, relays: input.relays }),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteNip05Name() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { hostname: string; name: string }) =>
+      api!.deleteNip05Name(input.hostname, input.name),
     onSuccess: invalidate,
   });
 }
