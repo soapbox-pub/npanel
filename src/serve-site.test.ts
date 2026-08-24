@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import { after, test } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { requestScheme } from "./app.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { matchesEtag, negotiateEncoding, parseRange } from "./serve-site.ts";
+import { matchesEtag, negotiateEncoding, parseRange, streamBlob } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -1037,4 +1038,29 @@ test("names are readable by the JavaScript clients that look them up", async () 
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
   assert.equal(head.headers.get("content-length"), String(JSON.stringify({ names: { alice: PUBKEY } }).length));
+});
+
+test("a visitor who disconnects mid-response releases the blob stream", async () => {
+  const source = Readable.from([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]);
+
+  const reader = streamBlob(source).getReader();
+  await reader.read();
+  // What a crawler does: take the headers and the first bytes, then go away.
+  await reader.cancel();
+
+  assert.equal(source.destroyed, true);
+});
+
+test("a blob read to the end is delivered whole", async () => {
+  const source = Readable.from([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]);
+
+  const reader = streamBlob(source).getReader();
+  const bytes: number[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes.push(...value);
+  }
+
+  assert.deepEqual(bytes, [1, 2, 3, 4, 5, 6]);
 });
