@@ -1,7 +1,6 @@
-import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join, normalize, resolve, sep } from "node:path";
-import { Readable } from "node:stream";
+import { fileStream } from "./blobs.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 
@@ -81,7 +80,7 @@ export function createDashboardServer(deps: DashboardDeps) {
       return new Response(page.html, { headers });
     }
 
-    return new Response(Readable.toWeb(createReadStream(file.path)) as ReadableStream<Uint8Array>, { headers });
+    return new Response(fileStream(file.path), { headers });
   };
 
   /** Read an HTML file and apply the runtime substitutions. */

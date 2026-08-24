@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { Readable } from "node:stream";
+import { readdirSync } from "node:fs";
 import { after, test } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { requestScheme } from "./app.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { matchesEtag, negotiateEncoding, parseRange, streamBlob } from "./serve-site.ts";
+import { matchesEtag, negotiateEncoding, parseRange } from "./serve-site.ts";
 import { type Harness, createHarness } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
@@ -15,6 +15,15 @@ after(async () => {
 });
 
 const PUBKEY = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+
+/** How many descriptors this process holds. Linux only; the tests run there. */
+function openDescriptors(): number {
+  try {
+    return readdirSync("/proc/self/fd").length;
+  } catch {
+    return 0;
+  }
+}
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -1040,27 +1049,58 @@ test("names are readable by the JavaScript clients that look them up", async () 
   assert.equal(head.headers.get("content-length"), String(JSON.stringify({ names: { alice: PUBKEY } }).length));
 });
 
-test("a visitor who disconnects mid-response releases the blob stream", async () => {
-  const source = Readable.from([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]);
+test("a visitor who disconnects mid-response releases the descriptor", async () => {
+  const { harness } = await setup();
+  const bytes = new TextEncoder().encode("x".repeat(256 * 1024));
+  const hash = sha256("x".repeat(256 * 1024));
+  await harness.blobs.put(hash, bytes);
 
-  const reader = streamBlob(source).getReader();
-  await reader.read();
-  // What a crawler does: take the headers and the first bytes, then go away.
-  await reader.cancel();
+  const before = openDescriptors();
 
-  assert.equal(source.destroyed, true);
+  // What a crawler does: take the first chunk, then go away.
+  for (let i = 0; i < 200; i++) {
+    const reader = harness.blobs.read(hash).getReader();
+    await reader.read();
+    await reader.cancel();
+  }
+
+  // Descriptors are closed on cancel, so this does not climb with the loop.
+  assert.ok(
+    openDescriptors() - before < 50,
+    `descriptors grew by ${openDescriptors() - before} over 200 cancelled reads`,
+  );
 });
 
 test("a blob read to the end is delivered whole", async () => {
-  const source = Readable.from([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]);
+  const { harness } = await setup();
+  const content = "hello, world";
+  const hash = sha256(content);
+  await harness.blobs.put(hash, new TextEncoder().encode(content));
 
-  const reader = streamBlob(source).getReader();
-  const bytes: number[] = [];
+  const reader = harness.blobs.read(hash).getReader();
+  const chunks: Uint8Array[] = [];
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    bytes.push(...value);
+    chunks.push(value);
   }
 
-  assert.deepEqual(bytes, [1, 2, 3, 4, 5, 6]);
+  assert.equal(Buffer.concat(chunks).toString("utf8"), content);
+});
+
+test("a blob range is served inclusively, as HTTP counts it", async () => {
+  const { harness } = await setup();
+  const content = "0123456789";
+  const hash = sha256(content);
+  await harness.blobs.put(hash, new TextEncoder().encode(content));
+
+  const reader = harness.blobs.read(hash, { range: { start: 2, end: 5 } }).getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+
+  assert.equal(Buffer.concat(chunks).toString("utf8"), "2345");
 });

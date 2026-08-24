@@ -15,9 +15,17 @@ export async function readHtmlHead(blobs: BlobStore, sha256: string): Promise<st
   if (size === undefined || size === 0) return "";
 
   const stream = blobs.read(sha256, { range: { start: 0, end: Math.min(size, MAX_HTML_BYTES) - 1 } });
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk as Buffer);
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
   }
 
   return Buffer.concat(chunks).toString("utf8");

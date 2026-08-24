@@ -1,5 +1,4 @@
 import { extname } from "node:path/posix";
-import type { Readable } from "node:stream";
 import type { Kysely } from "kysely";
 import { type BlobStore, type BlobVariants, ENCODINGS, type Encoding } from "./blobs.ts";
 import type { Database, SiteEvent } from "./db/schema.ts";
@@ -312,8 +311,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return new Response(null, { status, headers });
     }
 
-    const stream = blobs.read(file.sha256, { encoding, range: range ?? undefined });
-    const body = streamBlob(stream);
+    const body = blobs.read(file.sha256, { encoding, range: range ?? undefined });
 
     log.debug("site_request", {
       hostname,
@@ -335,51 +333,6 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
     return response;
   };
-}
-
-/**
- * A blob's bytes as a response body, released when the client goes away.
- *
- * `Readable.toWeb` does not destroy the stream it wraps when the body is
- * cancelled, so a visitor who disconnects before draining a response — every
- * crawler, and every browser that changes its mind about an image — strands the
- * `fs.ReadStream` and the buffers it has read ahead. A gateway serving one file
- * per request leaks a few kilobytes each time, which is invisible per request
- * and around a gigabyte an hour at this one's traffic.
- *
- * Cancelling is the ordinary end of a served request, not an error, so the
- * `cancel` hook destroys the stream rather than letting garbage collection
- * decide when the descriptor goes back.
- */
-export function streamBlob(stream: Readable): ReadableStream<Uint8Array> {
-  // Destroying a stream makes it emit `end`, which would otherwise close a
-  // controller the cancel already finished with.
-  let settled = false;
-  const settle = (close: () => void): void => {
-    if (settled) return;
-    settled = true;
-    close();
-  };
-
-  return new ReadableStream<Uint8Array>({
-    start(controller) {
-      stream.on("data", (chunk: Uint8Array) => {
-        if (settled) return;
-        controller.enqueue(chunk);
-        // Read no further ahead than the consumer has asked for.
-        if (controller.desiredSize !== null && controller.desiredSize <= 0) stream.pause();
-      });
-      stream.once("end", () => settle(() => controller.close()));
-      stream.once("error", (error: Error) => settle(() => controller.error(error)));
-    },
-    pull() {
-      stream.resume();
-    },
-    cancel() {
-      settle(() => {});
-      stream.destroy();
-    },
-  });
 }
 
 /**

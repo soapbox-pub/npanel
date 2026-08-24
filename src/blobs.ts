@@ -1,13 +1,71 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { type FileHandle, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import type { Duplex, Readable } from "node:stream";
+import type { Duplex } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { constants, createBrotliCompress, createGzip } from "node:zlib";
 import { isPublicUrl } from "./net.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
+
+/** How much of a file is read per pull. One page-aligned chunk per turn. */
+const READ_CHUNK = 64 * 1024;
+
+/**
+ * A file's bytes, or a byte range of them, as a web stream.
+ *
+ * Built on `open`/`read` rather than wrapping `createReadStream`, so the
+ * descriptor's whole life is visible here: `pull` reads only what the consumer
+ * asked for, and `cancel` — the ordinary end of an abandoned response, not an
+ * error — closes the handle instead of leaving it to garbage collection.
+ *
+ * `end` is inclusive, matching both `createReadStream` and HTTP's `Range`.
+ */
+export function fileStream(path: string, range?: { start: number; end: number }): ReadableStream<Uint8Array> {
+  let handle: FileHandle | undefined;
+  let position = range?.start ?? 0;
+  const last = range?.end;
+
+  async function close(): Promise<void> {
+    const open = handle;
+    handle = undefined;
+    await open?.close();
+  }
+
+  return new ReadableStream<Uint8Array>({
+    async start() {
+      handle = await open(path);
+    },
+
+    async pull(controller) {
+      if (!handle) return;
+
+      const wanted = last === undefined ? READ_CHUNK : Math.min(READ_CHUNK, last - position + 1);
+      if (wanted <= 0) {
+        await close();
+        controller.close();
+        return;
+      }
+
+      const buffer = new Uint8Array(wanted);
+      const { bytesRead } = await handle.read(buffer, 0, wanted, position);
+
+      if (bytesRead === 0) {
+        await close();
+        controller.close();
+        return;
+      }
+
+      position += bytesRead;
+      controller.enqueue(bytesRead === wanted ? buffer : buffer.subarray(0, bytesRead));
+    },
+
+    async cancel() {
+      await close();
+    },
+  });
+}
 
 /**
  * Compressed copies npanel stores alongside a blob.
@@ -149,9 +207,12 @@ export class BlobStore {
    * Open a blob for reading — or one of its compressed copies, and optionally
    * a byte range within whichever was asked for (inclusive, as in HTTP).
    */
-  read(sha256: string, opts: { encoding?: Encoding; range?: { start: number; end: number } } = {}): Readable {
+  read(
+    sha256: string,
+    opts: { encoding?: Encoding; range?: { start: number; end: number } } = {},
+  ): ReadableStream<Uint8Array> {
     const path = opts.encoding ? this.variantPath(sha256, opts.encoding) : this.path(sha256);
-    return createReadStream(path, opts.range);
+    return fileStream(path, opts.range);
   }
 
   /**

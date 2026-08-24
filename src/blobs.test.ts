@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buffer, text } from "node:stream/consumers";
 import { after, test } from "node:test";
-import { createBrotliDecompress, createGunzip } from "node:zlib";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { type BlobDownloadError, BlobStore } from "./blobs.ts";
 import { isPublicUrl } from "./net.ts";
 import { serve } from "./test/serve.ts";
@@ -304,8 +304,8 @@ test("compresses a blob into both encodings", async () => {
   assert.ok(variants?.gzip && variants.gzip < HTML.length);
 
   // Whatever brotli and gzip actually produced has to survive a round trip.
-  assert.equal(await text(blobs.read(hash, { encoding: "br" }).pipe(createBrotliDecompress())), HTML);
-  assert.equal(await text(blobs.read(hash, { encoding: "gzip" }).pipe(createGunzip())), HTML);
+  assert.equal(brotliDecompressSync(await buffer(blobs.read(hash, { encoding: "br" }))).toString("utf8"), HTML);
+  assert.equal(gunzipSync(await buffer(blobs.read(hash, { encoding: "gzip" }))).toString("utf8"), HTML);
 });
 
 test("compressing twice writes nothing the second time", async () => {
