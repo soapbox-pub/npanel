@@ -1,5 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Database, SiteEvent } from "./db/schema.ts";
+import { encodeNaddr } from "./nsite-address.ts";
 import { type ServedHost, activeEvent, findHost } from "./sites.ts";
 
 /**
@@ -14,6 +15,18 @@ import { type ServedHost, activeEvent, findHost } from "./sites.ts";
  */
 const TTL_MS = 60_000;
 
+/** The version a host serves, with the response fields derived from it. */
+export interface CachedVersion {
+  event: SiteEvent;
+  /**
+   * The version's `Last-Modified`, formatted once instead of per response.
+   *
+   * Kept beside the event rather than on {@link CachedSite}, so that a host
+   * with nothing to serve has neither and the two can't be read apart.
+   */
+  lastModified: string;
+}
+
 /** What serving needs to know about a hostname, resolved in one place. */
 export interface CachedSite {
   host: ServedHost;
@@ -21,7 +34,12 @@ export interface CachedSite {
    * The version the host serves: undefined while the host is disabled or
    * nothing has finished deploying, exactly as {@link activeEvent} answers.
    */
-  version: SiteEvent | undefined;
+  version: CachedVersion | undefined;
+  /**
+   * The host's `X-Nsite-Addr`, which is a bech32 encode of three fields that
+   * only change when staff repoint the host.
+   */
+  naddr: string;
 }
 
 /**
@@ -54,8 +72,12 @@ export class ServeCache {
       return undefined;
     }
 
-    const version = host.enabled === 1 ? await activeEvent(this.db, host) : undefined;
-    const site: CachedSite = { host, version };
+    const event = host.enabled === 1 ? await activeEvent(this.db, host) : undefined;
+    const site: CachedSite = {
+      host,
+      version: event && { event, lastModified: lastModified(event.created_at, event.fetched_at) },
+      naddr: encodeNaddr(host),
+    };
     this.entries.set(hostname, { site, expires: Date.now() + TTL_MS });
 
     return site;
@@ -68,4 +90,16 @@ export class ServeCache {
   clear(): void {
     this.entries.clear();
   }
+}
+
+/**
+ * `Last-Modified` for a version.
+ *
+ * A manifest's `created_at` is whatever its author put there, including dates
+ * in the future or beyond what `Date` can represent, so it is capped at the
+ * moment npanel actually saw the event.
+ */
+function lastModified(createdAt: number, fetchedAt: number): string {
+  const seconds = Number.isFinite(createdAt) ? Math.min(createdAt, fetchedAt) : fetchedAt;
+  return new Date(Math.max(seconds, 0) * 1000).toUTCString();
 }

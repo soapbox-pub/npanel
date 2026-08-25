@@ -181,7 +181,7 @@ test("a finished deploy is served without waiting out the cache", async () => {
 
   // No TTL to wait out: completing the deploy cleared the cache.
   const after = await serveCache.lookup("docs.example.com");
-  assert.equal(after?.version?.event_id, event.id);
+  assert.equal(after?.version?.event.event_id, event.id);
 });
 
 test("downloads every blob before a version becomes servable", async () => {

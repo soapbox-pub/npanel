@@ -1,13 +1,12 @@
 import { extname } from "node:path/posix";
 import type { Kysely } from "kysely";
 import { type BlobStore, type BlobVariants, ENCODINGS, type Encoding } from "./blobs.ts";
-import type { Database, SiteEvent } from "./db/schema.ts";
+import type { Database } from "./db/schema.ts";
 import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./nip05.ts";
-import { encodeNaddr } from "./nsite-address.ts";
-import type { ServeCache } from "./serve-cache.ts";
+import type { CachedSite, ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
 import { SitePaths } from "./site-paths.ts";
 import type { ServedHost } from "./sites.ts";
@@ -63,6 +62,9 @@ const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifes
 
 /** How long a browser may reuse a preflight result, in seconds. */
 const PREFLIGHT_MAX_AGE = "86400";
+
+/** Shared, since an encoder holds no state between calls. */
+const UTF8 = new TextEncoder();
 
 /**
  * The policy sites are served under, unless they declare one or it's switched
@@ -147,14 +149,13 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     // gives — including the ones that never reach a file.
     const site = await serveCache.lookup(origin.hostname);
     const host = site?.host;
-    const version = site?.version;
-    const response = await respond(request, url, origin, host, version);
+    const response = await respond(request, url, origin, site);
 
     // On unless this one site turned it off. A hostname with no host row has
     // nobody to have turned it off, so it gets the policy too — and gets the
     // gateway's, since there is no version to have declared another.
     if (host?.csp !== 0) {
-      const declared = version && (await siteCsp.policy(version.event_id));
+      const declared = site?.version && (await siteCsp.policy(site.version.event.event_id));
       response.headers.set("content-security-policy", declared || CSP);
     }
 
@@ -192,7 +193,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     // A name nobody here answers for is an empty document rather than a 404:
     // the question was answered, and the answer is that this domain does not
     // know them.
-    const body = new TextEncoder().encode(JSON.stringify(nip05Document(wanted)));
+    const body = UTF8.encode(JSON.stringify(nip05Document(wanted)));
 
     const headers = new Headers({
       "content-type": "application/json; charset=utf-8",
@@ -212,8 +213,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     request: Request,
     url: URL,
     origin: RequestOrigin,
-    host: ServedHost | undefined,
-    version: SiteEvent | undefined,
+    site: CachedSite | undefined,
   ): Promise<Response> {
     const { hostname } = origin;
 
@@ -225,15 +225,17 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    if (!host) {
+    if (!site) {
       const redirect = await wwwRedirect(url, origin);
       if (redirect) return redirect;
     }
 
-    if (!host || host.enabled !== 1) {
+    if (!site || site.host.enabled !== 1) {
       log.debug("site_unknown_host", { hostname });
       return text(404, "This domain is not configured.");
     }
+
+    const { host, version } = site;
 
     // Ahead of the deploy check below, because these names are npanel's and not
     // the site's: one added here resolves straight away, whether or not the
@@ -252,7 +254,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    const file = await sitePaths.resolve(version.event_id, url.pathname, { spa: host.spa === 1 });
+    const file = await sitePaths.resolve(version.event.event_id, url.pathname, { spa: host.spa === 1 });
 
     if (!file) {
       log.debug("site_path_missing", { hostname, path: url.pathname });
@@ -278,11 +280,11 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       "content-type": contentType(file.path),
       "cache-control": cacheControl(file.path),
       etag,
-      "last-modified": lastModified(version.created_at, version.fetched_at),
+      "last-modified": version.lastModified,
       "accept-ranges": "bytes",
       // Which nsite this hostname is serving, in the one form a client can
       // paste anywhere: `naddr` carries the pubkey, kind, and `d` tag at once.
-      "x-nsite-addr": encodeNaddr(host),
+      "x-nsite-addr": site.naddr,
     });
 
     if (encoding) {
@@ -515,18 +517,6 @@ export function parseRange(
 /** How long a file may be cached, by what kind of file it is. */
 export function cacheControl(path: string): string {
   return DOCUMENT_TYPES.has(extname(path).toLowerCase()) ? CACHE_CONTROL : ASSET_CACHE_CONTROL;
-}
-
-/**
- * `Last-Modified` for a version.
- *
- * A manifest's `created_at` is whatever its author put there, including dates
- * in the future or beyond what `Date` can represent, so it is capped at the
- * moment npanel actually saw the event.
- */
-export function lastModified(createdAt: number, fetchedAt: number): string {
-  const seconds = Number.isFinite(createdAt) ? Math.min(createdAt, fetchedAt) : fetchedAt;
-  return new Date(Math.max(seconds, 0) * 1000).toUTCString();
 }
 
 /** Whether an `If-None-Match` header matches the current ETag. */

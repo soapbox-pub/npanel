@@ -25,6 +25,9 @@ const PREVIEW_URL_META = /(<meta\s+(?:property|name)="(?:og:image|og:url|twitter
 /** Hostnames that aren't reachable over TLS, so previews should say `http`. */
 const LOOPBACK = /^(localhost|127(\.\d+){3}|\[?::1\]?)$/;
 
+/** Shared, since an encoder holds no state between calls. */
+const UTF8 = new TextEncoder();
+
 /** A file resolved inside the dashboard directory. */
 interface DashboardFile {
   path: string;
@@ -94,7 +97,7 @@ export function createDashboardServer(deps: DashboardDeps) {
     const source = await readFile(file.path, "utf8");
     const html = source.replace(PREVIEW_URL_META, (_match, head, path, tail) => `${head}${origin}${path}${tail}`);
     // Rewriting happens per character but Content-Length is per byte.
-    const entry = { mtimeMs: file.mtimeMs, size: file.size, html, length: new TextEncoder().encode(html).byteLength };
+    const entry = { mtimeMs: file.mtimeMs, size: file.size, html, length: UTF8.encode(html).byteLength };
 
     rendered.set(file.path, entry);
     return entry;
