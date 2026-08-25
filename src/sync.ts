@@ -484,6 +484,7 @@ export class SyncWorker {
         // downloaded before npanel did this, or by a site that serves it under
         // a name that isn't worth compressing.
         if (compressible.has(sha256)) await this.compress(eventId, sha256);
+        await this.recordVariantSizes(sha256);
       }
     }
 
@@ -667,6 +668,7 @@ export class SyncWorker {
         await this.recordBlob(sha256, size);
         await this.writeDeployLog(eventId, "debug", "blob_downloaded", { sha256, server, size });
         if (opts.compress) await this.compress(eventId, sha256);
+        await this.recordVariantSizes(sha256);
         return true;
       } catch (error) {
         const fields: LogFields = {
@@ -708,6 +710,26 @@ export class SyncWorker {
       await this.writeDeployLog(eventId, "warn", "blob_compress_failed", fields);
       this.log.warn("blob_compress_failed", fields);
     }
+  }
+
+  /**
+   * Record which compressed copies a blob has, so serving never has to look.
+   *
+   * Read back from the disk rather than from what {@link compress} reported,
+   * because a sidecar may predate this deploy — written by an earlier version,
+   * or by the compress-blobs script. Runs for every blob, not only the
+   * compressible ones: a JPEG's row saying -1 is exactly what lets a request
+   * for it skip the stat too.
+   */
+  private async recordVariantSizes(sha256: string): Promise<void> {
+    const variants = await this.blobs.variants(sha256);
+    if (!variants) return;
+
+    await this.db
+      .updateTable("blobs")
+      .set({ br_size: variants.br ?? -1, gzip_size: variants.gzip ?? -1 })
+      .where("sha256", "=", sha256)
+      .execute();
   }
 
   private async recordBlob(sha256: string, size: number): Promise<void> {

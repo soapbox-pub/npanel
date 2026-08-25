@@ -1,6 +1,7 @@
 import { extname, join } from "node:path/posix";
 import type { NostrEvent } from "@nostrify/nostrify";
 import type { Kysely } from "kysely";
+import type { BlobVariants } from "./blobs.ts";
 import type { Database } from "./db/schema.ts";
 import type { DeployStatus, Host, SiteEvent } from "./db/schema.ts";
 import { isOnionAddress } from "./hostname.ts";
@@ -103,6 +104,12 @@ export interface ResolvedFile {
   sha256: string;
   /** What to serve it as: a file the site really has, or its not-found page. */
   status: 200 | 404;
+  /**
+   * The blob's sizes, when a deploy has recorded them. Undefined for rows that
+   * predate the sizes being recorded, in which case the caller stats the disk
+   * the way it always did.
+   */
+  variants?: BlobVariants;
 }
 
 /**
@@ -155,39 +162,72 @@ export async function resolveSitePath(
     (path): path is string => path !== undefined,
   );
 
+  // The blob's sizes ride along on the lookup the request makes anyway — a
+  // primary-key seek per candidate — so serving a recorded blob touches the
+  // filesystem only to send it.
   const rows = await db
     .selectFrom("site_files")
-    .select(["path", "sha256"])
-    .where("event_id", "=", eventId)
-    .where("path", "in", candidates)
+    .leftJoin("blobs", "blobs.sha256", "site_files.sha256")
+    .select(["site_files.path", "site_files.sha256", "blobs.size", "blobs.br_size", "blobs.gzip_size"])
+    .where("site_files.event_id", "=", eventId)
+    .where("site_files.path", "in", candidates)
     .execute();
 
-  const found = new Map(rows.map((row) => [row.path, row.sha256]));
+  const found = new Map(rows.map((row) => [row.path, row]));
 
   const exact = found.get(normalized);
-  if (exact) return { path: normalized, sha256: exact, status: 200 };
+  if (exact) return resolved(exact, normalized, 200);
 
   if (htmlPath) {
     const page = found.get(htmlPath);
-    if (page) return { path: htmlPath, sha256: page, status: 200 };
+    if (page) return resolved(page, htmlPath, 200);
   }
 
   if (indexPath) {
     const index = found.get(indexPath);
-    if (index) return { path: indexPath, sha256: index, status: 200 };
+    if (index) return resolved(index, indexPath, 200);
   }
 
   const fallback = shell ? 200 : 404;
 
   const notFound = found.get("/404.html");
-  if (notFound) return { path: "/404.html", sha256: notFound, status: fallback };
+  if (notFound) return resolved(notFound, "/404.html", fallback);
 
   if (shell) {
     const index = found.get("/index.html");
-    if (index) return { path: "/index.html", sha256: index, status: 200 };
+    if (index) return resolved(index, "/index.html", 200);
   }
 
   return undefined;
+}
+
+interface ResolvedRow {
+  sha256: string;
+  size: number | null;
+  br_size: number | null;
+  gzip_size: number | null;
+}
+
+function resolved(row: ResolvedRow, path: string, status: 200 | 404): ResolvedFile {
+  const variants = recordedVariants(row);
+  return variants ? { path, sha256: row.sha256, status, variants } : { path, sha256: row.sha256, status };
+}
+
+/**
+ * The sizes a deploy recorded for a blob, or undefined when it hasn't.
+ *
+ * NULL anywhere means the row predates the sizes being recorded — the blob
+ * row itself may even be missing under the left join — and the caller falls
+ * back to statting. -1 is a recorded answer: no such copy is kept.
+ */
+function recordedVariants(row: ResolvedRow): BlobVariants | undefined {
+  if (row.size === null || row.br_size === null || row.gzip_size === null) return undefined;
+
+  return {
+    identity: row.size,
+    br: row.br_size < 0 ? undefined : row.br_size,
+    gzip: row.gzip_size < 0 ? undefined : row.gzip_size,
+  };
 }
 
 /**

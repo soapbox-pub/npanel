@@ -194,7 +194,7 @@ The tables:
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
-| `blobs`       | Size and last-seen time per stored blob                     |
+| `blobs`       | Size, sidecar sizes, and last-seen time per stored blob     |
 | `settings`    | Runtime configuration, JSON-encoded                         |
 | `audit_log`   | Every change to a host, user, or setting                    |
 | `deploy_log`  | Per-version deploy trace, capped at 500 entries             |
@@ -230,6 +230,14 @@ references one by name, `BlobStore.list()` doesn't yield them — the name test
 that keeps stray files out of pruning excludes them, since they aren't 64 hex
 characters — and deleting a blob deletes them with it. Pruning therefore goes
 on working entirely in terms of hashes.
+
+Once a deploy has settled which copies a blob has, their sizes are recorded on
+its `blobs` row — including the settled absence of one, which is `-1` and not
+`NULL`, because "no copy is kept" and "nobody has looked yet" must not read the
+same. The sizes then ride along on the `site_files` lookup a request already
+makes, so serving answers `Accept-Encoding` without touching the disk; a `NULL`
+row falls back to statting the sidecars until the next deploy that references
+the blob — or one run of `bun run compress-blobs` — fills it in.
 
 ## Serving a site
 

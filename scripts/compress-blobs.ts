@@ -13,6 +13,11 @@ import { isCompressible } from "../src/mime.ts";
  * forever. This walks everything currently referenced and fills in the gaps.
  * It is safe to re-run: blobs that already have their copies are skipped.
  *
+ * It also records every blob's sidecar sizes in the database — including the
+ * blobs it doesn't compress — which is what lets serving skip the disk when
+ * answering `Accept-Encoding`. Rows that predate the size columns stay NULL
+ * until either this script or a deploy fills them in.
+ *
  *   bun run compress-blobs
  *   bun run compress-blobs --dry-run
  */
@@ -42,12 +47,16 @@ async function compressBlobs(): Promise<void> {
   const rows = await db.selectFrom("site_files").select(["sha256", "path"]).execute();
 
   const candidates = new Set<string>();
+  const referenced = new Set<string>();
   for (const row of rows) {
+    referenced.add(row.sha256);
     if (isCompressible(row.path)) candidates.add(row.sha256);
   }
 
-  const queue = [...candidates];
-  const total = queue.length;
+  // Every referenced blob, not just the compressible ones: the incompressible
+  // ones get their sizes recorded too, so serving them skips the disk as well.
+  const queue = [...referenced];
+  const total = candidates.size;
 
   let compressed = 0;
   let before = 0;
@@ -56,34 +65,44 @@ async function compressBlobs(): Promise<void> {
 
   const worker = async (): Promise<void> => {
     for (let sha256 = queue.shift(); sha256; sha256 = queue.shift()) {
-      const existing = await blobs.variants(sha256);
+      let variants = await blobs.variants(sha256);
       // Referenced by a version whose deploy never finished, or pruned since.
-      if (!existing) continue;
-      if (existing.br !== undefined && existing.gzip !== undefined) continue;
+      if (!variants) continue;
+
+      const wanted = candidates.has(sha256) && (variants.br === undefined || variants.gzip === undefined);
 
       if (dryRun) {
-        compressed++;
+        if (wanted) compressed++;
         continue;
       }
 
-      const written = await blobs.ensureVariants(sha256);
-      if (!written.length) continue;
+      if (wanted) {
+        const written = await blobs.ensureVariants(sha256);
+        if (written.length) {
+          variants = (await blobs.variants(sha256)) ?? variants;
 
-      const variants = await blobs.variants(sha256);
-      if (!variants) continue;
+          const smallest = Math.min(
+            variants.identity,
+            variants.br ?? Number.POSITIVE_INFINITY,
+            variants.gzip ?? Number.POSITIVE_INFINITY,
+          );
 
-      const smallest = Math.min(
-        variants.identity,
-        variants.br ?? Number.POSITIVE_INFINITY,
-        variants.gzip ?? Number.POSITIVE_INFINITY,
-      );
+          compressed++;
+          before += variants.identity;
+          after += smallest;
+          for (const encoding of written) added += variants[encoding] ?? 0;
 
-      compressed++;
-      before += variants.identity;
-      after += smallest;
-      for (const encoding of written) added += variants[encoding] ?? 0;
+          console.log(`${sha256}  ${formatBytes(variants.identity)} → ${formatBytes(smallest)}`);
+        }
+      }
 
-      console.log(`${sha256}  ${formatBytes(variants.identity)} → ${formatBytes(smallest)}`);
+      // The same record a deploy writes: what is on disk, with -1 for a copy
+      // that is settled as absent. A no-op for blobs with no row.
+      await db
+        .updateTable("blobs")
+        .set({ br_size: variants.br ?? -1, gzip_size: variants.gzip ?? -1 })
+        .where("sha256", "=", sha256)
+        .execute();
     }
   };
 

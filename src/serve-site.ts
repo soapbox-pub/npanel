@@ -259,7 +259,9 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return text(404, "Not found.");
     }
 
-    const variants = await blobs.variants(file.sha256);
+    // Sizes come with the path lookup when a deploy recorded them; the stat is
+    // only for rows that predate that, until `compress-blobs` backfills them.
+    const variants = file.variants ?? (await blobs.variants(file.sha256));
     if (!variants) {
       // The version is marked ready, so this means the blob was removed underneath us.
       log.error("blob_missing", { hostname, path: file.path, sha256: file.sha256 });

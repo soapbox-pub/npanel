@@ -260,6 +260,19 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    // Sizes of a blob's compressed copies, recorded once a deploy has settled
+    // them, so serving a file reads no sizes off the disk — they ride along on
+    // the `site_files` lookup instead.
+    //
+    // -1 is the settled absence of a copy: compression didn't pay, or the blob
+    // isn't the kind worth trying. That is not the same answer as NULL, which
+    // means nobody has looked yet — a row from before these columns existed —
+    // and serving falls back to statting the sidecars until a deploy or
+    // `bun run compress-blobs` fills the row in.
+    name: "012_blob_variant_sizes",
+    statements: ["ALTER TABLE blobs ADD COLUMN br_size INTEGER", "ALTER TABLE blobs ADD COLUMN gzip_size INTEGER"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

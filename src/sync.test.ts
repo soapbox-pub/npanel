@@ -191,6 +191,13 @@ test("downloads every blob before a version becomes servable", async () => {
 
   const resolved = await resolveSitePath(db, event.id, "/");
   assert.equal(resolved?.path, "/index.html");
+  // Too small to compress, so the deploy recorded the absence: sizes come
+  // with the lookup, and serving needs no stat.
+  assert.deepEqual(resolved?.variants, {
+    identity: files["/index.html"].length,
+    br: undefined,
+    gzip: undefined,
+  });
 
   const recorded = await db.selectFrom("blobs").selectAll().execute();
   assert.equal(recorded.length, 2);
@@ -430,7 +437,7 @@ test("a deploy compresses the files worth compressing", async () => {
   const files = { "/index.html": HTML, "/photo.jpg": JPEG };
   const server = blossom({ [sha256(HTML)]: HTML, [sha256(JPEG)]: JPEG });
 
-  const { blobs, worker } = await harness();
+  const { db, blobs, worker } = await harness();
   await worker.ingest(manifest(files, { servers: [server.url] }));
   await worker.whenIdle();
 
@@ -444,6 +451,18 @@ test("a deploy compresses the files worth compressing", async () => {
   const jpeg = await blobs.variants(sha256(JPEG));
   assert.equal(jpeg?.br, undefined);
   assert.equal(jpeg?.gzip, undefined);
+
+  // What the deploy settled is recorded, so serving reads sizes off the row
+  // rather than the disk — including the settled absence, which is -1 and
+  // not NULL: NULL would send every request for the JPEG back to statting.
+  const rows = await db.selectFrom("blobs").selectAll().execute();
+  const htmlRow = rows.find((row) => row.sha256 === sha256(HTML));
+  assert.equal(htmlRow?.br_size, html?.br);
+  assert.equal(htmlRow?.gzip_size, html?.gzip);
+
+  const jpegRow = rows.find((row) => row.sha256 === sha256(JPEG));
+  assert.equal(jpegRow?.br_size, -1);
+  assert.equal(jpegRow?.gzip_size, -1);
 });
 
 test("a blob already on disk still gets compressed", async () => {

@@ -96,6 +96,14 @@ export interface BlobsTable {
   sha256: string;
   size: number;
   seen_at: number;
+  /**
+   * Size of the `.br` sidecar, recorded when a deploy settles it. -1 is the
+   * settled absence of a copy; NULL means nobody has looked yet and serving
+   * still stats the disk.
+   */
+  br_size: number | null;
+  /** Size of the `.gz` sidecar, under the same rules as `br_size`. */
+  gzip_size: number | null;
 }
 
 export interface SettingsTable {

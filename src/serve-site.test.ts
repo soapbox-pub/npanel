@@ -646,6 +646,55 @@ test("a range applies to the copy being served", async () => {
   assert.deepEqual(await bytes(partial), whole.subarray(1, 5));
 });
 
+test("recorded sizes are served without asking the store for them", async () => {
+  const harness = await setupCompressed();
+  const hash = sha256(COMPRESSIBLE);
+  const variants = await harness.blobs.variants(hash);
+  assert.ok(variants?.br && variants.gzip);
+
+  // What a deploy records. The harness's setup inserts rows with NULL sizes,
+  // so every other test in this file exercises the fallback.
+  await harness.db
+    .updateTable("blobs")
+    .set({ br_size: variants.br, gzip_size: variants.gzip })
+    .where("sha256", "=", hash)
+    .execute();
+
+  harness.blobs.variants = async () => {
+    throw new Error("variants() was called even though the row carries the sizes");
+  };
+
+  const response = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "br" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), "br");
+  assert.equal(response.headers.get("content-length"), String(variants.br));
+  assert.equal(brotliDecompressSync(await bytes(response)).toString(), COMPRESSIBLE);
+});
+
+test("a recorded absence is believed over the disk", async () => {
+  // Sidecars exist on disk, but the row says none are kept: the row is the
+  // deploy's settled answer, and negotiation goes by it alone.
+  const harness = await setupCompressed();
+  const hash = sha256(COMPRESSIBLE);
+
+  await harness.db.updateTable("blobs").set({ br_size: -1, gzip_size: -1 }).where("sha256", "=", hash).execute();
+  harness.blobs.variants = async () => {
+    throw new Error("variants() was called even though the row carries the sizes");
+  };
+
+  const response = await harness.site("docs.example.com", "/", {
+    headers: { "accept-encoding": "br, gzip" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-encoding"), null);
+  assert.equal(response.headers.get("etag"), `"${sha256(COMPRESSIBLE)}"`);
+  assert.equal(await response.text(), COMPRESSIBLE);
+});
+
 test("HEAD reports the length of the copy it would have sent", async () => {
   const harness = await setupCompressed();
 
