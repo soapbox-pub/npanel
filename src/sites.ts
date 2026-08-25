@@ -1,6 +1,6 @@
 import { extname, join } from "node:path/posix";
 import type { NostrEvent } from "@nostrify/nostrify";
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { BlobVariants } from "./blobs.ts";
 import type { Database } from "./db/schema.ts";
 import type { DeployStatus, Host, SiteEvent } from "./db/schema.ts";
@@ -80,7 +80,10 @@ export async function newestReadyEvent(db: Kysely<Database>, address: NsiteAddre
     .where("pubkey", "=", address.pubkey)
     .where("kind", "=", address.kind)
     .where("identifier", "=", address.identifier)
-    .where("status", "=", "ready")
+    // A literal, not a bound parameter: `site_events_ready_idx` is partial on
+    // `status = 'ready'`, and SQLite only uses it when the query's SQL text
+    // provably implies that predicate — a `?` it can't see through.
+    .where("status", "=", sql.lit("ready"))
     .orderBy("created_at", "desc")
     .limit(1)
     .executeTakeFirst();

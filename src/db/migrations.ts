@@ -273,6 +273,21 @@ const MIGRATIONS: Migration[] = [
     name: "012_blob_variant_sizes",
     statements: ["ALTER TABLE blobs ADD COLUMN br_size INTEGER", "ALTER TABLE blobs ADD COLUMN gzip_size INTEGER"],
   },
+  {
+    // The serving path asks for the newest *ready* version, but
+    // `site_events_site_idx` doesn't know about status, so that lookup walks
+    // the index newest-first checking each row — and a site whose deploys keep
+    // failing stacks rows on top of the one being served, making every request
+    // pay for the failures. A partial index turns it back into a direct seek.
+    // SQLite picks it because the query's literal `status = 'ready'` implies
+    // the index predicate.
+    name: "013_site_events_ready_idx",
+    statements: [
+      `CREATE INDEX site_events_ready_idx
+        ON site_events (pubkey, kind, identifier, created_at DESC)
+        WHERE status = 'ready'`,
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */
