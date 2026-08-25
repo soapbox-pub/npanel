@@ -105,14 +105,13 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
    * Only reached when no host of that name is configured, so a `www` host
    * someone added deliberately is served rather than redirected away.
    */
-  async function wwwRedirect(request: Request, origin: RequestOrigin): Promise<Response | undefined> {
+  async function wwwRedirect(url: URL, origin: RequestOrigin): Promise<Response | undefined> {
     const apex = wwwApex(origin.hostname);
     if (!apex) return undefined;
 
     const host = await findHost(db, apex);
     if (!host || host.enabled !== 1 || host.redirect_www !== 1) return undefined;
 
-    const url = new URL(request.url);
     const location = `${origin.scheme}://${apex}${url.pathname}${url.search}`;
 
     log.debug("site_www_redirect", { hostname: origin.hostname, location });
@@ -132,13 +131,15 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
   }
 
   async function handle(request: Request, origin: RequestOrigin): Promise<Response> {
+    // Parsed once for everything below; three callees want the path.
+    const url = new URL(request.url);
     const host = await findHost(db, origin.hostname);
 
     // Resolved here rather than inside `respond`, because the policy below is
     // the version's and applies to every answer this host gives — including
     // the ones that never reach a file.
     const version = host?.enabled === 1 ? await activeEvent(db, host) : undefined;
-    const response = await respond(request, origin, host, version);
+    const response = await respond(request, url, origin, host, version);
 
     // On unless this one site turned it off. A hostname with no host row has
     // nobody to have turned it off, so it gets the policy too — and gets the
@@ -153,7 +154,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     // late to find out that some other path would have negotiated.
     response.headers.set("vary", "accept-encoding");
 
-    advertiseOnion(request, origin, host, response);
+    advertiseOnion(url, origin, host, response);
 
     return response;
   }
@@ -200,6 +201,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
   async function respond(
     request: Request,
+    url: URL,
     origin: RequestOrigin,
     host: ServedHost | undefined,
     version: SiteEvent | undefined,
@@ -215,7 +217,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     }
 
     if (!host) {
-      const redirect = await wwwRedirect(request, origin);
+      const redirect = await wwwRedirect(url, origin);
       if (redirect) return redirect;
     }
 
@@ -223,8 +225,6 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       log.debug("site_unknown_host", { hostname });
       return text(404, "This domain is not configured.");
     }
-
-    const url = new URL(request.url);
 
     // Ahead of the deploy check below, because these names are npanel's and not
     // the site's: one added here resolves straight away, whether or not the
@@ -338,18 +338,12 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
  * browser navigates, and never on a request that already arrived over Tor —
  * that visitor is where the header would be sending them.
  */
-function advertiseOnion(
-  request: Request,
-  origin: RequestOrigin,
-  host: ServedHost | undefined,
-  response: Response,
-): void {
+function advertiseOnion(url: URL, origin: RequestOrigin, host: ServedHost | undefined, response: Response): void {
   if (!host?.onion || isOnionAddress(origin.hostname)) return;
   if (response.status !== 200) return;
   if (origin.scheme !== "https") return;
   if (!response.headers.get("content-type")?.startsWith("text/html")) return;
 
-  const url = new URL(request.url);
   response.headers.set("onion-location", `http://${host.onion}${url.pathname}${url.search}`);
 }
 
