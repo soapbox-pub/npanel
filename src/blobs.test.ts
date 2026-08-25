@@ -67,6 +67,22 @@ test("reads byte ranges", async () => {
   assert.equal(await text(blobs.read(hash, { range: { start: 2, end: 4 } })), "234");
 });
 
+test("opens a blob as a Blob, ranges counted inclusively", async () => {
+  const blobs = await store();
+  const hash = sha256("0123456789");
+  await blobs.put(hash, new TextEncoder().encode("0123456789"));
+
+  const whole = await blobs.open(hash);
+  assert.equal(whole.size, 10);
+  assert.equal(await whole.text(), "0123456789");
+
+  // Blob.slice counts exclusively where HTTP's Range does not; the conversion
+  // lives in open(), so this is where an off-by-one would surface.
+  const part = await blobs.open(hash, { range: { start: 2, end: 4 } });
+  assert.equal(part.size, 3);
+  assert.equal(await part.text(), "234");
+});
+
 test("downloads and verifies a blob", async () => {
   const blobs = await store();
   const hash = sha256("downloaded");
@@ -348,6 +364,19 @@ test("reads a byte range of a compressed copy", async () => {
   const whole = await buffer(blobs.read(hash, { encoding: "gzip" }));
   const part = await buffer(blobs.read(hash, { encoding: "gzip", range: { start: 1, end: 4 } }));
   assert.deepEqual(part, whole.subarray(1, 5));
+});
+
+test("opens a byte range of a compressed copy", async () => {
+  const blobs = await store();
+  const hash = sha256(HTML);
+  await blobs.put(hash, new TextEncoder().encode(HTML));
+  await blobs.ensureVariants(hash);
+
+  const whole = Buffer.from(await (await blobs.open(hash, { encoding: "gzip" })).arrayBuffer());
+  assert.equal(gunzipSync(whole).toString("utf8"), HTML);
+
+  const part = await blobs.open(hash, { encoding: "gzip", range: { start: 1, end: 4 } });
+  assert.deepEqual(Buffer.from(await part.arrayBuffer()), whole.subarray(1, 5));
 });
 
 test("compressed copies are not blobs of their own", async () => {

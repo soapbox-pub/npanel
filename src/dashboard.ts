@@ -1,6 +1,6 @@
+import { openAsBlob } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join, normalize, resolve, sep } from "node:path";
-import { fileStream } from "./blobs.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 
@@ -80,7 +80,8 @@ export function createDashboardServer(deps: DashboardDeps) {
       return new Response(page.html, { headers });
     }
 
-    return new Response(fileStream(file.path), { headers });
+    // File-backed, so Bun sends it with sendfile rather than through JS.
+    return new Response(await openAsBlob(file.path), { headers });
   };
 
   /** Read an HTML file and apply the runtime substitutions. */

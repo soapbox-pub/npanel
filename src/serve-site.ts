@@ -311,7 +311,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       return new Response(null, { status, headers });
     }
 
-    const body = blobs.read(file.sha256, { encoding, range: range ?? undefined });
+    const body = await blobs.open(file.sha256, { encoding, range: range ?? undefined });
 
     log.debug("site_request", {
       hostname,

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream, openAsBlob } from "node:fs";
 import { type FileHandle, mkdir, open, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { Duplex } from "node:stream";
@@ -17,7 +17,7 @@ const READ_CHUNK = 64 * 1024;
  *
  * Built on `open`/`read` rather than wrapping `createReadStream`, so the
  * descriptor's whole life is visible here: `pull` reads only what the consumer
- * asked for, and `cancel` — the ordinary end of an abandoned response, not an
+ * asked for, and `cancel` — the ordinary end of an abandoned read, not an
  * error — closes the handle instead of leaving it to garbage collection.
  *
  * `end` is inclusive, matching both `createReadStream` and HTTP's `Range`.
@@ -206,6 +206,9 @@ export class BlobStore {
   /**
    * Open a blob for reading — or one of its compressed copies, and optionally
    * a byte range within whichever was asked for (inclusive, as in HTTP).
+   *
+   * For npanel's own consumption of the bytes. A response body should come
+   * from {@link open} instead, which keeps the bytes out of the process.
    */
   read(
     sha256: string,
@@ -213,6 +216,28 @@ export class BlobStore {
   ): ReadableStream<Uint8Array> {
     const path = opts.encoding ? this.variantPath(sha256, opts.encoding) : this.path(sha256);
     return fileStream(path, opts.range);
+  }
+
+  /**
+   * A blob — or one of its compressed copies, optionally a byte range of
+   * whichever was asked for (inclusive, as in HTTP) — as a file-backed Blob.
+   *
+   * This is what a `Response` body is made from: Bun recognizes a file-backed
+   * Blob and answers with `sendfile`, so the bytes travel disk → socket inside
+   * the kernel without ever entering the JS heap, and the kernel tears the
+   * transfer down when the visitor disconnects. Slicing keeps that path —
+   * verified by strace, one `sendfile` call per response, offsets intact.
+   * Wrapping the file in a ReadableStream instead would put every chunk
+   * through the process, which is the copying this exists to avoid.
+   */
+  async open(
+    sha256: string,
+    opts: { encoding?: Encoding; range?: { start: number; end: number } } = {},
+  ): Promise<Blob> {
+    const path = opts.encoding ? this.variantPath(sha256, opts.encoding) : this.path(sha256);
+    const blob = await openAsBlob(path);
+    // Blob.slice is end-exclusive where HTTP's Range is inclusive.
+    return opts.range ? blob.slice(opts.range.start, opts.range.end + 1) : blob;
   }
 
   /**
