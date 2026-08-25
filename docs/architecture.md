@@ -248,6 +248,15 @@ Path resolution mirrors what static hosts do: exact match, then `index.html` for
 extensionless paths, then the site's own `/404.html`. Resolution reads
 `site_files`, never a manifest event — serving a file never parses Nostr.
 
+The answer is then held in memory, keyed by version and path, which is what
+takes the last database query off a warm request. Nothing invalidates it and
+nothing has to: a version's file list is written once and never edited, and an
+event id is a hash, so a redeploy asks a different question rather than
+changing the answer to this one. The blob sizes that ride along are the
+exception, since `compress-blobs` can record them long after a deploy, so a
+row that hasn't got them yet is left uncached rather than pinned to the `stat`
+it falls back to.
+
 That last step is where a single-page app parts ways with a static site, so it
 is a per-host flag rather than a guess. By default a path the site has no file
 for is a `404`, carrying `/404.html` if the site published one — the honest

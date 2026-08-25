@@ -9,7 +9,8 @@ import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./ni
 import { encodeNaddr } from "./nsite-address.ts";
 import type { ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
-import { type ServedHost, resolveSitePath } from "./sites.ts";
+import { SitePaths } from "./site-paths.ts";
+import type { ServedHost } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
@@ -101,6 +102,10 @@ export const CSP = [
  */
 export function createSiteServer(deps: SiteServerDeps): SiteServer {
   const { db, blobs, siteCsp, serveCache, log } = deps;
+
+  // Built here rather than injected: the path map is only ever read to serve a
+  // file, so nothing outside this server has a lookup to share with it.
+  const sitePaths = new SitePaths(db);
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -247,7 +252,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    const file = await resolveSitePath(db, version.event_id, url.pathname, { spa: host.spa === 1 });
+    const file = await sitePaths.resolve(version.event_id, url.pathname, { spa: host.spa === 1 });
 
     if (!file) {
       log.debug("site_path_missing", { hostname, path: url.pathname });
