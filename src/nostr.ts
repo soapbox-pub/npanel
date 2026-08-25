@@ -85,19 +85,49 @@ export class NostrService {
    * these are merged into every manifest lookup.
    */
   async getAuthorRelays(pubkey: string, opts: { signal?: AbortSignal } = {}): Promise<string[]> {
-    const cached = this.relayLists.get(pubkey);
-    if (cached && Date.now() - cached.fetchedAt < LIST_STALE_TIME) {
-      return cached.value;
+    const lists = await this.getAuthorsRelays([pubkey], opts);
+    return lists.get(pubkey) ?? [];
+  }
+
+  /**
+   * Relay lists for many authors in one round trip.
+   *
+   * Kind 10002 is replaceable, so relays hold at most one event per author and
+   * a combined filter needs no `limit` — a `limit` here would cap the whole
+   * response, not each author. Every requested author gets a cache entry, an
+   * empty one when no list was found, so absence is not refetched per call.
+   */
+  async getAuthorsRelays(pubkeys: string[], opts: { signal?: AbortSignal } = {}): Promise<Map<string, string[]>> {
+    const lists = new Map<string, string[]>();
+    const misses: string[] = [];
+
+    for (const pubkey of dedupe(pubkeys)) {
+      const cached = this.relayLists.get(pubkey);
+      if (cached && Date.now() - cached.fetchedAt < LIST_STALE_TIME) {
+        lists.set(pubkey, cached.value);
+      } else {
+        misses.push(pubkey);
+      }
     }
 
-    const events = await this.query([{ kinds: [RELAY_LIST_KIND], authors: [pubkey], limit: 1 }], opts);
-    const newest = latest(events);
-    const value = newest ? parseRelayList(newest).write : [];
+    if (!misses.length) return lists;
 
-    this.relayLists.set(pubkey, { value, fetchedAt: Date.now() });
-    this.log.debug("relay_list_fetched", { pubkey, relays: value.length });
+    const events = await this.query([{ kinds: [RELAY_LIST_KIND], authors: misses }], opts);
+    const byAuthor = new Map<string, NostrEvent[]>();
+    for (const event of events) {
+      byAuthor.set(event.pubkey, [...(byAuthor.get(event.pubkey) ?? []), event]);
+    }
 
-    return value;
+    for (const pubkey of misses) {
+      const newest = latest(byAuthor.get(pubkey) ?? []);
+      const value = newest ? parseRelayList(newest).write : [];
+
+      lists.set(pubkey, value);
+      this.relayLists.set(pubkey, { value, fetchedAt: Date.now() });
+      this.log.debug("relay_list_fetched", { pubkey, relays: value.length });
+    }
+
+    return lists;
   }
 
   /** Blossom servers an author publishes to, from their kind 10063 list. */

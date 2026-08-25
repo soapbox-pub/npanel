@@ -306,14 +306,7 @@ export class SyncWorker {
     const kinds = [...new Set(sites.map((site) => site.kind))].filter((kind) => SITE_KINDS.includes(kind));
 
     // Watch the authors' own write relays too — that's where they publish.
-    const hints: string[] = [];
-    for (const author of authors) {
-      try {
-        hints.push(...(await this.nostr.getAuthorRelays(author, { signal })));
-      } catch {
-        // A missing relay list just means we watch the configured relays.
-      }
-    }
+    const hints = [...(await this.nostr.getAuthorsRelays(authors, { signal })).values()].flat();
 
     const relays = [...new Set([...this.nostr.relays, ...hints])];
     const since = Math.floor(Date.now() / 1000);

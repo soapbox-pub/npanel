@@ -88,6 +88,7 @@ function fakeNostr(): NostrService {
     req: async function* () {},
     query: async () => [],
     getAuthorRelays: async () => [],
+    getAuthorsRelays: async () => new Map(),
     getAuthorServers: async () => [],
     fetchManifest: async () => undefined,
     blobSources: async (event: NostrEvent, fallbacks: string[]) => [
