@@ -49,6 +49,13 @@ export async function openSqlite(path: string): Promise<SqliteDatabase> {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA synchronous = NORMAL");
 
+  // Map the database into memory, so the point lookups on the serving path
+  // read pages straight out of the OS page cache instead of paying a syscall
+  // and a copy for each one. The number is a ceiling, not a reservation:
+  // SQLite maps at most the file's actual size, and 256MB is far beyond any
+  // plausible npanel database.
+  db.exec("PRAGMA mmap_size = 268435456");
+
   return db;
 }
 
@@ -149,13 +156,51 @@ class SqliteDriver implements Driver {
   }
 }
 
+/**
+ * Prepared statements to keep, by SQL text.
+ *
+ * Kysely compiles the same query builder to the same string every time, so the
+ * serving path's three lookups are three cache hits. Bounded because bulk
+ * inserts are not like that: `storeManifest` chunks rows into a VALUES list
+ * whose length the last chunk decides, and every length is a distinct string.
+ */
+const MAX_STATEMENTS = 256;
+
 class SqliteConnection implements DatabaseConnection {
   release: (() => void) | undefined;
+  private statements = new Map<string, SqliteStatement>();
 
   constructor(private readonly db: SqliteDatabase) {}
 
+  /**
+   * Prepare a statement, or reuse it if it's cached.
+   *
+   * Reuse is safe across migrations: both bindings sit on
+   * `sqlite3_prepare_v2`, whose statements re-prepare themselves when the
+   * schema changes rather than erroring.
+   */
+  private prepare(sql: string): SqliteStatement {
+    const cached = this.statements.get(sql);
+    if (cached) {
+      // Re-insert on hit, so eviction below drops the least recently used.
+      this.statements.delete(sql);
+      this.statements.set(sql, cached);
+      return cached;
+    }
+
+    const stmt = this.db.prepare(sql);
+
+    if (this.statements.size >= MAX_STATEMENTS) {
+      const oldest = this.statements.keys().next().value;
+      if (oldest !== undefined) this.statements.delete(oldest);
+    }
+    this.statements.set(sql, stmt);
+
+    return stmt;
+  }
+
   async executeQuery<R>(compiled: CompiledQuery): Promise<QueryResult<R>> {
-    const stmt = this.db.prepare(compiled.sql);
+    const stmt = this.prepare(compiled.sql);
     const params = compiled.parameters.map(toSqliteValue);
 
     if (mutatesWithoutRows(compiled)) {
