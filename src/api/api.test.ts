@@ -882,3 +882,50 @@ test("deleting a host takes its names with it", async () => {
   const rows = await harness.db.selectFrom("nip05_names").selectAll().execute();
   assert.deepEqual(rows, []);
 });
+
+test("status counts hosts, ready versions, and blob bytes", async () => {
+  const { harness, admin } = await setup();
+
+  // sum() over an empty table is NULL in SQL; the endpoint must say 0.
+  const empty = await (await harness.request(admin, "GET", "/api/status")).json();
+  assert.equal(empty.hosts, 0);
+  assert.equal(empty.ready_versions, 0);
+  assert.equal(empty.blobs, 0);
+  assert.equal(empty.blob_bytes, 0);
+
+  await harness.request(admin, "POST", "/api/hosts", { hostname: "docs.example.com", address: NPUB });
+
+  await harness.db
+    .insertInto("site_events")
+    .values(
+      (["ready", "failed"] as const).map((status, i) => ({
+        event_id: String(i).repeat(64),
+        pubkey: PUBKEY,
+        kind: ROOT_SITE_KIND,
+        identifier: "",
+        created_at: 1,
+        event: "{}",
+        status,
+        files_total: 0,
+        files_ready: 0,
+        error: null,
+        fetched_at: 1,
+        ready_at: 1,
+      })),
+    )
+    .execute();
+
+  await harness.db
+    .insertInto("blobs")
+    .values([
+      { sha256: "a".repeat(64), size: 100, seen_at: 1, br_size: null, gzip_size: null },
+      { sha256: "b".repeat(64), size: 250, seen_at: 1, br_size: null, gzip_size: null },
+    ])
+    .execute();
+
+  const body = await (await harness.request(admin, "GET", "/api/status")).json();
+  assert.equal(body.hosts, 1);
+  assert.equal(body.ready_versions, 1);
+  assert.equal(body.blobs, 2);
+  assert.equal(body.blob_bytes, 350);
+});

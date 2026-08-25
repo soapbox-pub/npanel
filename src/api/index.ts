@@ -174,17 +174,29 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
   /** Server-side status, handy for a dashboard footer and for debugging. */
   app.get("/status", async (c) => {
+    // Aggregates, not row fetches: the footer polls this, and a gateway can
+    // hold tens of thousands of blobs.
     const [hosts, sites, blobs] = await Promise.all([
-      db.selectFrom("hosts").select("id").execute(),
-      db.selectFrom("site_events").select("event_id").where("status", "=", "ready").execute(),
-      db.selectFrom("blobs").select(["sha256", "size"]).execute(),
+      db
+        .selectFrom("hosts")
+        .select((eb) => eb.fn.countAll<number>().as("count"))
+        .executeTakeFirstOrThrow(),
+      db
+        .selectFrom("site_events")
+        .select((eb) => eb.fn.countAll<number>().as("count"))
+        .where("status", "=", "ready")
+        .executeTakeFirstOrThrow(),
+      db
+        .selectFrom("blobs")
+        .select((eb) => [eb.fn.countAll<number>().as("count"), eb.fn.sum<number | null>("size").as("bytes")])
+        .executeTakeFirstOrThrow(),
     ]);
 
     return c.json({
-      hosts: hosts.length,
-      ready_versions: sites.length,
-      blobs: blobs.length,
-      blob_bytes: blobs.reduce((total, blob) => total + blob.size, 0),
+      hosts: hosts.count,
+      ready_versions: sites.count,
+      blobs: blobs.count,
+      blob_bytes: blobs.bytes ?? 0,
       relays: settings.get("relays"),
       tor: deps.tor.status(),
     });
