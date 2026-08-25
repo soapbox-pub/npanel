@@ -8,6 +8,7 @@ import { BlobStore } from "./blobs.ts";
 import { openDatabase } from "./db/index.ts";
 import type { Database } from "./db/schema.ts";
 import { Logger } from "./log.ts";
+import { ServeCache } from "./serve-cache.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SiteCsp } from "./site-csp.ts";
@@ -43,11 +44,13 @@ async function setup(): Promise<Setup> {
 
   await settings.update({ tor_enabled: true, tor_control_url: `tcp://127.0.0.1:${daemon.port}` }, ACTOR);
 
+  const serveCache = new ServeCache(db);
   const tor = new TorService({
     db,
     settings,
     log,
-    serveSite: createSiteServer({ db, blobs, siteCsp: new SiteCsp(db, blobs, log), log }),
+    serveSite: createSiteServer({ db, blobs, siteCsp: new SiteCsp(db, blobs, log), serveCache, log }),
+    serveCache,
     // No test should sit through a reconnect's backoff.
     retryBackoff: 0,
   });

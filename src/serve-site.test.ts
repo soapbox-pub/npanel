@@ -6,7 +6,7 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { requestScheme } from "./app.ts";
 import { encodeNaddr } from "./nsite-address.ts";
 import { matchesEtag, negotiateEncoding, parseRange } from "./serve-site.ts";
-import { type Harness, createHarness } from "./test/harness.ts";
+import { type Harness, createHarness, testUser } from "./test/harness.ts";
 
 const harnesses: Harness[] = [];
 
@@ -816,6 +816,37 @@ test("serves the newest ready version, or the pinned one", async () => {
 
   const pinned = await setup({ versions, pin: "a".repeat(64) });
   assert.equal(await (await pinned.harness.site("docs.example.com", "/")).text(), "v1");
+});
+
+test("host lookups are cached until a writer clears them", async () => {
+  const { harness, hostId } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+
+  assert.equal((await harness.site("docs.example.com", "/")).status, 200);
+
+  // A write the process didn't make: serving keeps answering from the cache.
+  await harness.db.updateTable("hosts").set({ enabled: 0 }).where("id", "=", hostId).execute();
+  assert.equal((await harness.site("docs.example.com", "/")).status, 200);
+
+  // What every in-process writer does after touching what serving reads.
+  harness.serveCache.clear();
+  assert.equal((await harness.site("docs.example.com", "/")).status, 404);
+});
+
+test("a host edited through the API is served fresh immediately", async () => {
+  const { harness } = await setup({
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "page" } }],
+  });
+  const admin = testUser();
+  await harness.addUser(admin, "admin");
+
+  // Prime the cache, then disable the host the way staff actually would.
+  assert.equal((await harness.site("docs.example.com", "/")).status, 200);
+  const patched = await harness.request(admin, "PATCH", "/api/hosts/docs.example.com", { enabled: false });
+  assert.equal(patched.status, 200);
+
+  assert.equal((await harness.site("docs.example.com", "/")).status, 404);
 });
 
 test("path traversal cannot escape the site", async () => {

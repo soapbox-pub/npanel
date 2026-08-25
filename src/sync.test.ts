@@ -14,6 +14,7 @@ import type { Database } from "./db/schema.ts";
 import { Logger } from "./log.ts";
 import type { NostrService } from "./nostr.ts";
 import { NAMED_SITE_KIND } from "./nsite-address.ts";
+import { ServeCache } from "./serve-cache.ts";
 import { SettingsService } from "./settings.ts";
 import { activeEvent, findHost, resolveSitePath } from "./sites.ts";
 import { SyncWorker } from "./sync.ts";
@@ -109,12 +110,14 @@ async function harness(opts: { retryBackoff?: number } = {}) {
   // The default fallbacks are real Blossom servers; no test may touch them.
   await settings.update({ blossom_fallback_servers: [] }, PUBKEY);
   const log = new Logger("error");
+  const serveCache = new ServeCache(db);
   // Retries are instant unless a test is about the backoff itself.
   const worker = new SyncWorker({
     db,
     blobs,
     nostr: fakeNostr(),
     settings,
+    serveCache,
     log,
     retryBackoff: opts.retryBackoff ?? 0,
   });
@@ -129,7 +132,7 @@ async function harness(opts: { retryBackoff?: number } = {}) {
 
   await worker.start();
 
-  return { db, blobs, settings, worker };
+  return { db, blobs, settings, worker, serveCache };
 }
 
 /** Point a hostname at one of PUBKEY's sites. */
@@ -161,6 +164,25 @@ async function eventually(check: () => Promise<boolean>, message: string): Promi
 
   assert.fail(message);
 }
+
+test("a finished deploy is served without waiting out the cache", async () => {
+  const files = { "/index.html": "<h1>fresh</h1>" };
+  const server = blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
+  const { worker, serveCache } = await harness();
+
+  // Prime the cache while the host has nothing to serve.
+  const before = await serveCache.lookup("docs.example.com");
+  assert.ok(before);
+  assert.equal(before.version, undefined);
+
+  const event = manifest(files, { servers: [server.url] });
+  await worker.ingest(event);
+  await worker.whenIdle();
+
+  // No TTL to wait out: completing the deploy cleared the cache.
+  const after = await serveCache.lookup("docs.example.com");
+  assert.equal(after?.version?.event_id, event.id);
+});
 
 test("downloads every blob before a version becomes servable", async () => {
   const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };

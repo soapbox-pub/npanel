@@ -7,6 +7,7 @@ import { isSiteManifest, manifestAddress } from "./manifest.ts";
 import { isCompressible } from "./mime.ts";
 import { type NostrService, blobUrl } from "./nostr.ts";
 import { type NsiteAddress, SITE_KINDS } from "./nsite-address.ts";
+import type { ServeCache } from "./serve-cache.ts";
 import type { SettingsService } from "./settings.ts";
 import { listConfiguredSites, newestEvent, parseStoredEvent, storeManifest } from "./sites.ts";
 
@@ -24,6 +25,8 @@ export interface SyncWorkerDeps {
   blobs: BlobStore;
   nostr: NostrService;
   settings: SettingsService;
+  /** Cleared when a deploy becomes servable, so requests see it at once. */
+  serveCache: ServeCache;
   log: Logger;
   /** Overrides {@link RETRY_BACKOFF}, so tests don't have to wait one out. */
   retryBackoff?: number;
@@ -55,6 +58,7 @@ export class SyncWorker {
   private readonly blobs: BlobStore;
   private readonly nostr: NostrService;
   private readonly settings: SettingsService;
+  private readonly serveCache: ServeCache;
   private readonly log: Logger;
   private readonly retryBackoff: number;
 
@@ -78,6 +82,7 @@ export class SyncWorker {
     this.blobs = deps.blobs;
     this.nostr = deps.nostr;
     this.settings = deps.settings;
+    this.serveCache = deps.serveCache;
     this.log = deps.log;
     this.retryBackoff = deps.retryBackoff ?? RETRY_BACKOFF;
   }
@@ -760,6 +765,9 @@ export class SyncWorker {
 
     if (status === "ready") {
       this.attempts.delete(eventId);
+      // The newest ready version may just have changed; serving must not keep
+      // answering with the old one until the cache's TTL runs out.
+      this.serveCache.clear();
       this.log.info("deploy_ready", { event_id: eventId });
       await this.writeDeployLog(eventId, "info", "deploy_ready");
     } else {

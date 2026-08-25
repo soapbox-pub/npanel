@@ -14,6 +14,7 @@ import type { Database, UserRole } from "../db/schema.ts";
 import { type DnsResolver, DnsTargets } from "../dns.ts";
 import { Logger } from "../log.ts";
 import type { NostrService } from "../nostr.ts";
+import { ServeCache } from "../serve-cache.ts";
 import { createSiteServer } from "../serve-site.ts";
 import { SettingsService } from "../settings.ts";
 import { SiteCsp } from "../site-csp.ts";
@@ -79,6 +80,8 @@ export interface Harness {
   settings: SettingsService;
   sync: SyncWorker;
   blobs: BlobStore;
+  /** Serving's cache. A test that writes host rows directly must clear it. */
+  serveCache: ServeCache;
   app: Hono;
   dashboardDir: string;
   /** Add a user to the database so their requests are authorized. */
@@ -110,8 +113,17 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const settings = await SettingsService.load(db);
   const blobs = new BlobStore(join(dir, "blobs"));
   const log = new Logger("error");
+  const serveCache = new ServeCache(db);
   // No test should sit through a retry's backoff.
-  const sync = new SyncWorker({ db, blobs, nostr: opts.nostr ?? fakeNostr(), settings, log, retryBackoff: 0 });
+  const sync = new SyncWorker({
+    db,
+    blobs,
+    nostr: opts.nostr ?? fakeNostr(),
+    settings,
+    serveCache,
+    log,
+    retryBackoff: 0,
+  });
   const dns = new DnsTargets({
     dashboardHost: DASHBOARD_HOST,
     settings,
@@ -120,10 +132,10 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   });
 
   const siteCsp = new SiteCsp(db, blobs, log);
-  const serveSite = createSiteServer({ db, blobs, siteCsp, log });
+  const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
   // Inert unless a test turns `tor_enabled` on: with no control connection its
   // reconciles return immediately and it binds no port.
-  const tor = new TorService({ db, settings, log, serveSite });
+  const tor = new TorService({ db, settings, log, serveSite, serveCache });
 
   const app = createApp({
     db,
@@ -134,6 +146,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     log,
     tor,
     siteCsp,
+    serveCache,
     serveSite,
     dashboardHost: DASHBOARD_HOST,
     dashboardDir,
@@ -144,6 +157,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     settings,
     sync,
     blobs,
+    serveCache,
     app,
     dashboardDir,
 

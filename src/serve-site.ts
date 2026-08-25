@@ -7,14 +7,17 @@ import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./nip05.ts";
 import { encodeNaddr } from "./nsite-address.ts";
+import type { ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
-import { type ServedHost, activeEvent, findHost, resolveSitePath } from "./sites.ts";
+import { type ServedHost, resolveSitePath } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
   /** Reads the policy a site declares for itself. Shared, so its cache is. */
   siteCsp: SiteCsp;
+  /** Answers the host and version lookups every request opens with. */
+  serveCache: ServeCache;
   log: Logger;
 }
 
@@ -97,7 +100,7 @@ export const CSP = [
  * every relay and Blossom server it came from is offline.
  */
 export function createSiteServer(deps: SiteServerDeps): SiteServer {
-  const { db, blobs, siteCsp, log } = deps;
+  const { db, blobs, siteCsp, serveCache, log } = deps;
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -109,7 +112,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     const apex = wwwApex(origin.hostname);
     if (!apex) return undefined;
 
-    const host = await findHost(db, apex);
+    const host = (await serveCache.lookup(apex))?.host;
     if (!host || host.enabled !== 1 || host.redirect_www !== 1) return undefined;
 
     const location = `${origin.scheme}://${apex}${url.pathname}${url.search}`;
@@ -133,12 +136,13 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
   async function handle(request: Request, origin: RequestOrigin): Promise<Response> {
     // Parsed once for everything below; three callees want the path.
     const url = new URL(request.url);
-    const host = await findHost(db, origin.hostname);
 
-    // Resolved here rather than inside `respond`, because the policy below is
-    // the version's and applies to every answer this host gives — including
-    // the ones that never reach a file.
-    const version = host?.enabled === 1 ? await activeEvent(db, host) : undefined;
+    // Both answers in one cache lookup. The version comes along because the
+    // policy below is the version's and applies to every answer this host
+    // gives — including the ones that never reach a file.
+    const site = await serveCache.lookup(origin.hostname);
+    const host = site?.host;
+    const version = site?.version;
     const response = await respond(request, url, origin, host, version);
 
     // On unless this one site turned it off. A hostname with no host row has

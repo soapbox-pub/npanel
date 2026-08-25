@@ -2,6 +2,7 @@ import type { Kysely } from "kysely";
 import type { Database } from "./db/schema.ts";
 import { isOnionAddress, requestHostname } from "./hostname.ts";
 import { type Logger, errFields } from "./log.ts";
+import type { ServeCache } from "./serve-cache.ts";
 import type { SiteServer } from "./serve-site.ts";
 import type { SettingsService } from "./settings.ts";
 import { type OnionKey, TorControl } from "./tor-control.ts";
@@ -39,6 +40,8 @@ export interface TorServiceDeps {
   log: Logger;
   /** The same site server the public listener uses. */
   serveSite: SiteServer;
+  /** Cleared when an onion is minted, so serving learns the new address. */
+  serveCache: ServeCache;
   /** First wait before retrying an unreachable Tor. Tests set it to zero. */
   retryBackoff?: number;
 }
@@ -82,6 +85,7 @@ export class TorService {
   private readonly settings: SettingsService;
   private readonly log: Logger;
   private readonly serveSite: SiteServer;
+  private readonly serveCache: ServeCache;
   private readonly retryMin: number;
 
   private server: OnionServer | undefined;
@@ -103,6 +107,7 @@ export class TorService {
     this.settings = deps.settings;
     this.log = deps.log;
     this.serveSite = deps.serveSite;
+    this.serveCache = deps.serveCache;
     this.retryMin = deps.retryBackoff ?? RETRY_MIN;
     this.retryDelay = this.retryMin;
   }
@@ -304,6 +309,9 @@ export class TorService {
           created_at: Math.floor(Date.now() / 1000),
         })
         .execute();
+
+      // The lookup for this host now answers with the onion address too.
+      this.serveCache.clear();
     }
 
     this.live.set(host.id, key);

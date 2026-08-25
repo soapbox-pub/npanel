@@ -8,6 +8,7 @@ import { openDatabase } from "./db/index.ts";
 import { DnsTargets } from "./dns.ts";
 import { Logger, errFields } from "./log.ts";
 import { NostrService } from "./nostr.ts";
+import { ServeCache } from "./serve-cache.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SiteCsp } from "./site-csp.ts";
@@ -27,12 +28,15 @@ const db = await openDatabase(config.databasePath, log);
 const settings = await SettingsService.load(db, log);
 const blobs = new BlobStore(config.blobsDir);
 const nostr = new NostrService(settings, log);
-const sync = new SyncWorker({ db, blobs, nostr, settings, log });
+// One instance: serving reads it, and every writer that changes what serving
+// would answer — the hosts API, the sync worker, Tor — clears it.
+const serveCache = new ServeCache(db);
+const sync = new SyncWorker({ db, blobs, nostr, settings, serveCache, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 // One instance, so the serving path and the dashboard share its cache.
 const siteCsp = new SiteCsp(db, blobs, log);
-const serveSite = createSiteServer({ db, blobs, siteCsp, log });
-const tor = new TorService({ db, settings, log, serveSite });
+const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
+const tor = new TorService({ db, settings, log, serveSite, serveCache });
 
 await sync.start();
 
@@ -58,6 +62,7 @@ const app = createApp({
   log,
   tor,
   siteCsp,
+  serveCache,
   serveSite,
   dashboardHost: config.dashboardHost,
   dashboardDir: join(dirname(fileURLToPath(import.meta.url)), "..", "dashboard", "dist"),

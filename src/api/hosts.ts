@@ -49,7 +49,7 @@ const grantsSchema = z.object({
 
 /** Routes for the hostname → nsite mappings that are npanel's whole point. */
 export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
-  const { db, settings, sync, tor, log } = deps;
+  const { db, settings, sync, tor, serveCache, log } = deps;
   const app = new Hono<ApiEnv>();
 
   app.get("/", async (c) => {
@@ -138,6 +138,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     log.info("host_created", { hostname, pubkey: address.pubkey, actor: user.pubkey });
 
+    // Before the response, so the row staff were just told about is served.
+    serveCache.clear();
     void sync.hostsChanged();
     void tor.hostsChanged();
 
@@ -263,6 +265,8 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     log.info("host_updated", { hostname: host.hostname, actor: user.pubkey });
 
+    serveCache.clear();
+
     if (patch.pubkey || patch.enabled !== undefined) {
       void sync.hostsChanged();
     }
@@ -291,6 +295,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     log.info("host_deleted", { hostname: host.hostname, actor: user.pubkey });
 
+    serveCache.clear();
     void sync.hostsChanged();
     void tor.hostsChanged();
 

@@ -5,6 +5,7 @@ import type { Database, Host } from "../db/schema.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
+import type { ServeCache } from "../serve-cache.ts";
 import { CSP } from "../serve-site.ts";
 import type { SettingsService } from "../settings.ts";
 import type { SiteCsp } from "../site-csp.ts";
@@ -23,6 +24,8 @@ export interface ApiDeps {
   tor: TorService;
   /** Shared with the serving path, so both answer with the same policy. */
   siteCsp: SiteCsp;
+  /** Serving's per-hostname cache. Every host write here must clear it. */
+  serveCache: ServeCache;
   dashboardHost: string;
 }
 
