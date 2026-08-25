@@ -601,13 +601,12 @@ only over HTTPS — on a plain-HTTP hop anything in the path could rewrite it an
 point the visitor at an onion of its own choosing. Requests that already arrived
 over Tor never carry it.
 
-Every site response is readable from any origin: `Access-Control-Allow-Origin`
-is always `*`, and `Access-Control-Expose-Headers` covers `ETag` and
-`X-Nsite-Addr` along with `Accept-Ranges`, `Content-Range`, and
-`Content-Length`, so a cross-origin `fetch` can revalidate and resume like a
-same-origin one.
-Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing to
-configure — a site is public files with no credential attached.
+Every site response is readable from any origin, headers included:
+`Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` are both `*`,
+so a cross-origin `fetch` can revalidate against the `ETag`, resume from a
+`Content-Range`, and read `X-Nsite-Addr` or `Onion-Location` like a same-origin
+one. Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing
+to configure — a site is public files with no credential attached.
 
 ### `/.well-known/nostr.json`
 

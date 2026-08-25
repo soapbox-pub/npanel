@@ -268,11 +268,9 @@ test("any origin may read a site", async () => {
   });
 
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
-  // Without these a cross-origin fetch cannot revalidate or resume.
-  const exposed = response.headers.get("access-control-expose-headers") ?? "";
-  assert.match(exposed, /etag/);
-  assert.match(exposed, /content-range/);
-  assert.match(exposed, /x-nsite-addr/);
+  // Without this a cross-origin fetch sees only the CORS safelist, and cannot
+  // read the `ETag` to revalidate with or the `Content-Range` to resume from.
+  assert.equal(response.headers.get("access-control-expose-headers"), "*");
 });
 
 test("error and redirect responses carry CORS headers too", async () => {

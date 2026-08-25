@@ -57,15 +57,6 @@ const ASSET_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 /** Extensions whose contents are the site itself, rather than its assets. */
 const DOCUMENT_TYPES = new Set([".html", ".htm", ".xhtml", ".json", ".webmanifest", ".xml", ".txt", ".md"]);
 
-/**
- * Response headers a cross-origin script may read.
- *
- * CORS otherwise hides everything outside its safelist, which is small enough
- * that a `fetch` could not read the `ETag` to revalidate with, or the
- * `Content-Range` to resume a download from.
- */
-const EXPOSED_HEADERS = ["accept-ranges", "content-length", "content-range", "etag", "x-nsite-addr"].join(", ");
-
 /** How long a browser may reuse a preflight result, in seconds. */
 const PREFLIGHT_MAX_AGE = "86400";
 
@@ -374,7 +365,15 @@ function advertiseOnion(
  */
 function allowCrossOrigin(headers: Headers): void {
   headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-expose-headers", EXPOSED_HEADERS);
+
+  // Every header, rather than the handful a `fetch` needs today. CORS hides
+  // everything outside a safelist too small to revalidate an `ETag` or resume
+  // from a `Content-Range`, and a list of exceptions drifts from what the
+  // responses actually set — as it did for `Onion-Location`. The wildcard
+  // degrades to a literal header name on a credentialed request, which is moot
+  // here: the `*` above already refuses those, and a site has no credential to
+  // send anyway.
+  headers.set("access-control-expose-headers", "*");
 }
 
 /**
