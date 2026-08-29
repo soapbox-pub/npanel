@@ -13,18 +13,24 @@ import type { RequestOrigin } from "./serve-site.ts";
 
 const ORIGIN: RequestOrigin = { hostname: "docs.example.com", scheme: "https" };
 
-test("canonicalPath collapses index.html into its directory and nothing else", () => {
+test("canonicalPath prefers the clean URL a site links to", () => {
   assert.equal(canonicalPath("/index.html"), "/");
   assert.equal(canonicalPath("/blog/index.html"), "/blog/");
   assert.equal(canonicalPath("/a/b/index.html"), "/a/b/");
 
-  // The manifest's own spelling is the author's; rewriting `.html` away would
-  // be a guess about somebody else's site.
-  assert.equal(canonicalPath("/self-hosting.html"), "/self-hosting.html");
-  assert.equal(canonicalPath("/404.html"), "/404.html");
+  // What a `cleanUrls` build publishes, against what it links to.
+  assert.equal(canonicalPath("/self-hosting.html"), "/self-hosting");
+  assert.equal(canonicalPath("/docs/hacking.html"), "/docs/hacking");
 
   // A file that merely ends in the letters is not an index of anything.
-  assert.equal(canonicalPath("/reindex.html"), "/reindex.html");
+  assert.equal(canonicalPath("/reindex.html"), "/reindex");
+
+  // `.htm` has no sibling step in path resolution, so stripping it would name
+  // a URL that 404s.
+  assert.equal(canonicalPath("/legacy.htm"), "/legacy.htm");
+
+  // Assets are never canonicalized, but the function still leaves them alone.
+  assert.equal(canonicalPath("/app.js"), "/app.js");
 });
 
 test("canonicalLink names one spelling for every way a page is reached", () => {
@@ -38,12 +44,16 @@ test("canonicalLink names one spelling for every way a page is reached", () => {
   const root = { path: "/index.html", status: 200 };
   assert.equal(canonicalLink(ORIGIN, "/", root), `<https://docs.example.com/>; rel="canonical"`);
 
-  // A clean-URL request canonicalizes to the file the manifest names.
+  // Both spellings of a `cleanUrls` page name the clean one — including the
+  // request that asked for the file, which is the direction that dedupes.
   const page = { path: "/self-hosting.html", status: 200 };
-  assert.equal(
-    canonicalLink(ORIGIN, "/self-hosting", page),
-    `<https://docs.example.com/self-hosting.html>; rel="canonical"`,
-  );
+  const clean = `<https://docs.example.com/self-hosting>; rel="canonical"`;
+  assert.equal(canonicalLink(ORIGIN, "/self-hosting", page), clean);
+  assert.equal(canonicalLink(ORIGIN, "/self-hosting.html", page), clean);
+
+  // `.htm` keeps its extension, since that is the only URL that serves it.
+  const legacy = { path: "/legacy.htm", status: 200 };
+  assert.equal(canonicalLink(ORIGIN, "/legacy.htm", legacy), `<https://docs.example.com/legacy.htm>; rel="canonical"`);
 });
 
 test("canonicalLink is withheld where it would mislead", () => {

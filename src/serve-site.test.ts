@@ -1214,7 +1214,8 @@ test("a site that ships no sitemap gets one generated from its file list", async
   const body = await response.text();
   assert.match(body, /<loc>https:\/\/docs\.example\.com\/<\/loc>/);
   assert.match(body, /<loc>https:\/\/docs\.example\.com\/blog\/<\/loc>/);
-  assert.match(body, /<loc>https:\/\/docs\.example\.com\/self-hosting\.html<\/loc>/);
+  // The clean URL the site links to, not the file it published.
+  assert.match(body, /<loc>https:\/\/docs\.example\.com\/self-hosting<\/loc>/);
 
   // Assets are not pages, and nobody is invited to the not-found page.
   assert.doesNotMatch(body, /app\.js/);
@@ -1273,7 +1274,10 @@ test("every spelling of a page carries the same canonical URL", async () => {
   for (const path of ["/blog", "/blog/", "/blog/index.html"]) {
     assert.equal(await canonical(path), `<https://docs.example.com/blog/>; rel="canonical"`, path);
   }
-  assert.equal(await canonical("/self-hosting"), `<https://docs.example.com/self-hosting.html>; rel="canonical"`);
+  // Both ways of asking for a `cleanUrls` page settle on the clean one.
+  for (const path of ["/self-hosting", "/self-hosting.html"]) {
+    assert.equal(await canonical(path), `<https://docs.example.com/self-hosting>; rel="canonical"`, path);
+  }
 
   // Not on an asset, and not on a page that isn't one.
   assert.equal(await canonical("/app.js"), null);

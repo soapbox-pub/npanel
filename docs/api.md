@@ -319,10 +319,14 @@ search engines, and defaults to `true` — including for hosts created before th
 flag existed. A `/sitemap.xml` is generated from the version's file list, and a
 `/robots.txt` naming it, each only when the site published no file at that
 exact path. And every page response carries a `Link: rel="canonical"` header
-naming its one URL, so `/foo`, `/foo/`, and `/foo/index.html` are indexed as
-one page rather than three competing copies. Turn it off for a site that
-manages canonical URLs itself — one that declares `<link rel="canonical">` tags
-of its own would be contradicted by the header.
+naming its one URL, so `/foo`, `/foo/`, `/foo.html` and `/foo/index.html` are
+indexed as one page rather than four competing copies. The URL named is the
+clean one: `.html` comes off and `index.html` collapses into its directory,
+which is both what site generators link to and always servable here, since an
+extensionless path resolves to its `.html` sibling. `.htm` is left alone, as
+it has no such step. Turn the flag off for a site that manages canonical URLs
+itself — one that declares `<link rel="canonical">` tags of its own would be
+contradicted by the header.
 
 `robots.txt` is the one file npanel will add to rather than only stand in for.
 A site that published one naming no sitemap gets npanel's `Sitemap:` line

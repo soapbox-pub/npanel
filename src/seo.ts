@@ -23,14 +23,26 @@ const MAX_SITEMAP_URLS = 50_000;
 /**
  * The one canonical spelling of a served file's URL path.
  *
- * `index.html` collapses into its directory, because `/foo`, `/foo/`, and
- * `/foo/index.html` all serve the same bytes here and a crawler scores them as
- * three competing pages. Every other path keeps the manifest's own spelling —
- * rewriting `/foo.html` to `/foo` would be a guess about somebody else's site.
+ * Extensions come off: `/foo`, `/foo/`, `/foo.html` and `/foo/index.html` can
+ * all serve the same bytes here, and a crawler scores them as competing pages.
+ * The clean form is the one to keep, because it is the one static site
+ * generators link to — VitePress with `cleanUrls` publishes `hacking.html` and
+ * links to `/hacking` throughout, names that URL in its own sitemap, and puts
+ * it in the page's `og:url`. Naming the file instead would have npanel
+ * contradicting the site about its own address.
+ *
+ * It is also always servable, which is what makes this safe rather than a
+ * guess: {@link file://./sites.ts} resolves an extensionless path to its
+ * `.html` sibling for exactly this reason.
+ *
+ * Only `.html`, and not `.htm`, since only the former has that sibling step.
  */
 export function canonicalPath(filePath: string): string {
   if (filePath.endsWith("/index.html")) {
     return filePath.slice(0, -"index.html".length);
+  }
+  if (filePath.endsWith(".html")) {
+    return filePath.slice(0, -".html".length);
   }
   return filePath;
 }

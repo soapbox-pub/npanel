@@ -355,10 +355,17 @@ link preview. What is cached is the *file*, never the finished body — the
 boilerplate blob must each get their own.
 
 Page responses carry a `Link: rel="canonical"` header naming the one spelling
-of the page — `index.html` collapses into its directory, everything else keeps
-the manifest's own spelling — so `/foo`, `/foo/`, and `/foo/index.html` are
-indexed as one page rather than three competing copies. The sitemap uses the
-same function, so the two can't disagree. The header is only sent when the
+of the page, so `/foo`, `/foo/`, `/foo.html` and `/foo/index.html` are indexed
+as one page rather than four competing copies. The spelling kept is the clean
+one — extensions come off, and `index.html` collapses into its directory —
+because that is the URL static site generators actually link to: a VitePress
+build with `cleanUrls` publishes `hacking.html`, links to `/hacking`
+throughout, names that URL in its own sitemap and puts it in the page's
+`og:url`. Naming the file instead had npanel contradicting sites about their
+own addresses. It is safe rather than a guess because the clean URL is always
+servable here — resolution tries a `.html` sibling for exactly this reason —
+and only `.html` is stripped, since `.htm` has no such step. The sitemap uses
+the same function, so the two can't disagree. The header is only sent when the
 request path actually spells the file it resolved to, which keeps it off
 SPA-mode fallbacks: a shell answering for `/any/client/route` with a canonical
 of `/` would tell crawlers the whole app is one page.
