@@ -454,6 +454,27 @@ test("the SPA flag is off unless asked for", async () => {
   assert.equal((await upfront.json()).host.spa, true);
 });
 
+test("the seo flag is on unless turned off", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+  assert.equal(host.seo, true, "generated sitemaps and canonical URLs cost a site nothing");
+
+  const off = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { seo: false });
+  assert.equal((await off.json()).host.seo, false);
+
+  const upfront = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "app.example.com",
+    address: NPUB,
+    seo: false,
+  });
+  assert.equal((await upfront.json()).host.seo, false);
+});
+
 test("a listed site describes itself with its own page metadata", async () => {
   const { harness, admin } = await setup();
 

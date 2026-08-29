@@ -55,6 +55,8 @@ export interface HostsTable {
   spa: Generated<number>;
   /** 0/1. Serve this site under a `Content-Security-Policy`. On unless turned off. */
   csp: Generated<number>;
+  /** 0/1. Generate sitemap.xml, robots.txt, and canonical URLs. On unless turned off. */
+  seo: Generated<number>;
   created_by: string;
   created_at: number;
   updated_at: number;

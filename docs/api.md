@@ -158,6 +158,7 @@ A host object:
   "csp": true,
   "csp_policy": "default-src 'none'; script-src 'self'; …",
   "csp_source": "gateway",
+  "seo": true,
   "onion": "abc…xyz.onion",
   "pinned_event_id": null,
   "created_by": "<hex>",
@@ -209,7 +210,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -239,6 +240,7 @@ Any subset of:
   "redirect_www": true,
   "spa": true,
   "csp": false,
+  "seo": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -311,6 +313,17 @@ inline `<script>` blocks and CDN scripts, and the script silently doesn't run �
 and that can't be rebuilt or given a policy of its own. It is scoped to the one
 site: there is no instance-wide switch, so turning it off for the site that
 needs it can't accidentally disarm the rest.
+
+`seo` decides whether npanel does three things for the site's standing in
+search engines, and defaults to `true` — including for hosts created before the
+flag existed. A `/sitemap.xml` is generated from the version's file list and a
+`/robots.txt` pointing at it, each only when the site published no file at that
+exact path — a site's own is always served untouched. And every page response
+carries a `Link: rel="canonical"` header naming its one URL, so `/foo`,
+`/foo/`, and `/foo/index.html` are indexed as one page rather than three
+competing copies. Turn it off for a site that manages canonical URLs itself —
+one that declares `<link rel="canonical">` tags of its own would be
+contradicted by the header.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A

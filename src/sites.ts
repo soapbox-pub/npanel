@@ -155,7 +155,7 @@ export async function resolveSitePath(
   requestPath: string,
   options: { spa?: boolean } = {},
 ): Promise<ResolvedFile | undefined> {
-  const normalized = join("/", decodePath(requestPath));
+  const normalized = normalizeSitePath(requestPath);
   const extensionless = extname(normalized) === "";
   const htmlPath = extensionless && normalized !== "/" ? `${normalized}.html` : undefined;
   const indexPath = extensionless ? join(normalized, "index.html") : undefined;
@@ -287,6 +287,15 @@ export async function storeManifest(
 /** Parse a stored event row back into a Nostr event. */
 export function parseStoredEvent(row: SiteEvent): NostrEvent {
   return JSON.parse(row.event) as NostrEvent;
+}
+
+/**
+ * A request path as resolution sees it: percent-decoded and rooted, so it can
+ * be compared against the paths `site_files` stores. Shared with the canonical
+ * header, which has to ask whether a request spelled the file it was served.
+ */
+export function normalizeSitePath(requestPath: string): string {
+  return join("/", decodePath(requestPath));
 }
 
 /** Percent-decode a request path, tolerating malformed escapes. */

@@ -6,7 +6,8 @@ import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./nip05.ts";
-import type { CachedSite, ServeCache } from "./serve-cache.ts";
+import { canonicalLink, robotsTxt, sitemapPaths, sitemapXml, versionDate } from "./seo.ts";
+import type { CachedSite, CachedVersion, ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
 import { SitePaths } from "./site-paths.ts";
 import type { ServedHost } from "./sites.ts";
@@ -209,6 +210,50 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
   }
 
+  /**
+   * The generated `sitemap.xml` or `robots.txt` a site gets when it published
+   * neither.
+   *
+   * Everything in them is already npanel's to say: the version's file list,
+   * when it deployed, and the hostname it is served at. Built per request so
+   * two hosts serving one nsite each name their own URLs; the sitemap still
+   * carries an `ETag` of the version it describes, since its content changes
+   * only when a deploy does.
+   */
+  async function seoFallback(
+    request: Request,
+    url: URL,
+    origin: RequestOrigin,
+    version: CachedVersion,
+  ): Promise<Response> {
+    const robots = url.pathname === "/robots.txt";
+    const body = UTF8.encode(
+      robots
+        ? robotsTxt(origin)
+        : sitemapXml(origin, await sitemapPaths(db, version.event.event_id), versionDate(version.event)),
+    );
+
+    const headers = new Headers({
+      "content-type": robots ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8",
+      // Long enough that crawlers polling robots.txt don't cost anything,
+      // short enough that a deploy's new sitemap is seen the same hour.
+      "cache-control": "public, max-age=3600",
+      "content-length": String(body.byteLength),
+    });
+
+    if (!robots) {
+      const etag = `"${version.event.event_id}-sitemap"`;
+      headers.set("etag", etag);
+      if (matchesEtag(request.headers.get("if-none-match"), etag)) {
+        return new Response(null, { status: 304, headers });
+      }
+    }
+
+    log.debug("site_seo_fallback", { hostname: origin.hostname, path: url.pathname });
+
+    return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
+  }
+
   async function respond(
     request: Request,
     url: URL,
@@ -256,6 +301,16 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
     const file = await sitePaths.resolve(version.event.event_id, url.pathname, { spa: host.spa === 1 });
 
+    // Generated only where the site published no such file — the same
+    // shadow-only-if-absent rule as `nostr.json`, in reverse. Both paths have
+    // extensions, so resolution is exact match or nothing: `undefined` and the
+    // not-found page standing in both mean the site has no file here.
+    if (host.seo !== 0 && (url.pathname === "/sitemap.xml" || url.pathname === "/robots.txt")) {
+      if (!file || file.status === 404) {
+        return await seoFallback(request, url, origin, version);
+      }
+    }
+
     if (!file) {
       log.debug("site_path_missing", { hostname, path: url.pathname });
       return text(404, "Not found.");
@@ -289,6 +344,13 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
     if (encoding) {
       headers.set("content-encoding", encoding);
+    }
+
+    // Names the one spelling of this page, so `/foo`, `/foo/`, and
+    // `/foo/index.html` score as one page instead of three competing copies.
+    if (host.seo !== 0) {
+      const canonical = canonicalLink(origin, url.pathname, file);
+      if (canonical) headers.set("link", canonical);
     }
 
     if (matchesEtag(request.headers.get("if-none-match"), etag)) {

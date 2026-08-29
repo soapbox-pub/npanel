@@ -1182,3 +1182,133 @@ test("a blob range is served inclusively, as HTTP counts it", async () => {
 
   assert.equal(Buffer.concat(chunks).toString("utf8"), "2345");
 });
+
+/** A harness serving a small multi-page site, for the SEO fallbacks. */
+async function seoSite(opts: { spa?: boolean; files?: Record<string, string> } = {}) {
+  return await setup({
+    spa: opts.spa,
+    versions: [
+      {
+        eventId: "a".repeat(64),
+        files: opts.files ?? {
+          "/index.html": "root",
+          "/blog/index.html": "blog",
+          "/self-hosting.html": "page",
+          "/app.js": "code",
+          "/404.html": "missing",
+        },
+      },
+    ],
+  });
+}
+
+test("a site that ships no sitemap gets one generated from its file list", async () => {
+  const { harness } = await seoSite();
+
+  const response = await harness.site("docs.example.com", "/sitemap.xml");
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/xml; charset=utf-8");
+  assert.equal(response.headers.get("etag"), `"${"a".repeat(64)}-sitemap"`);
+
+  const body = await response.text();
+  assert.match(body, /<loc>https:\/\/docs\.example\.com\/<\/loc>/);
+  assert.match(body, /<loc>https:\/\/docs\.example\.com\/blog\/<\/loc>/);
+  assert.match(body, /<loc>https:\/\/docs\.example\.com\/self-hosting\.html<\/loc>/);
+
+  // Assets are not pages, and nobody is invited to the not-found page.
+  assert.doesNotMatch(body, /app\.js/);
+  assert.doesNotMatch(body, /404\.html/);
+});
+
+test("the generated sitemap revalidates against its version", async () => {
+  const { harness } = await seoSite();
+
+  const response = await harness.site("docs.example.com", "/sitemap.xml", {
+    headers: { "if-none-match": `"${"a".repeat(64)}-sitemap"` },
+  });
+
+  assert.equal(response.status, 304);
+  assert.equal(await response.text(), "");
+});
+
+test("a site that ships no robots.txt gets one naming the sitemap", async () => {
+  const { harness } = await seoSite();
+
+  const response = await harness.site("docs.example.com", "/robots.txt");
+  assert.equal(response.status, 200);
+
+  const body = await response.text();
+  assert.match(body, /User-agent: \*/);
+  assert.match(body, /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml/);
+
+  // The 404 page stands in for a missing path elsewhere, but standing in is
+  // not the site having published a robots.txt.
+  assert.doesNotMatch(body, /missing/);
+
+  const head = await harness.site("docs.example.com", "/robots.txt", { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("content-length"), String(body.length));
+});
+
+test("a site's own sitemap.xml and robots.txt are served untouched", async () => {
+  const { harness } = await seoSite({
+    files: {
+      "/index.html": "root",
+      "/sitemap.xml": "<urlset>mine</urlset>",
+      "/robots.txt": "User-agent: *\nDisallow: /",
+    },
+  });
+
+  assert.equal(await (await harness.site("docs.example.com", "/sitemap.xml")).text(), "<urlset>mine</urlset>");
+  assert.equal(await (await harness.site("docs.example.com", "/robots.txt")).text(), "User-agent: *\nDisallow: /");
+});
+
+test("every spelling of a page carries the same canonical URL", async () => {
+  const { harness } = await seoSite();
+  const canonical = async (path: string) => (await harness.site("docs.example.com", path)).headers.get("link");
+
+  assert.equal(await canonical("/"), `<https://docs.example.com/>; rel="canonical"`);
+  for (const path of ["/blog", "/blog/", "/blog/index.html"]) {
+    assert.equal(await canonical(path), `<https://docs.example.com/blog/>; rel="canonical"`, path);
+  }
+  assert.equal(await canonical("/self-hosting"), `<https://docs.example.com/self-hosting.html>; rel="canonical"`);
+
+  // Not on an asset, and not on a page that isn't one.
+  assert.equal(await canonical("/app.js"), null);
+  assert.equal(await canonical("/nope"), null);
+});
+
+test("an SPA fallback carries no canonical", async () => {
+  const { harness } = await seoSite({ spa: true, files: { "/index.html": "shell" } });
+
+  // The shell answering for a client route: naming a canonical here would
+  // tell crawlers the whole app is one page.
+  const deep = await harness.site("docs.example.com", "/users/alex");
+  assert.equal(deep.status, 200);
+  assert.equal(deep.headers.get("link"), null);
+
+  // The shell's own URL is still a page.
+  const root = await harness.site("docs.example.com", "/");
+  assert.equal(root.headers.get("link"), `<https://docs.example.com/>; rel="canonical"`);
+});
+
+test("the seo flag turns all of it off for one host", async () => {
+  const { harness, hostId } = await seoSite();
+
+  await harness.db.updateTable("hosts").set({ seo: 0 }).where("id", "=", hostId).execute();
+  harness.serveCache.clear();
+
+  // The paths fall back to resolving like any other, which here means the
+  // site's own 404 page.
+  assert.equal((await harness.site("docs.example.com", "/sitemap.xml")).status, 404);
+  assert.equal((await harness.site("docs.example.com", "/robots.txt")).status, 404);
+  assert.equal((await harness.site("docs.example.com", "/")).headers.get("link"), null);
+});
+
+test("no version means no sitemap to generate", async () => {
+  const { harness } = await setup();
+
+  assert.equal((await harness.site("docs.example.com", "/sitemap.xml")).status, 503);
+});

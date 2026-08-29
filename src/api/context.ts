@@ -174,6 +174,11 @@ export interface HostView {
    */
   csp_source: "site" | "gateway" | "off";
   /**
+   * Whether npanel generates a sitemap.xml and robots.txt where the site
+   * publishes neither, and marks the canonical URL of every page.
+   */
+  seo: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or has not published it
    * yet. Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -226,6 +231,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
     csp: host.csp === 1,
     csp_policy: host.csp === 1 ? (declared ?? CSP) : null,
     csp_source: host.csp !== 1 ? "off" : declared ? "site" : "gateway",
+    seo: host.seo === 1,
     onion: onion?.address ?? null,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,

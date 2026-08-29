@@ -29,6 +29,8 @@ const createSchema = z.object({
   spa: z.boolean().optional(),
   /** Serve this site under a Content-Security-Policy. On unless asked otherwise. */
   csp: z.boolean().optional(),
+  /** Generate sitemap.xml, robots.txt, and canonical URLs. On unless asked otherwise. */
+  seo: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -39,6 +41,7 @@ const updateSchema = z.object({
   redirect_www: z.boolean().optional(),
   spa: z.boolean().optional(),
   csp: z.boolean().optional(),
+  seo: z.boolean().optional(),
   /** Event id to pin, or null to follow the newest ready version. */
   pinned_event_id: z.string().nullable().optional(),
 });
@@ -116,6 +119,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         redirect_www: body.data.redirect_www === false ? 0 : 1,
         spa: body.data.spa ? 1 : 0,
         csp: body.data.csp === false ? 0 : 1,
+        seo: body.data.seo === false ? 0 : 1,
         created_by: user.pubkey,
         created_at: now,
         updated_at: now,
@@ -221,6 +225,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     if (body.data.csp !== undefined) {
       patch.csp = body.data.csp ? 1 : 0;
+    }
+
+    if (body.data.seo !== undefined) {
+      patch.seo = body.data.seo ? 1 : 0;
     }
 
     if (body.data.pinned_event_id !== undefined && body.data.address === undefined) {
@@ -500,6 +508,7 @@ function hostSummary(host: Host) {
     redirect_www: host.redirect_www,
     spa: host.spa,
     csp: host.csp,
+    seo: host.seo,
     pinned_event_id: host.pinned_event_id,
   };
 }

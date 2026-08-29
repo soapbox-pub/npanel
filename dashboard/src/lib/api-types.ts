@@ -39,6 +39,11 @@ export interface Host {
    */
   csp_source: 'site' | 'gateway' | 'off';
   /**
+   * Whether npanel generates a sitemap.xml and robots.txt where the site
+   * publishes neither, and marks the canonical URL of every page.
+   */
+  seo: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -62,6 +67,7 @@ export interface HostPatch {
   redirect_www?: boolean;
   spa?: boolean;
   csp?: boolean;
+  seo?: boolean;
   pinned_event_id?: string | null;
 }
 

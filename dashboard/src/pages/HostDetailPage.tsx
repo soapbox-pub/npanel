@@ -304,6 +304,28 @@ export function HostDetailPage() {
             </CardContent>
           </Card>
 
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Search engines</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.seo}
+                  onCheckedChange={(seo) =>
+                    patch({ seo }, seo ? 'SEO defaults on' : 'SEO defaults off')
+                  }
+                />
+                SEO defaults
+              </label>
+              <p className="text-sm text-muted-foreground">
+                {data.seo
+                  ? 'npanel generates a sitemap.xml and robots.txt when this site publishes neither, and marks the canonical URL of every page so search engines index one spelling of each. Files the site publishes itself are always served as-is.'
+                  : 'This site is served exactly as published: no generated sitemap.xml or robots.txt, and no canonical URL header. Turn this back on unless the site manages canonical URLs itself.'}
+              </p>
+            </CardContent>
+          </Card>
+
           <Card className="border-destructive/40">
             <CardHeader>
               <CardTitle className="text-base text-destructive">Danger zone</CardTitle>

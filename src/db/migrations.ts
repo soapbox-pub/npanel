@@ -288,6 +288,16 @@ const MIGRATIONS: Migration[] = [
         WHERE status = 'ready'`,
     ],
   },
+  {
+    // On for existing hosts, like the www redirect and unlike the SPA flag:
+    // everything behind it is additive. The generated sitemap.xml and
+    // robots.txt appear only where the site published neither, and the
+    // canonical header names the page it is already on — nothing a site
+    // serves changes meaning. The off switch is for the site that manages
+    // its own canonical URLs and would be contradicted.
+    name: "014_hosts_seo",
+    statements: ["ALTER TABLE hosts ADD COLUMN seo INTEGER NOT NULL DEFAULT 1"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

@@ -190,7 +190,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa, csp |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa, csp, seo |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
@@ -321,6 +321,31 @@ The `csp` flag, which defaults on, turns the header off entirely for one host �
 for a site that needs something neither policy allows. It is per host and there
 is no instance-wide equivalent, on purpose: a global off switch makes disarming
 every site at once easier than fixing the one site that needed it.
+
+Sites also get their standing with search engines looked after, from data
+npanel already holds. A site that published no `/sitemap.xml` gets one
+generated from the version's file list — its HTML paths in canonical form,
+dated by the version, carrying an `ETag` of the version's event id — and a site
+without `/robots.txt` gets one that points at the sitemap, which is how
+crawlers find it without anyone registering anything. The rule is the NIP-05
+one in reverse: only where the site published no file at that exact path, and a
+site's own `/404.html` standing in for the missing path doesn't count as
+publishing one.
+
+Page responses carry a `Link: rel="canonical"` header naming the one spelling
+of the page — `index.html` collapses into its directory, everything else keeps
+the manifest's own spelling — so `/foo`, `/foo/`, and `/foo/index.html` are
+indexed as one page rather than three competing copies. The sitemap uses the
+same function, so the two can't disagree. The header is only sent when the
+request path actually spells the file it resolved to, which keeps it off
+SPA-mode fallbacks: a shell answering for `/any/client/route` with a canonical
+of `/` would tell crawlers the whole app is one page.
+
+All three hang off the `seo` flag, per host and defaulting on like `csp`. The
+off switch exists because the canonical header is an assertion: a site that
+declares `<link rel="canonical">` tags of its own — hreflang sets, staging
+mirrors — would be contradicted by it, and npanel doesn't parse every document
+to check.
 
 Caching splits by what a file is. A site's URLs are stable across deploys while
 the blobs behind them are not, so documents are sent `no-cache` and revalidate
