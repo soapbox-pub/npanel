@@ -37,7 +37,9 @@ interface VersionOpts {
 }
 
 /** A harness with one host and, optionally, some deployed versions. */
-async function setup(opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: string; spa?: boolean } = {}) {
+async function setup(
+  opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: string; spa?: boolean; merge?: boolean } = {},
+) {
   const harness = await createHarness();
   harnesses.push(harness);
 
@@ -51,6 +53,7 @@ async function setup(opts: { enabled?: boolean; versions?: VersionOpts[]; pin?: 
       pinned_event_id: opts.pin ?? null,
       enabled: opts.enabled === false ? 0 : 1,
       spa: opts.spa ? 1 : 0,
+      merge_deployments: opts.merge ? 1 : 0,
       created_by: PUBKEY,
       created_at: 1,
       updated_at: 1,
@@ -816,6 +819,72 @@ test("serves the newest ready version, or the pinned one", async () => {
 
   const pinned = await setup({ versions, pin: "a".repeat(64) });
   assert.equal(await (await pinned.harness.site("docs.example.com", "/")).text(), "v1");
+});
+
+/** Two deploys of a Vite-shaped site: same entry point, chunk renamed under it. */
+const CHUNK_VERSIONS: VersionOpts[] = [
+  {
+    eventId: "a".repeat(64),
+    createdAt: 1000,
+    files: { "/index.html": "v1", "/assets/app-1111.js": "chunk one", "/gone.html": "withdrawn" },
+  },
+  {
+    eventId: "b".repeat(64),
+    createdAt: 2000,
+    files: { "/index.html": "v2", "/assets/app-2222.js": "chunk two" },
+  },
+];
+
+test("a merged host serves the chunks of an earlier deploy", async () => {
+  const { harness } = await setup({ versions: CHUNK_VERSIONS, merge: true });
+
+  // The newest deploy wins wherever it published a file.
+  assert.equal(await (await harness.site("docs.example.com", "/")).text(), "v2");
+  assert.equal(await (await harness.site("docs.example.com", "/assets/app-2222.js")).text(), "chunk two");
+
+  // And the page a visitor already has open goes on loading.
+  const stale = await harness.site("docs.example.com", "/assets/app-1111.js");
+  assert.equal(stale.status, 200);
+  assert.equal(await stale.text(), "chunk one");
+});
+
+test("merging is off unless a host asks for it", async () => {
+  const { harness } = await setup({ versions: CHUNK_VERSIONS });
+
+  assert.equal((await harness.site("docs.example.com", "/assets/app-1111.js")).status, 404);
+});
+
+test("a merged host reaches no further back than the version it serves", async () => {
+  const { harness } = await setup({ versions: CHUNK_VERSIONS, merge: true, pin: "a".repeat(64) });
+
+  assert.equal(await (await harness.site("docs.example.com", "/")).text(), "v1");
+  assert.equal((await harness.site("docs.example.com", "/assets/app-2222.js")).status, 404);
+});
+
+test("a deploy that never finished is not merged in", async () => {
+  const { harness } = await setup({
+    merge: true,
+    versions: [
+      { eventId: "a".repeat(64), createdAt: 1000, status: "failed", files: { "/half.js": "half" } },
+      { eventId: "b".repeat(64), createdAt: 2000, files: { "/index.html": "v2" } },
+    ],
+  });
+
+  // Its blobs may not all be on disk, so serving must not reach it — the same
+  // invariant that keeps an unfinished deploy from replacing a working site.
+  assert.equal((await harness.site("docs.example.com", "/half.js")).status, 404);
+});
+
+test("a merged host's sitemap describes the deploy it serves", async () => {
+  const { harness } = await setup({ versions: CHUNK_VERSIONS, merge: true });
+
+  // `/gone.html` is still served, because a link to it may be out there.
+  assert.equal((await harness.site("docs.example.com", "/gone.html")).status, 200);
+
+  // Inviting a crawler to index it is a different thing, and npanel doesn't.
+  const sitemap = await (await harness.site("docs.example.com", "/sitemap.xml")).text();
+  assert.match(sitemap, /<loc>https:\/\/docs\.example\.com\/<\/loc>/);
+  assert.doesNotMatch(sitemap, /gone/);
 });
 
 test("host lookups are cached until a writer clears them", async () => {

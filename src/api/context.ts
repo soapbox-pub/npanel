@@ -10,7 +10,7 @@ import { CSP } from "../serve-site.ts";
 import type { SettingsService } from "../settings.ts";
 import type { SiteCsp } from "../site-csp.ts";
 import type { SitePreview, SitePreviews } from "../site-preview.ts";
-import { activeEvent, newestEvent, resolveSitePath } from "../sites.ts";
+import { activeEvent, newestEvent, resolveSitePath, versionFiles } from "../sites.ts";
 import type { SyncWorker } from "../sync.ts";
 import type { TorService } from "../tor.ts";
 
@@ -118,7 +118,9 @@ export async function siteCard(db: Kysely<Database>, previews: SitePreviews, hos
 
   // With the SPA flag on, the shell the site would serve for `/` is the page
   // being described, wherever it is published.
-  const index = await resolveSitePath(db, version.event_id, "/", { spa: host.spa === 1 });
+  const index = await resolveSitePath(db, (await versionFiles(db, host, version)).eventIds, "/", {
+    spa: host.spa === 1,
+  });
   if (!index || index.status !== 200) return empty;
 
   return {
@@ -179,6 +181,11 @@ export interface HostView {
    */
   seo: boolean;
   /**
+   * Whether a path this deploy doesn't have falls back to the newest earlier
+   * deploy that did.
+   */
+  merge_deployments: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or has not published it
    * yet. Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -232,6 +239,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
     csp_policy: host.csp === 1 ? (declared ?? CSP) : null,
     csp_source: host.csp !== 1 ? "off" : declared ? "site" : "gateway",
     seo: host.seo === 1,
+    merge_deployments: host.merge_deployments === 1,
     onion: onion?.address ?? null,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,

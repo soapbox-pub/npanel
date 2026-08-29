@@ -276,6 +276,31 @@ export function HostDetailPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle className="text-base">Deployments</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.merge_deployments}
+                  onCheckedChange={(merge) =>
+                    patch(
+                      { merge_deployments: merge },
+                      merge ? 'Merging deployments' : 'Serving the latest deployment only',
+                    )
+                  }
+                />
+                Merge deployments
+              </label>
+              <p className="text-sm text-muted-foreground">
+                {data.merge_deployments
+                  ? 'Every earlier deployment is stacked underneath this one, oldest first, so the newest file at each path wins and a file a later deploy deleted goes on being served. Turn this on for a build that loads modules by name at runtime, like Vite: a page a visitor already has open keeps asking for the chunks of the deploy it came from.'
+                  : 'Only the files in the deployment being served. A path it does not have is a 404, even if an earlier deployment published one — which breaks a page that is already open in a browser and still loading chunks by the old names.'}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle className="text-base">Content Security Policy</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">

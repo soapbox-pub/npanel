@@ -16,6 +16,9 @@ const EVENT_ID = "a".repeat(64);
 const HASH_A = "a".repeat(64);
 const HASH_C = "c".repeat(64);
 
+/** The one version these tests resolve against, as a host that doesn't merge sees it. */
+const VERSION = { eventIds: [EVENT_ID], filesKey: EVENT_ID };
+
 /**
  * A database holding one version with the given path map.
  *
@@ -68,7 +71,7 @@ test("a resolved path is answered again without the database", async () => {
   const db = await version({ "/index.html": HASH_A });
   const paths = new SitePaths(db);
 
-  const first = await paths.resolve(EVENT_ID, "/", { spa: false });
+  const first = await paths.resolve(VERSION, "/", { spa: false });
   assert.deepEqual(first, {
     path: "/index.html",
     sha256: HASH_A,
@@ -78,46 +81,46 @@ test("a resolved path is answered again without the database", async () => {
 
   await forget(db);
 
-  assert.deepEqual(await paths.resolve(EVENT_ID, "/", { spa: false }), first);
+  assert.deepEqual(await paths.resolve(VERSION, "/", { spa: false }), first);
 });
 
 test("a path the version has no file for is cached too", async () => {
   const db = await version({ "/index.html": HASH_A });
   const paths = new SitePaths(db);
 
-  assert.equal(await paths.resolve(EVENT_ID, "/nope.html", { spa: false }), undefined);
+  assert.equal(await paths.resolve(VERSION, "/nope.html", { spa: false }), undefined);
 
   // The row is back, but the answer that it isn't there was already settled.
   await db.insertInto("site_files").values({ event_id: EVENT_ID, path: "/nope.html", sha256: HASH_C }).execute();
 
-  assert.equal(await paths.resolve(EVENT_ID, "/nope.html", { spa: false }), undefined);
+  assert.equal(await paths.resolve(VERSION, "/nope.html", { spa: false }), undefined);
 });
 
 test("hosts that disagree about SPA get their own answers", async () => {
   const db = await version({ "/index.html": HASH_A, "/404.html": HASH_C });
   const paths = new SitePaths(db);
 
-  assert.equal((await paths.resolve(EVENT_ID, "/about", { spa: true }))?.status, 200);
-  assert.equal((await paths.resolve(EVENT_ID, "/about", { spa: false }))?.status, 404);
+  assert.equal((await paths.resolve(VERSION, "/about", { spa: true }))?.status, 200);
+  assert.equal((await paths.resolve(VERSION, "/about", { spa: false }))?.status, 404);
 
   await forget(db);
 
-  assert.equal((await paths.resolve(EVENT_ID, "/about", { spa: true }))?.status, 200);
-  assert.equal((await paths.resolve(EVENT_ID, "/about", { spa: false }))?.status, 404);
+  assert.equal((await paths.resolve(VERSION, "/about", { spa: true }))?.status, 200);
+  assert.equal((await paths.resolve(VERSION, "/about", { spa: false }))?.status, 404);
 });
 
 test("a blob whose sizes were never recorded is not cached", async () => {
   const db = await version({ "/index.html": HASH_A }, { sizes: false });
   const paths = new SitePaths(db);
 
-  const first = await paths.resolve(EVENT_ID, "/", { spa: false });
+  const first = await paths.resolve(VERSION, "/", { spa: false });
   assert.deepEqual(first, { path: "/index.html", sha256: HASH_A, status: 200 });
 
   // Recorded late, as `compress-blobs` does. Nothing invalidates this cache,
   // so the only thing that can pick the sizes up is not having cached the row.
   await db.insertInto("blobs").values({ sha256: HASH_A, size: 10, br_size: 4, gzip_size: -1, seen_at: 1 }).execute();
 
-  assert.deepEqual(await paths.resolve(EVENT_ID, "/", { spa: false }), {
+  assert.deepEqual(await paths.resolve(VERSION, "/", { spa: false }), {
     path: "/index.html",
     sha256: HASH_A,
     status: 200,
@@ -129,15 +132,15 @@ test("the cache is bounded, and drops the least recently used path", async () =>
   const db = await version({ "/index.html": HASH_A });
   const paths = new SitePaths(db);
 
-  assert.ok(await paths.resolve(EVENT_ID, "/", { spa: false }));
+  assert.ok(await paths.resolve(VERSION, "/", { spa: false }));
 
   // Every one of these is a distinct key, so together they are more than the
   // cache holds and the entry above is the oldest of them.
   for (let i = 0; i < 5000; i++) {
-    await paths.resolve(EVENT_ID, `/spray/${i}`, { spa: false });
+    await paths.resolve(VERSION, `/spray/${i}`, { spa: false });
   }
 
   await forget(db);
 
-  assert.equal(await paths.resolve(EVENT_ID, "/", { spa: false }), undefined, "the oldest entry survived eviction");
+  assert.equal(await paths.resolve(VERSION, "/", { spa: false }), undefined, "the oldest entry survived eviction");
 });

@@ -4,7 +4,7 @@ import { requireAdmin } from "../auth.ts";
 import type { Host } from "../db/schema.ts";
 import { parseHostname } from "../hostname.ts";
 import { parseNsiteAddress } from "../nsite-address.ts";
-import { activeEvent, newestEvent, siteKey } from "../sites.ts";
+import { activeEvent, newestByPath, newestEvent, siteKey, versionFiles } from "../sites.ts";
 import {
   type ApiDeps,
   type ApiEnv,
@@ -31,6 +31,8 @@ const createSchema = z.object({
   csp: z.boolean().optional(),
   /** Generate sitemap.xml, robots.txt, and canonical URLs. On unless asked otherwise. */
   seo: z.boolean().optional(),
+  /** Fall back to earlier deploys for paths this one doesn't have. Off by default. */
+  merge_deployments: z.boolean().optional(),
 });
 
 const updateSchema = z.object({
@@ -42,6 +44,7 @@ const updateSchema = z.object({
   spa: z.boolean().optional(),
   csp: z.boolean().optional(),
   seo: z.boolean().optional(),
+  merge_deployments: z.boolean().optional(),
   /** Event id to pin, or null to follow the newest ready version. */
   pinned_event_id: z.string().nullable().optional(),
 });
@@ -120,6 +123,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
         spa: body.data.spa ? 1 : 0,
         csp: body.data.csp === false ? 0 : 1,
         seo: body.data.seo === false ? 0 : 1,
+        merge_deployments: body.data.merge_deployments ? 1 : 0,
         created_by: user.pubkey,
         created_at: now,
         updated_at: now,
@@ -229,6 +233,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     if (body.data.seo !== undefined) {
       patch.seo = body.data.seo ? 1 : 0;
+    }
+
+    if (body.data.merge_deployments !== undefined) {
+      patch.merge_deployments = body.data.merge_deployments ? 1 : 0;
     }
 
     if (body.data.pinned_event_id !== undefined && body.data.address === undefined) {
@@ -384,9 +392,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
 
     const requested = c.req.query("event_id");
+    const active = requested ? undefined : await activeEvent(db, host);
     const version = requested
       ? await db.selectFrom("site_events").selectAll().where("event_id", "=", requested).executeTakeFirst()
-      : ((await activeEvent(db, host)) ?? (await newestEvent(db, host)));
+      : (active ?? (await newestEvent(db, host)));
 
     if (
       !version ||
@@ -397,21 +406,30 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       return c.json({ error: "No version to list." }, 404);
     }
 
-    const files = await db
+    // What the site actually serves, which for a merged host is more than one
+    // version's manifest. Only for the version being served: a version named
+    // outright, or one that hasn't finished deploying, is being inspected for
+    // itself, so that listing stays the manifest it is.
+    const eventIds =
+      version.event_id === active?.event_id ? (await versionFiles(db, host, version)).eventIds : [version.event_id];
+
+    const rows = await db
       .selectFrom("site_files")
       .leftJoin("blobs", "blobs.sha256", "site_files.sha256")
-      .select(["site_files.path", "site_files.sha256", "blobs.size"])
-      .where("site_files.event_id", "=", version.event_id)
+      .select(["site_files.path", "site_files.sha256", "site_files.event_id", "blobs.size"])
+      .where("site_files.event_id", "in", eventIds)
       .orderBy("site_files.path")
       .execute();
 
     return c.json({
       event_id: version.event_id,
-      files: files.map((file) => ({
+      files: [...newestByPath(rows, eventIds).values()].map((file) => ({
         path: file.path,
         sha256: file.sha256,
         size: file.size,
         stored: file.size !== null,
+        // Served from an earlier deploy, because this one dropped the path.
+        inherited: file.event_id !== version.event_id,
       })),
     });
   });
@@ -509,6 +527,7 @@ function hostSummary(host: Host) {
     spa: host.spa,
     csp: host.csp,
     seo: host.seo,
+    merge_deployments: host.merge_deployments,
     pinned_event_id: host.pinned_event_id,
   };
 }

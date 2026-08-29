@@ -298,6 +298,14 @@ const MIGRATIONS: Migration[] = [
     name: "014_hosts_seo",
     statements: ["ALTER TABLE hosts ADD COLUMN seo INTEGER NOT NULL DEFAULT 1"],
   },
+  {
+    // Off for every existing host and every new one. Merging changes which
+    // bytes a path serves — a file the newest deploy deleted goes on
+    // answering — so it is the site owner's call, not a default anyone gets
+    // handed.
+    name: "015_hosts_merge_deployments",
+    statements: ["ALTER TABLE hosts ADD COLUMN merge_deployments INTEGER NOT NULL DEFAULT 0"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

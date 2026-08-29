@@ -190,7 +190,7 @@ The tables:
 | Table         | Holds                                                       |
 | ------------- | ----------------------------------------------------------- |
 | `users`       | Who may log in, and their role                              |
-| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa, csp, seo |
+| `hosts`       | Hostname → `{pubkey, kind, identifier}`, pin, enabled, hidden, www, spa, csp, seo, merge |
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
@@ -255,7 +255,11 @@ event id is a hash, so a redeploy asks a different question rather than
 changing the answer to this one. The blob sizes that ride along are the
 exception, since `compress-blobs` can record them long after a deploy, so a
 row that hasn't got them yet is left uncached rather than pinned to the `stat`
-it falls back to.
+it falls back to. On a merged host the key names the whole chain rather than
+one version — a hash of it, so the key stays one identifier long however deep
+the chain runs — and the argument is unchanged: every file list in the chain is
+immutable, so a chain that gains a version is a different key rather than a
+changed one.
 
 That last step is where a single-page app parts ways with a static site, so it
 is a per-host flag rather than a guess. By default a path the site has no file
@@ -271,6 +275,36 @@ render the site, it turns a plain missing file into a parse error somewhere
 else. The flag is off for every existing host and every new one: folding `www`
 into a domain preserves what a response means and can default on, while turning
 a `404` into a `200` does not.
+
+The `merge_deployments` flag, also off by default, changes what resolution
+searches rather than what it does. A merged host resolves against a *chain* of
+versions — the one it serves, and every earlier ready version of the same site
+underneath it, newest first — and takes each path from the newest version that
+has it (`versionFiles`, `src/sites.ts`). The served version therefore wins
+everywhere it published a file, and a path it dropped goes on being answered by
+the deploy that last published it. Each step of resolution searches the whole
+chain, so an exact match in a superseded version still beats an `index.html` in
+the served one, exactly as it would within a single version.
+
+This is for builds that load modules by name at runtime. A Vite site names its
+chunks by content hash, and a page a visitor already has open goes on asking
+for the names of the deploy it was loaded from — which are the files the next
+deploy removes. Without merging, a deploy mid-session breaks every open page.
+
+Nothing newer than the served version is in the chain, so a pinned host merges
+up to its pin rather than past it, and only `ready` versions are in it: an
+unfinished deploy's blobs may not be on disk, and merging must not undo the
+invariant that serving never reaches one. The chain is capped, because every
+uncached lookup asks for its candidates in each version of it. Pruning is what
+bounds it in practice, and the two compose: `prune-blobs --keep N` forgets old
+versions first, so a chain reaches exactly as far back as the versions still in
+the database — and it deletes only blobs no remaining version references, so
+merging can never resolve a path to a blob pruning took away.
+
+What merging deliberately doesn't touch is the generated `sitemap.xml`, which
+lists the served version's own pages. Keeping a withdrawn URL *answering*, for
+the pages and caches still asking for it, is not a reason to invite a crawler
+to index a page the site's latest deploy deleted.
 
 Responses carry an `ETag` of the blob hash (so conditional requests are free and
 exact), `Last-Modified` from the event's `created_at` — capped at when npanel

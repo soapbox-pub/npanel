@@ -3,7 +3,7 @@ import { after, test } from "node:test";
 import type { Kysely } from "kysely";
 import { openDatabase } from "./db/index.ts";
 import type { Database } from "./db/schema.ts";
-import { resolveSitePath } from "./sites.ts";
+import { newestReadyEvent, resolveSitePath, versionFiles } from "./sites.ts";
 
 const databases: Kysely<Database>[] = [];
 
@@ -17,32 +17,42 @@ const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
 
-/** A database holding one version with the given path map. */
-async function version(paths: Record<string, string>): Promise<Kysely<Database>> {
-  const db = await openDatabase(":memory:");
-  databases.push(db);
-
+/** Record one ready version of the site, with the given path map. */
+async function deploy(
+  db: Kysely<Database>,
+  eventId: string,
+  createdAt: number,
+  paths: Record<string, string>,
+): Promise<void> {
   await db
     .insertInto("site_events")
     .values({
-      event_id: EVENT_ID,
+      event_id: eventId,
       pubkey: PUBKEY,
       kind: 15128,
       identifier: "",
-      created_at: 1,
+      created_at: createdAt,
       event: "{}",
       status: "ready",
       files_total: Object.keys(paths).length,
       files_ready: Object.keys(paths).length,
       error: null,
-      fetched_at: 1,
-      ready_at: 1,
+      fetched_at: createdAt,
+      ready_at: createdAt,
     })
     .execute();
 
   for (const [path, sha256] of Object.entries(paths)) {
-    await db.insertInto("site_files").values({ event_id: EVENT_ID, path, sha256 }).execute();
+    await db.insertInto("site_files").values({ event_id: eventId, path, sha256 }).execute();
   }
+}
+
+/** A database holding one version with the given path map. */
+async function version(paths: Record<string, string>): Promise<Kysely<Database>> {
+  const db = await openDatabase(":memory:");
+  databases.push(db);
+
+  await deploy(db, EVENT_ID, 1, paths);
 
   return db;
 }
@@ -54,22 +64,22 @@ test("resolves exact paths, index fallbacks, and 404s", async () => {
     "/404.html": HASH_C,
   });
 
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/index.html"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/index.html"), {
     path: "/index.html",
     sha256: HASH_A,
     status: 200,
   });
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/"), {
     path: "/index.html",
     sha256: HASH_A,
     status: 200,
   });
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/blog"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/blog"), {
     path: "/blog/index.html",
     sha256: HASH_B,
     status: 200,
   });
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/nope.html"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/nope.html"), {
     path: "/404.html",
     sha256: HASH_C,
     status: 404,
@@ -83,13 +93,13 @@ test("resolves an extensionless path to its .html sibling", async () => {
     "/404.html": HASH_C,
   });
 
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/self-hosting"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/self-hosting"), {
     path: "/self-hosting.html",
     sha256: HASH_B,
     status: 200,
   });
   // The root is not "/.html".
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/"), {
     path: "/index.html",
     sha256: HASH_A,
     status: 200,
@@ -99,7 +109,7 @@ test("resolves an extensionless path to its .html sibling", async () => {
 test("prefers a .html sibling over a directory index", async () => {
   const db = await version({ "/blog.html": HASH_A, "/blog/index.html": HASH_B });
 
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/blog"), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/blog"), {
     path: "/blog.html",
     sha256: HASH_A,
     status: 200,
@@ -109,16 +119,16 @@ test("prefers a .html sibling over a directory index", async () => {
 test("resolution normalizes traversal and percent-encoding", async () => {
   const db = await version({ "/index.html": HASH_A, "/my file.txt": HASH_B });
 
-  assert.equal((await resolveSitePath(db, EVENT_ID, "/../../index.html"))?.sha256, HASH_A);
-  assert.equal((await resolveSitePath(db, EVENT_ID, "/blog/../index.html"))?.sha256, HASH_A);
-  assert.equal((await resolveSitePath(db, EVENT_ID, "/my%20file.txt"))?.sha256, HASH_B);
-  assert.equal(await resolveSitePath(db, EVENT_ID, "/bad%zz"), undefined);
+  assert.equal((await resolveSitePath(db, [EVENT_ID], "/../../index.html"))?.sha256, HASH_A);
+  assert.equal((await resolveSitePath(db, [EVENT_ID], "/blog/../index.html"))?.sha256, HASH_A);
+  assert.equal((await resolveSitePath(db, [EVENT_ID], "/my%20file.txt"))?.sha256, HASH_B);
+  assert.equal(await resolveSitePath(db, [EVENT_ID], "/bad%zz"), undefined);
 });
 
 test("returns undefined when there is no match and no 404 page", async () => {
   const db = await version({ "/index.html": HASH_A });
 
-  assert.equal(await resolveSitePath(db, EVENT_ID, "/nope.html"), undefined);
+  assert.equal(await resolveSitePath(db, [EVENT_ID], "/nope.html"), undefined);
 });
 
 test("an SPA serves its shell under a 200 for document paths", async () => {
@@ -126,14 +136,14 @@ test("an SPA serves its shell under a 200 for document paths", async () => {
 
   for (const path of ["/about", "/users/alex", "/about.html", "/DEEP.HTM"]) {
     assert.deepEqual(
-      await resolveSitePath(db, EVENT_ID, path, { spa: true }),
+      await resolveSitePath(db, [EVENT_ID], path, { spa: true }),
       { path: "/index.html", sha256: HASH_A, status: 200 },
       path,
     );
   }
 
   // A file the site really has is served as itself, not as the shell.
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/assets/app.js", { spa: true }), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/assets/app.js", { spa: true }), {
     path: "/assets/app.js",
     sha256: HASH_B,
     status: 200,
@@ -143,7 +153,7 @@ test("an SPA serves its shell under a 200 for document paths", async () => {
 test("an SPA reaches for 404.html first, where nsyte publishes the shell", async () => {
   const db = await version({ "/index.html": HASH_A, "/404.html": HASH_C });
 
-  assert.deepEqual(await resolveSitePath(db, EVENT_ID, "/about", { spa: true }), {
+  assert.deepEqual(await resolveSitePath(db, [EVENT_ID], "/about", { spa: true }), {
     path: "/404.html",
     sha256: HASH_C,
     status: 200,
@@ -155,7 +165,7 @@ test("an SPA leaves missing assets alone", async () => {
 
   for (const path of ["/assets/app.js", "/assets/app.css", "/logo.png", "/feed.xml"]) {
     assert.deepEqual(
-      await resolveSitePath(db, EVENT_ID, path, { spa: true }),
+      await resolveSitePath(db, [EVENT_ID], path, { spa: true }),
       { path: "/404.html", sha256: HASH_C, status: 404 },
       path,
     );
@@ -165,5 +175,68 @@ test("an SPA leaves missing assets alone", async () => {
 test("an SPA with no shell at all resolves to nothing", async () => {
   const db = await version({ "/assets/app.js": HASH_B });
 
-  assert.equal(await resolveSitePath(db, EVENT_ID, "/about", { spa: true }), undefined);
+  assert.equal(await resolveSitePath(db, [EVENT_ID], "/about", { spa: true }), undefined);
+});
+
+const NEWER = "b".repeat(64);
+
+/** A database holding two versions of one site, newest first in the chain. */
+async function chain(older: Record<string, string>, newer: Record<string, string>): Promise<Kysely<Database>> {
+  const db = await version(older);
+  await deploy(db, NEWER, 2, newer);
+
+  return db;
+}
+
+test("a chain takes each path from the newest version that has it", async () => {
+  const db = await chain({ "/index.html": HASH_A, "/old.js": HASH_B }, { "/index.html": HASH_C });
+
+  // Published by both: the newest wins.
+  assert.equal((await resolveSitePath(db, [NEWER, EVENT_ID], "/index.html"))?.sha256, HASH_C);
+  // Dropped by the newest: the version that last published it answers.
+  assert.equal((await resolveSitePath(db, [NEWER, EVENT_ID], "/old.js"))?.sha256, HASH_B);
+});
+
+test("every resolution step searches the whole chain", async () => {
+  // The older version spells the page as a file; the newer has only a
+  // directory index. An exact match is the first step wherever it is found,
+  // so the older file is what `/blog` names — the same order a single version
+  // would have resolved these two paths in.
+  const db = await chain({ "/blog.html": HASH_B }, { "/blog/index.html": HASH_C });
+
+  assert.deepEqual(await resolveSitePath(db, [NEWER, EVENT_ID], "/blog"), {
+    path: "/blog.html",
+    sha256: HASH_B,
+    status: 200,
+  });
+});
+
+test("a merged host stacks its earlier ready versions, newest first", async () => {
+  const db = await chain({ "/index.html": HASH_A }, { "/index.html": HASH_C });
+  const active = await newestReadyEvent(db, { pubkey: PUBKEY, kind: 15128, identifier: "" });
+  assert.ok(active);
+
+  const host = await db
+    .insertInto("hosts")
+    .values({
+      hostname: "docs.example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: 1,
+      merge_deployments: 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .returningAll()
+    .executeTakeFirstOrThrow();
+
+  assert.deepEqual((await versionFiles(db, host, active)).eventIds, [NEWER, EVENT_ID]);
+
+  // Without the flag the chain is the one version, named by its own event id
+  // — so nothing an unmerged host caches or resolves changes.
+  const alone = await versionFiles(db, { ...host, merge_deployments: 0 }, active);
+  assert.deepEqual(alone, { eventIds: [NEWER], filesKey: NEWER });
 });

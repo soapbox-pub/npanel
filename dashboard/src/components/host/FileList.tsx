@@ -4,7 +4,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { useFiles } from '@/hooks/useNpanel';
 import { formatBytes } from '@/lib/format';
 
-/** Files in the served version, with whether each blob is stored locally. */
+/**
+ * The files the site serves, with whether each blob is stored locally.
+ *
+ * With merged deployments that is more than the served version's own manifest,
+ * so a path held over from an earlier deploy is marked as such — otherwise the
+ * list would disagree with the version it says it is describing.
+ */
 export function FileList({ hostname }: { hostname: string }) {
   const files = useFiles(hostname);
 
@@ -34,7 +40,14 @@ export function FileList({ hostname }: { hostname: string }) {
       <TableBody>
         {files.data.files.map((file) => (
           <TableRow key={file.path}>
-            <TableCell className="font-mono text-xs">{file.path}</TableCell>
+            <TableCell className="font-mono text-xs">
+              {file.path}
+              {file.inherited && (
+                <Badge variant="secondary" className="ml-2 font-sans">
+                  Earlier deploy
+                </Badge>
+              )}
+            </TableCell>
             <TableCell className="font-mono text-xs text-muted-foreground">
               {file.sha256.slice(0, 12)}…
             </TableCell>

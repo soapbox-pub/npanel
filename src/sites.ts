@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { extname, join } from "node:path/posix";
 import type { NostrEvent } from "@nostrify/nostrify";
 import { type Kysely, sql } from "kysely";
@@ -89,6 +90,77 @@ export async function newestReadyEvent(db: Kysely<Database>, address: NsiteAddre
     .executeTakeFirst();
 }
 
+/**
+ * How many versions a merged host resolves across.
+ *
+ * A bound rather than a policy: every uncached path lookup asks for its
+ * candidates in each version, so the query grows with the chain, and the
+ * versions past this point are the ones a `prune-blobs --keep` has most likely
+ * taken away already. Deep enough that a site deploying daily keeps two months
+ * of superseded asset URLs answering.
+ */
+export const MAX_MERGED_VERSIONS = 60;
+
+/** The versions a host resolves paths across, and one name for that list. */
+export interface VersionFiles {
+  /** The versions a path is looked for in, newest first. */
+  eventIds: string[];
+  /**
+   * One name for that list, for the caches keyed on which files are in play.
+   *
+   * An event id where there is only one version, so an unmerged host's cache
+   * keys read exactly as they did before merging existed. Beyond that it is a
+   * hash, which keeps a key the size of one event id however deep the chain is
+   * — and is a name for an immutable thing, since every file list in the chain
+   * is one.
+   */
+  filesKey: string;
+}
+
+/**
+ * The versions a host resolves paths across, newest first.
+ *
+ * One entry — the version being served — unless the host merges deployments,
+ * which stacks every earlier ready version underneath it. The order is the
+ * precedence: a path is served from the newest version that has it, so a file
+ * a later deploy dropped goes on answering from the deploy that published it.
+ * That is what a build with content-hashed, dynamically imported chunks needs,
+ * since a page already open in a browser goes on asking for the chunk names of
+ * the deploy it came from.
+ *
+ * Nothing newer than the served version is ever included, so a pinned host
+ * merges up to its pin rather than past it, and the served version always wins
+ * — it heads the list outright rather than by a comparison two versions
+ * sharing a `created_at` could get wrong.
+ */
+export async function versionFiles(db: Kysely<Database>, host: Host, active: SiteEvent): Promise<VersionFiles> {
+  if (host.merge_deployments !== 1) {
+    return { eventIds: [active.event_id], filesKey: active.event_id };
+  }
+
+  const older = await db
+    .selectFrom("site_events")
+    .select("event_id")
+    .where("pubkey", "=", active.pubkey)
+    .where("kind", "=", active.kind)
+    .where("identifier", "=", active.identifier)
+    // A literal for the same reason `newestReadyEvent` uses one, and for the
+    // same index. Only ready versions: an unfinished deploy's blobs may not be
+    // on disk, and merging must not undo the invariant that serving never
+    // reaches one.
+    .where("status", "=", sql.lit("ready"))
+    .where("created_at", "<=", active.created_at)
+    .where("event_id", "!=", active.event_id)
+    .orderBy("created_at", "desc")
+    .orderBy("event_id", "desc")
+    .limit(MAX_MERGED_VERSIONS - 1)
+    .execute();
+
+  const eventIds = [active.event_id, ...older.map((row) => row.event_id)];
+
+  return { eventIds, filesKey: createHash("sha256").update(eventIds.join("")).digest("hex") };
+}
+
 /** The newest version of a site in any state. */
 export async function newestEvent(db: Kysely<Database>, address: NsiteAddress): Promise<SiteEvent | undefined> {
   return await db
@@ -140,6 +212,12 @@ const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
  * Reads the path map from the database, so serving a file never parses a
  * manifest event.
  *
+ * `eventIds` is the chain {@link versionFiles} built: one version, or a merged
+ * host's stack of them newest first. Every step above searches the whole chain
+ * and takes the newest version that has the path, so the steps themselves are
+ * unchanged — an exact match in a superseded version still beats an
+ * `index.html` in the served one, exactly as it would within a single version.
+ *
  * `spa` turns the last step into a client-side router's entry point rather
  * than a dead end. A single-page app owns paths that exist only in its own
  * routing table, so for a document request npanel hands back the site's shell
@@ -151,7 +229,7 @@ const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
  */
 export async function resolveSitePath(
   db: Kysely<Database>,
-  eventId: string,
+  eventIds: string[],
   requestPath: string,
   options: { spa?: boolean } = {},
 ): Promise<ResolvedFile | undefined> {
@@ -171,12 +249,19 @@ export async function resolveSitePath(
   const rows = await db
     .selectFrom("site_files")
     .leftJoin("blobs", "blobs.sha256", "site_files.sha256")
-    .select(["site_files.path", "site_files.sha256", "blobs.size", "blobs.br_size", "blobs.gzip_size"])
-    .where("site_files.event_id", "=", eventId)
+    .select([
+      "site_files.path",
+      "site_files.sha256",
+      "site_files.event_id",
+      "blobs.size",
+      "blobs.br_size",
+      "blobs.gzip_size",
+    ])
+    .where("site_files.event_id", "in", eventIds)
     .where("site_files.path", "in", candidates)
     .execute();
 
-  const found = new Map(rows.map((row) => [row.path, row]));
+  const found = newestByPath(rows, eventIds);
 
   const exact = found.get(normalized);
   if (exact) return resolved(exact, normalized, 200);
@@ -209,6 +294,31 @@ interface ResolvedRow {
   size: number | null;
   br_size: number | null;
   gzip_size: number | null;
+}
+
+/**
+ * One row per path: the one from the newest version of the chain that has it.
+ *
+ * A single-version chain reduces to what this always did, since no path can
+ * appear twice under one `event_id`.
+ */
+export function newestByPath<T extends { path: string; event_id: string }>(
+  rows: T[],
+  eventIds: string[],
+): Map<string, T> {
+  const rank = new Map(eventIds.map((eventId, index) => [eventId, index]));
+  // A row from outside the chain can't happen — the query asked for these
+  // versions — but ranking one last is the harmless way to be sure.
+  const rankOf = (row: T) => rank.get(row.event_id) ?? Number.POSITIVE_INFINITY;
+
+  const best = new Map<string, T>();
+  for (const row of rows) {
+    const previous = best.get(row.path);
+    if (previous && rankOf(previous) <= rankOf(row)) continue;
+    best.set(row.path, row);
+  }
+
+  return best;
 }
 
 function resolved(row: ResolvedRow, path: string, status: 200 | 404): ResolvedFile {

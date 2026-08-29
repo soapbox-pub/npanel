@@ -1,6 +1,6 @@
 import type { Kysely } from "kysely";
 import type { Database } from "./db/schema.ts";
-import { type ResolvedFile, resolveSitePath } from "./sites.ts";
+import { type ResolvedFile, type VersionFiles, resolveSitePath } from "./sites.ts";
 
 /**
  * Resolved paths to keep. Each entry is one request path and the file it names.
@@ -24,6 +24,12 @@ const MAX_CACHED = 5000;
  * hash, so a redeploy is a different key rather than a changed one. Nothing
  * has to invalidate this cache, and nothing does.
  *
+ * A merged host resolves across several versions at once, and the same
+ * reasoning covers it: the answer is settled by *which* versions are in play,
+ * so entries are keyed by {@link VersionFiles.filesKey} — one name for one
+ * list of immutable file lists — rather than by an event id. A chain that
+ * gains a version is a different key, not a changed one.
+ *
  * The blob sizes that ride along on the lookup are the one part that isn't
  * settled at deploy time — `compress-blobs` can record them for a blob stored
  * before npanel recorded any. A row still missing them is left uncached rather
@@ -36,11 +42,15 @@ export class SitePaths {
   constructor(private readonly db: Kysely<Database>) {}
 
   /** The file this path names within a version, as {@link resolveSitePath} answers it. */
-  async resolve(eventId: string, requestPath: string, options: { spa: boolean }): Promise<ResolvedFile | undefined> {
+  async resolve(
+    version: VersionFiles,
+    requestPath: string,
+    options: { spa: boolean },
+  ): Promise<ResolvedFile | undefined> {
     // The SPA flag is part of the key because it belongs to the host, not to
     // the version: two hosts pointing at one nsite may disagree about it, and
     // they resolve the same missing path to different answers.
-    const key = `${eventId}:${options.spa ? "spa" : ""}:${requestPath}`;
+    const key = `${version.filesKey}:${options.spa ? "spa" : ""}:${requestPath}`;
 
     const cached = this.cache.get(key);
     if (cached !== undefined) {
@@ -50,7 +60,7 @@ export class SitePaths {
       return cached ?? undefined;
     }
 
-    const file = await resolveSitePath(this.db, eventId, requestPath, options);
+    const file = await resolveSitePath(this.db, version.eventIds, requestPath, options);
     if (file && !file.variants) return file;
 
     if (this.cache.size >= MAX_CACHED) {

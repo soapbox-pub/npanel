@@ -159,6 +159,7 @@ A host object:
   "csp_policy": "default-src 'none'; script-src 'self'; …",
   "csp_source": "gateway",
   "seo": true,
+  "merge_deployments": false,
   "onion": "abc…xyz.onion",
   "pinned_event_id": null,
   "created_by": "<hex>",
@@ -210,7 +211,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true, "merge_deployments": false }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -241,6 +242,7 @@ Any subset of:
   "spa": true,
   "csp": false,
   "seo": true,
+  "merge_deployments": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -339,6 +341,19 @@ group carries a blanket `Disallow: /`, or when it is larger than 64 KB. An
 appended response is derived rather than stored, so it carries a
 `"<sha256>-robots"` ETag, no `Content-Encoding`, and no range support.
 
+`merge_deployments` stacks the site's earlier deploys underneath the one being
+served, oldest first, and defaults to `false`. A path is then answered from the
+newest deploy that has it, so the current deploy wins everywhere it published a
+file and a path it dropped goes on being served from the deploy that last did.
+Only fully-downloaded versions take part, and never one newer than the version
+being served — a pinned host merges up to its pin. Turn it on for a build that
+loads modules by name at runtime, like Vite: a page a visitor already has open
+goes on requesting the chunk filenames of the deploy it was loaded from, and
+those are exactly the files the next deploy removes. The generated
+`sitemap.xml` is unaffected — it lists the served version's own pages, since
+keeping a withdrawn URL answering is not a reason to invite a crawler to index
+it.
+
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
@@ -386,17 +401,23 @@ Oldest first, capped at the 500 most recent entries per version.
 Files in a version, defaulting to the active one (or the newest if none is
 ready).
 
+Without `event_id` this is what the site actually serves, so on a host with
+`merge_deployments` it also carries the paths held over from earlier deploys,
+each marked `inherited`. Naming a version with `event_id` lists that version's
+own manifest and nothing else.
+
 ```json
 {
   "event_id": "<hex>",
   "files": [
-    { "path": "/index.html", "sha256": "<hex>", "size": 1024, "stored": true }
+    { "path": "/index.html", "sha256": "<hex>", "size": 1024, "stored": true, "inherited": false }
   ]
 }
 ```
 
 `stored` is false for a blob that hasn't been downloaded yet — which is how you
-spot exactly what a stalled deploy is missing.
+spot exactly what a stalled deploy is missing. `inherited` is true for a path
+the named version doesn't publish and a merged earlier one does.
 
 ### `POST /api/hosts/:hostname/sync`
 

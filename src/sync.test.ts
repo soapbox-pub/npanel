@@ -212,7 +212,7 @@ test("downloads every blob before a version becomes servable", async () => {
   const active = await activeEvent(db, host);
   assert.equal(active?.event_id, event.id);
 
-  const resolved = await resolveSitePath(db, event.id, "/");
+  const resolved = await resolveSitePath(db, [event.id], "/");
   assert.equal(resolved?.path, "/index.html");
   // Too small to compress, so the deploy recorded the absence: sizes come
   // with the lookup, and serving needs no stat.

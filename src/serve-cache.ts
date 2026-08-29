@@ -1,7 +1,7 @@
 import type { Kysely } from "kysely";
 import type { Database, SiteEvent } from "./db/schema.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { type ServedHost, activeEvent, findHost } from "./sites.ts";
+import { type ServedHost, type VersionFiles, activeEvent, findHost, versionFiles } from "./sites.ts";
 
 /**
  * How long an entry may be believed, in milliseconds.
@@ -16,7 +16,7 @@ import { type ServedHost, activeEvent, findHost } from "./sites.ts";
 const TTL_MS = 60_000;
 
 /** The version a host serves, with the response fields derived from it. */
-export interface CachedVersion {
+export interface CachedVersion extends VersionFiles {
   event: SiteEvent;
   /**
    * The version's `Last-Modified`, formatted once instead of per response.
@@ -73,11 +73,19 @@ export class ServeCache {
     }
 
     const event = host.enabled === 1 ? await activeEvent(this.db, host) : undefined;
-    const site: CachedSite = {
-      host,
-      version: event && { event, lastModified: lastModified(event.created_at, event.fetched_at) },
-      naddr: encodeNaddr(host),
-    };
+    // Which versions a path is looked for in is settled here, with the rest of
+    // what a hostname resolves to, rather than per request: a merged host's
+    // chain costs a query, and it changes only when a deploy or an edit has
+    // already emptied this cache.
+    const version: CachedVersion | undefined = event
+      ? {
+          event,
+          ...(await versionFiles(this.db, host, event)),
+          lastModified: lastModified(event.created_at, event.fetched_at),
+        }
+      : undefined;
+
+    const site: CachedSite = { host, version, naddr: encodeNaddr(host) };
     this.entries.set(hostname, { site, expires: Date.now() + TTL_MS });
 
     return site;

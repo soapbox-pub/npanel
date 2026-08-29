@@ -475,6 +475,89 @@ test("the seo flag is on unless turned off", async () => {
   assert.equal((await upfront.json()).host.seo, false);
 });
 
+test("merging deployments is off unless a host asks for it", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  const host = (await created.json()).host;
+  assert.equal(host.merge_deployments, false, "serving a file a deploy deleted is nobody's default");
+
+  const on = await harness.request(admin, "PATCH", `/api/hosts/${host.hostname}`, { merge_deployments: true });
+  assert.equal((await on.json()).host.merge_deployments, true);
+
+  const upfront = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "app.example.com",
+    address: NPUB,
+    merge_deployments: true,
+  });
+  assert.equal((await upfront.json()).host.merge_deployments, true);
+});
+
+test("a merged host's file list is what it serves, not one manifest", async () => {
+  const { harness, admin } = await setup();
+
+  await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+    merge_deployments: true,
+  });
+
+  const deploys: [string, number, Record<string, string>][] = [
+    ["a".repeat(64), 1000, { "/index.html": "1".repeat(64), "/old.js": "2".repeat(64) }],
+    ["b".repeat(64), 2000, { "/index.html": "3".repeat(64) }],
+  ];
+
+  for (const [eventId, createdAt, paths] of deploys) {
+    await harness.db
+      .insertInto("site_events")
+      .values({
+        event_id: eventId,
+        pubkey: PUBKEY,
+        kind: ROOT_SITE_KIND,
+        identifier: "",
+        created_at: createdAt,
+        event: "{}",
+        status: "ready",
+        files_total: Object.keys(paths).length,
+        files_ready: Object.keys(paths).length,
+        error: null,
+        fetched_at: createdAt,
+        ready_at: createdAt,
+      })
+      .execute();
+
+    for (const [path, sha256] of Object.entries(paths)) {
+      await harness.db.insertInto("site_files").values({ event_id: eventId, path, sha256 }).execute();
+    }
+  }
+
+  const merged = await (await harness.request(admin, "GET", "/api/hosts/docs.example.com/files")).json();
+  assert.equal(merged.event_id, "b".repeat(64));
+  assert.deepEqual(
+    merged.files.map((file: { path: string; sha256: string; inherited: boolean }) => [
+      file.path,
+      file.sha256,
+      file.inherited,
+    ]),
+    [
+      ["/index.html", "3".repeat(64), false],
+      ["/old.js", "2".repeat(64), true],
+    ],
+  );
+
+  // A version named outright is being inspected for itself.
+  const one = await (
+    await harness.request(admin, "GET", `/api/hosts/docs.example.com/files?event_id=${"b".repeat(64)}`)
+  ).json();
+  assert.deepEqual(
+    one.files.map((file: { path: string }) => file.path),
+    ["/index.html"],
+  );
+});
+
 test("a listed site describes itself with its own page metadata", async () => {
   const { harness, admin } = await setup();
 

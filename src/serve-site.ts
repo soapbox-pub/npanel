@@ -222,6 +222,12 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
    * two hosts serving one nsite each name their own URLs; the sitemap still
    * carries an `ETag` of the version it describes, since its content changes
    * only when a deploy does.
+   *
+   * The served version's own file list, even where the host merges earlier
+   * ones. Merging keeps a withdrawn URL *answering*, for the sake of the pages
+   * and caches still asking for it; inviting a crawler to index a page the
+   * latest deploy deleted would be npanel contradicting the site about what it
+   * publishes.
    */
   async function seoFallback(
     request: Request,
@@ -341,7 +347,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    const file = await sitePaths.resolve(version.event.event_id, url.pathname, { spa: host.spa === 1 });
+    const file = await sitePaths.resolve(version, url.pathname, { spa: host.spa === 1 });
 
     // Generated only where the site published no such file — the same
     // shadow-only-if-absent rule as `nostr.json`, in reverse. Both paths have

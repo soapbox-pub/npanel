@@ -44,6 +44,11 @@ export interface Host {
    */
   seo: boolean;
   /**
+   * Whether a path this deploy doesn't have falls back to the newest earlier
+   * deploy that did.
+   */
+  merge_deployments: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -68,6 +73,7 @@ export interface HostPatch {
   spa?: boolean;
   csp?: boolean;
   seo?: boolean;
+  merge_deployments?: boolean;
   pinned_event_id?: string | null;
 }
 
@@ -84,6 +90,8 @@ export interface SiteFile {
   sha256: string;
   size: number | null;
   stored: boolean;
+  /** Served from an earlier deploy, because the current one dropped the path. */
+  inherited: boolean;
 }
 
 /** One NIP-05 name a site answers for at `/.well-known/nostr.json`. */
