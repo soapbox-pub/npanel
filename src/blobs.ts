@@ -219,6 +219,35 @@ export class BlobStore {
   }
 
   /**
+   * The first `maxBytes` of a blob, decoded as UTF-8.
+   *
+   * For the handful of places npanel reads a site's own file to answer a
+   * question about it — a document's `<meta>` policy, a `robots.txt` — rather
+   * than to serve it. The cap is the whole point: these run on the serving
+   * path, and a site is free to publish a file of any size at any of those
+   * names.
+   */
+  async readText(sha256: string, maxBytes: number): Promise<string> {
+    const size = await this.size(sha256);
+    if (size === undefined || size === 0) return "";
+
+    const reader = this.read(sha256, { range: { start: 0, end: Math.min(size, maxBytes) - 1 } }).getReader();
+    const chunks: Uint8Array[] = [];
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return Buffer.concat(chunks).toString("utf8");
+  }
+
+  /**
    * A blob — or one of its compressed copies, optionally a byte range of
    * whichever was asked for (inclusive, as in HTTP) — as a file-backed Blob.
    *

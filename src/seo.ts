@@ -110,6 +110,66 @@ export function robotsTxt(origin: RequestOrigin): string {
 }
 
 /**
+ * The most of a `robots.txt` npanel will read before serving it as it is.
+ *
+ * This runs on the serving path, and a site may publish a file of any size at
+ * that name. Anything larger goes out as the blob, untouched.
+ */
+export const MAX_ROBOTS_BYTES = 64 * 1024;
+
+/** A `Sitemap:` line anywhere in the file, whatever its case or indentation. */
+const SITEMAP_DIRECTIVE = /^[ \t]*sitemap[ \t]*:/im;
+
+/**
+ * A rule shutting the whole site to some crawler.
+ *
+ * Matched loosely on purpose — any group's blanket `Disallow: /` is enough to
+ * leave the file alone. Reading which group it belongs to would be a robots
+ * parser, and the question here is only whether the site looks like it wants
+ * to be indexed at all.
+ */
+const DISALLOW_EVERYTHING = /^[ \t]*disallow[ \t]*:[ \t]*\/[ \t]*$/im;
+
+/**
+ * Whether npanel should append its `Sitemap:` line to a site's own
+ * `robots.txt`.
+ *
+ * False when the file already names a sitemap, whichever file that is: a site
+ * pointing at its own `sitemap-index.xml` has answered the question, and a
+ * second pointer would be npanel arguing with it. False too when the file
+ * shuts a crawler out of the whole site, where an invitation to index would be
+ * a strange thing to add on the site's behalf.
+ */
+export function robotsNeedsSitemap(text: string): boolean {
+  return !SITEMAP_DIRECTIVE.test(text) && !DISALLOW_EVERYTHING.test(text);
+}
+
+/**
+ * A site's own `robots.txt` with npanel's `Sitemap:` line appended.
+ *
+ * This is the one place npanel adds to a site's bytes rather than standing in
+ * for a file it never published, and it stays narrow to earn that. `Sitemap`
+ * is a non-group directive: it grants no crawler anything, and appending one
+ * cannot change what an `Allow` or `Disallow` above it means. The original is
+ * copied through verbatim — never reflowed, reordered, or rewritten — so the
+ * only difference is the line at the end.
+ *
+ * Only for a file {@link robotsNeedsSitemap} accepted.
+ */
+export function augmentRobots(text: string, origin: RequestOrigin): string {
+  const sitemap = `Sitemap: ${absoluteUrl(origin, "/sitemap.xml")}\n`;
+
+  // An empty file has no last group for a blank line to separate this from.
+  const body = text.replace(/\s*$/, "");
+  if (!body) return sitemap;
+
+  // A blank line before, so the directive can't be read as part of the last
+  // group, and one after, because a file ending mid-line is how the site's own
+  // last directive would get lost if anything ever appended again.
+  return `${body}\n\n${sitemap}`;
+}
+
+/**
  * A site path as an absolute URL at `origin`.
  *
  * Through `URL` rather than concatenation, because stored paths are

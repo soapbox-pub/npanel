@@ -316,14 +316,24 @@ needs it can't accidentally disarm the rest.
 
 `seo` decides whether npanel does three things for the site's standing in
 search engines, and defaults to `true` — including for hosts created before the
-flag existed. A `/sitemap.xml` is generated from the version's file list and a
-`/robots.txt` pointing at it, each only when the site published no file at that
-exact path — a site's own is always served untouched. And every page response
-carries a `Link: rel="canonical"` header naming its one URL, so `/foo`,
-`/foo/`, and `/foo/index.html` are indexed as one page rather than three
-competing copies. Turn it off for a site that manages canonical URLs itself —
-one that declares `<link rel="canonical">` tags of its own would be
-contradicted by the header.
+flag existed. A `/sitemap.xml` is generated from the version's file list, and a
+`/robots.txt` naming it, each only when the site published no file at that
+exact path. And every page response carries a `Link: rel="canonical"` header
+naming its one URL, so `/foo`, `/foo/`, and `/foo/index.html` are indexed as
+one page rather than three competing copies. Turn it off for a site that
+manages canonical URLs itself — one that declares `<link rel="canonical">` tags
+of its own would be contradicted by the header.
+
+`robots.txt` is the one file npanel will add to rather than only stand in for.
+A site that published one naming no sitemap gets npanel's `Sitemap:` line
+appended to it; everything the site wrote is copied through verbatim, never
+reflowed or reordered. `Sitemap` is a non-group directive, so the addition
+grants no crawler anything and cannot change what an `Allow` or `Disallow`
+above it means. The file is left exactly as published when it already names a
+sitemap — including one of its own, like a `sitemap-index.xml` — when any
+group carries a blanket `Disallow: /`, or when it is larger than 64 KB. An
+appended response is derived rather than stored, so it carries a
+`"<sha256>-robots"` ETag, no `Content-Encoding`, and no range support.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A

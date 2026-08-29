@@ -1312,3 +1312,160 @@ test("no version means no sitemap to generate", async () => {
 
   assert.equal((await harness.site("docs.example.com", "/sitemap.xml")).status, 503);
 });
+
+/** The 22 bytes six of the deployed sites publish, verbatim. */
+const BARE_ROBOTS = "User-agent: *\nAllow: /";
+
+/** A harness whose site published `robots` at `/robots.txt`. */
+async function withRobots(robots: string, opts: { spa?: boolean } = {}) {
+  return await setup({
+    spa: opts.spa,
+    versions: [
+      {
+        eventId: "a".repeat(64),
+        files: { "/index.html": "root", "/robots.txt": robots, "/404.html": "missing" },
+      },
+    ],
+  });
+}
+
+test("a published robots.txt that names no sitemap gets one appended", async () => {
+  const { harness } = await withRobots(BARE_ROBOTS);
+
+  const response = await harness.site("docs.example.com", "/robots.txt");
+  const body = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.equal(body, "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap.xml\n");
+
+  // Derived from the blob rather than being it, so it says which of the two
+  // this is — and drops the range support that counts against the stored bytes.
+  assert.equal(response.headers.get("etag"), `"${sha256(BARE_ROBOTS)}-robots"`);
+  assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(response.headers.get("cache-control"), "public, no-cache");
+  assert.equal(response.headers.get("accept-ranges"), null);
+  assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(body)));
+});
+
+test("a robots.txt that already names a sitemap is served untouched", async () => {
+  for (const published of [
+    "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap.xml\n",
+    // Two of the deployed sites point at an index of their own.
+    "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap-index.xml\n",
+    // A site that asked not to be indexed is not handed an invitation.
+    "User-agent: *\nDisallow: /\n",
+  ]) {
+    const { harness } = await withRobots(published);
+
+    const response = await harness.site("docs.example.com", "/robots.txt");
+    assert.equal(await response.text(), published);
+    // The blob's own tag, which is how you can tell nothing was derived.
+    assert.equal(response.headers.get("etag"), `"${sha256(published)}"`, published);
+    assert.equal(response.headers.get("accept-ranges"), "bytes");
+  }
+});
+
+test("hosts sharing one robots.txt each advertise their own sitemap", async () => {
+  // The case in production: six sites deploy the identical file, so the blob
+  // is shared and the cache must not be holding a finished body.
+  const { harness } = await withRobots(BARE_ROBOTS);
+
+  await harness.db
+    .insertInto("hosts")
+    .values({
+      hostname: "other.example.com",
+      pubkey: PUBKEY,
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: 1,
+      created_by: PUBKEY,
+      created_at: 1,
+      updated_at: 1,
+    })
+    .execute();
+
+  const first = await (await harness.site("docs.example.com", "/robots.txt")).text();
+  const second = await (await harness.site("other.example.com", "/robots.txt")).text();
+
+  assert.match(first, /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml/);
+  assert.match(second, /Sitemap: https:\/\/other\.example\.com\/sitemap\.xml/);
+});
+
+test("the appended robots.txt revalidates and answers HEAD", async () => {
+  const { harness } = await withRobots(BARE_ROBOTS);
+
+  const get = await harness.site("docs.example.com", "/robots.txt");
+  const etag = get.headers.get("etag") ?? "";
+
+  const conditional = await harness.site("docs.example.com", "/robots.txt", {
+    headers: { "if-none-match": etag },
+  });
+  assert.equal(conditional.status, 304);
+  assert.equal(await conditional.text(), "");
+
+  const head = await harness.site("docs.example.com", "/robots.txt", { method: "HEAD" });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  assert.equal(head.headers.get("content-length"), get.headers.get("content-length"));
+
+  // The blob's own tag is not this response's, or a cache holding the stored
+  // file would answer for the longer one.
+  const stale = await harness.site("docs.example.com", "/robots.txt", {
+    headers: { "if-none-match": `"${sha256(BARE_ROBOTS)}"` },
+  });
+  assert.equal(stale.status, 200);
+});
+
+/** Long enough to be worth compressing, without a blanket `Disallow`. */
+const LONG_ROBOTS = `User-agent: *\n${"Disallow: /generated/page/\n".repeat(40)}`;
+
+test("an appended robots.txt is never sent as a stored compressed copy", async () => {
+  const { harness } = await withRobots(LONG_ROBOTS);
+  await harness.blobs.ensureVariants(sha256(LONG_ROBOTS));
+
+  const response = await harness.site("docs.example.com", "/robots.txt", {
+    headers: { "accept-encoding": "br, gzip" },
+  });
+
+  // The sidecars are copies of the shorter file, so serving one would hand
+  // back a body without the line this whole path exists to add.
+  assert.equal(response.headers.get("content-encoding"), null);
+  assert.match(await response.text(), /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml\n$/);
+});
+
+test("a robots.txt too large to read is served as published", async () => {
+  const huge = `User-agent: *\n${"# padding padding padding\n".repeat(3000)}`;
+  assert.ok(huge.length > 64 * 1024, "larger than the read cap");
+
+  const { harness } = await withRobots(huge);
+
+  const response = await harness.site("docs.example.com", "/robots.txt");
+  assert.equal(response.headers.get("etag"), `"${sha256(huge)}"`);
+  assert.equal(await response.text(), huge);
+});
+
+test("the seo flag also turns off appending to a published robots.txt", async () => {
+  const { harness, hostId } = await withRobots(BARE_ROBOTS);
+
+  await harness.db.updateTable("hosts").set({ seo: 0 }).where("id", "=", hostId).execute();
+  harness.serveCache.clear();
+
+  const response = await harness.site("docs.example.com", "/robots.txt");
+  assert.equal(await response.text(), BARE_ROBOTS);
+  assert.equal(response.headers.get("etag"), `"${sha256(BARE_ROBOTS)}"`);
+});
+
+test("an SPA host's 404 shell is not mistaken for a published robots.txt", async () => {
+  // With `spa` on, every unknown path resolves to the shell under a 200. That
+  // must not become a robots.txt npanel appends its sitemap to.
+  const { harness } = await setup({
+    spa: true,
+    versions: [{ eventId: "a".repeat(64), files: { "/index.html": "shell" } }],
+  });
+
+  const response = await harness.site("docs.example.com", "/robots.txt");
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap.xml\n");
+});

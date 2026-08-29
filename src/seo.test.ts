@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canonicalLink, canonicalPath, robotsTxt, sitemapXml, versionDate } from "./seo.ts";
+import {
+  augmentRobots,
+  canonicalLink,
+  canonicalPath,
+  robotsNeedsSitemap,
+  robotsTxt,
+  sitemapXml,
+  versionDate,
+} from "./seo.ts";
 import type { RequestOrigin } from "./serve-site.ts";
 
 const ORIGIN: RequestOrigin = { hostname: "docs.example.com", scheme: "https" };
@@ -83,4 +91,56 @@ test("robotsTxt allows everything and names the sitemap", () => {
 
   assert.match(robots, /User-agent: \*\nAllow: \//);
   assert.match(robots, /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml/);
+});
+
+test("robotsNeedsSitemap spots a sitemap the site already named", () => {
+  // The boilerplate every nsyte build ships, and the case this exists for.
+  assert.equal(robotsNeedsSitemap("User-agent: *\nAllow: /"), true);
+  assert.equal(robotsNeedsSitemap(""), true);
+  assert.equal(robotsNeedsSitemap("User-agent: *\nDisallow: /admin/"), true);
+
+  // Already answered, whichever file it points at and however it is spelled.
+  assert.equal(robotsNeedsSitemap("User-agent: *\n\nSitemap: https://x.example/sitemap.xml"), false);
+  assert.equal(robotsNeedsSitemap("sitemap: https://x.example/sitemap-index.xml"), false);
+  assert.equal(robotsNeedsSitemap("SITEMAP:https://x.example/s.xml"), false);
+  assert.equal(robotsNeedsSitemap("  \tSitemap : https://x.example/s.xml"), false);
+
+  // A site that asked not to be indexed is not argued with.
+  assert.equal(robotsNeedsSitemap("User-agent: *\nDisallow: /"), false);
+  assert.equal(robotsNeedsSitemap("User-agent: badbot\nDisallow: /\n"), false);
+
+  // But a path that merely starts with a slash is an ordinary rule.
+  assert.equal(robotsNeedsSitemap("User-agent: *\nDisallow: /private"), true);
+});
+
+test("augmentRobots appends one line and changes nothing else", () => {
+  // The exact 22 bytes six of the deployed sites share, with no trailing
+  // newline — the join must not run the directive onto `Allow: /`.
+  assert.equal(
+    augmentRobots("User-agent: *\nAllow: /", ORIGIN),
+    "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap.xml\n",
+  );
+
+  // Comments, blank lines and ordering are the site's; only the end changes.
+  const written = "# hello\n\nUser-agent: *\nDisallow: /drafts/\nCrawl-delay: 10\n";
+  assert.equal(
+    augmentRobots(written, ORIGIN),
+    "# hello\n\nUser-agent: *\nDisallow: /drafts/\nCrawl-delay: 10\n\nSitemap: https://docs.example.com/sitemap.xml\n",
+  );
+
+  // An empty file has no group to be separated from.
+  assert.equal(augmentRobots("", ORIGIN), "Sitemap: https://docs.example.com/sitemap.xml\n");
+  assert.equal(augmentRobots("\n\n", ORIGIN), "Sitemap: https://docs.example.com/sitemap.xml\n");
+});
+
+test("the appended sitemap names the host being served", () => {
+  // Six hosts share one robots.txt blob, so this must follow the request and
+  // not the file it came from.
+  const other: RequestOrigin = { hostname: "other.example.com", scheme: "https" };
+
+  assert.match(augmentRobots("User-agent: *", other), /Sitemap: https:\/\/other\.example\.com\/sitemap\.xml/);
+
+  // And an onion visitor is told about the onion's own sitemap.
+  const onion: RequestOrigin = { hostname: `${"a".repeat(56)}.onion`, scheme: "http" };
+  assert.match(augmentRobots("User-agent: *", onion), /Sitemap: http:\/\/a{56}\.onion\/sitemap\.xml/);
 });

@@ -11,22 +11,5 @@ export const MAX_HTML_BYTES = 128 * 1024;
 
 /** The first {@link MAX_HTML_BYTES} of a stored blob, as text. */
 export async function readHtmlHead(blobs: BlobStore, sha256: string): Promise<string> {
-  const size = await blobs.size(sha256);
-  if (size === undefined || size === 0) return "";
-
-  const stream = blobs.read(sha256, { range: { start: 0, end: Math.min(size, MAX_HTML_BYTES) - 1 } });
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  return Buffer.concat(chunks).toString("utf8");
+  return await blobs.readText(sha256, MAX_HTML_BYTES);
 }

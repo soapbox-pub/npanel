@@ -10,6 +10,7 @@ import { canonicalLink, robotsTxt, sitemapPaths, sitemapXml, versionDate } from 
 import type { CachedSite, CachedVersion, ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
 import { SitePaths } from "./site-paths.ts";
+import { SiteRobots } from "./site-robots.ts";
 import type { ServedHost } from "./sites.ts";
 
 export interface SiteServerDeps {
@@ -107,8 +108,10 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
   const { db, blobs, siteCsp, serveCache, log } = deps;
 
   // Built here rather than injected: the path map is only ever read to serve a
-  // file, so nothing outside this server has a lookup to share with it.
+  // file, so nothing outside this server has a lookup to share with it. The
+  // same goes for the `robots.txt` a site published.
   const sitePaths = new SitePaths(db);
+  const siteRobots = new SiteRobots(blobs);
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -254,6 +257,45 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
   }
 
+  /**
+   * A site's own `robots.txt`, with npanel's `Sitemap:` line on the end.
+   *
+   * The body is derived from the blob rather than being it, so everything the
+   * blob's identity bought has to be left behind: the stored compressed copies
+   * are copies of the shorter file and would be wrong, a `Range` would count
+   * against bytes nobody is sending, and the `ETag` has to say which of the two
+   * this is. What survives is the part that is still true — the file changes
+   * only when the version does, so it revalidates like the document it is.
+   */
+  function robotsResponse(
+    request: Request,
+    origin: RequestOrigin,
+    body: string,
+    file: { path: string; sha256: string },
+    version: CachedVersion,
+    naddr: string,
+  ): Response {
+    const bytes = UTF8.encode(body);
+    const etag = `"${file.sha256}-robots"`;
+
+    const headers = new Headers({
+      "content-type": contentType(file.path),
+      "cache-control": cacheControl(file.path),
+      etag,
+      "last-modified": version.lastModified,
+      "content-length": String(bytes.byteLength),
+      "x-nsite-addr": naddr,
+    });
+
+    if (matchesEtag(request.headers.get("if-none-match"), etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+
+    log.debug("site_robots_sitemap", { hostname: origin.hostname, sha256: file.sha256 });
+
+    return new Response(request.method === "HEAD" ? null : bytes, { status: 200, headers });
+  }
+
   async function respond(
     request: Request,
     url: URL,
@@ -323,6 +365,16 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       // The version is marked ready, so this means the blob was removed underneath us.
       log.error("blob_missing", { hostname, path: file.path, sha256: file.sha256 });
       return text(500, "This file is missing from local storage.");
+    }
+
+    // The one file npanel adds to rather than stands in for. A `robots.txt`
+    // naming no sitemap gets npanel's line appended; anything else — including
+    // a file that already names one — falls through and is served as stored.
+    if (host.seo !== 0 && url.pathname === "/robots.txt" && file.status === 200) {
+      const augmented = await siteRobots.body(file.sha256, variants.identity, origin);
+      if (augmented !== undefined) {
+        return robotsResponse(request, origin, augmented, file, version, site.naddr);
+      }
     }
 
     // Everything below is about the representation this picks, not the blob:

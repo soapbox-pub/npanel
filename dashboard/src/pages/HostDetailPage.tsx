@@ -320,8 +320,8 @@ export function HostDetailPage() {
               </label>
               <p className="text-sm text-muted-foreground">
                 {data.seo
-                  ? 'npanel generates a sitemap.xml and robots.txt when this site publishes neither, and marks the canonical URL of every page so search engines index one spelling of each. Files the site publishes itself are always served as-is.'
-                  : 'This site is served exactly as published: no generated sitemap.xml or robots.txt, and no canonical URL header. Turn this back on unless the site manages canonical URLs itself.'}
+                  ? "npanel generates a sitemap.xml when this site publishes none, and marks the canonical URL of every page so search engines index one spelling of each. A robots.txt that names no sitemap gets a Sitemap: line appended, leaving everything the site wrote untouched; one that already names a sitemap, or that disallows crawling outright, is served exactly as published."
+                  : 'This site is served exactly as published: no generated sitemap.xml, nothing appended to its robots.txt, and no canonical URL header. Turn this back on unless the site manages canonical URLs itself.'}
               </p>
             </CardContent>
           </Card>

@@ -332,6 +332,28 @@ one in reverse: only where the site published no file at that exact path, and a
 site's own `/404.html` standing in for the missing path doesn't count as
 publishing one.
 
+`robots.txt` is then the one exception to that rule, because standing in for a
+missing file turned out to cover almost nobody: nearly every nsite ships the
+boilerplate `User-agent: * / Allow: /`, which names no sitemap and blocks the
+generated one from ever appearing. So a published `robots.txt` that names no
+sitemap has npanel's `Sitemap:` line appended to it, with everything the site
+wrote copied through verbatim. That is a narrow thing to be allowed: `Sitemap`
+is a non-group directive, so it grants no crawler anything and cannot change
+what an `Allow` or `Disallow` above it means. A file that already names a
+sitemap is left alone — it has answered the question, and a second pointer
+would be npanel arguing with it — as is one where any group carries a blanket
+`Disallow: /`, where an invitation to index would be a strange thing to add on
+the site's behalf.
+
+Appending makes the body derived rather than stored, which costs it everything
+the blob's identity bought: the compressed sidecars are copies of the shorter
+file and would be wrong, a `Range` would count against bytes nobody is sending,
+and the `ETag` becomes `"<sha256>-robots"` so a cache can't confuse the two.
+The file is read at most 64 KB and held by hash, like the CSP policy and the
+link preview. What is cached is the *file*, never the finished body — the
+`Sitemap:` line names the host being served, and six sites sharing one
+boilerplate blob must each get their own.
+
 Page responses carry a `Link: rel="canonical"` header naming the one spelling
 of the page — `index.html` collapses into its directory, everything else keeps
 the manifest's own spelling — so `/foo`, `/foo/`, and `/foo/index.html` are
