@@ -5,7 +5,8 @@
   "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/server.ts",
+    "dev": "concurrently -k -n server,dashboard -c blue,magenta \"bun run dev:server\" \"bun run dashboard:dev\"",
+    "dev:server": "bun run --watch src/server.ts",
     "start": "bun run src/server.ts",
     "test": "bun test",
     "lint": "biome check",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/node": "^25.0.10",
+    "concurrently": "^10.0.5",
     "typescript": "^5.7.3"
   }
 }

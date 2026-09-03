@@ -36,7 +36,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   test/harness.ts       shared test harness
 scripts/                make-admin.ts, prune-blobs.ts, compress-blobs.ts
 dashboard/              the SPA (React, Vite, its own package.json)
-docs/                   deployment, configuration, architecture, api
+docs/                   deployment, configuration, architecture, api, development
 ```
 
 ## Runtimes

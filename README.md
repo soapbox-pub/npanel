@@ -91,27 +91,33 @@ recorded in the audit log. See [docs/configuration.md](docs/configuration.md).
 - [Configuration](docs/configuration.md) — env vars and runtime settings
 - [Architecture](docs/architecture.md) — how sync, storage, and serving work
 - [API](docs/api.md) — the JSON API behind the dashboard
+- [Development](docs/development.md) — running npanel locally
 
 ## Development
 
 ```sh
-bun run dev                 # server, with reload
-bun run dashboard:dev       # dashboard, with HMR
+bun install
+bun run dashboard:install
 
+cp .env.example .env
+$EDITOR .env                # DASHBOARD_HOST="localhost"
+
+bun run make-admin npub1yourkeyhere
+bun run dev                 # server on :3000, dashboard on :8080, with reload
+```
+
+The checks, all four of which must pass:
+
+```sh
 bun lint                    # biome
 bun check                   # tsc --noEmit
 bun test                    # node:test, via bun
-```
-
-The dashboard has its own checks:
-
-```sh
 bun run dashboard:test      # tsc, eslint, vitest, and a production build
 ```
 
-Run it from the root like that, or as `cd dashboard && bun run test`. Note the
-`run`: a bare `bun test` in `dashboard/` would start Bun's own test runner
-instead of the script, and the dashboard's tests need vitest's DOM environment.
+See [docs/development.md](docs/development.md) for the rest — how to serve a
+site at `foo.localhost:3000`, and what a local instance does differently from
+one behind a proxy.
 
 ## License
 
