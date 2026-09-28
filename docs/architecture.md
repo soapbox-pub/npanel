@@ -182,8 +182,9 @@ A ready version is not yet something a host serves. What a host serves is its
 **build**: the finished bundle for that host, made once and then frozen
 (`HostBuilder`, `src/builds.ts`). A build is a path map — the host's version
 chain flattened into one, plus every file npanel generates or rewrites for that
-host — and everything in it is an ordinary stored blob with its compressed
-copies. So every body a site sends goes out through `sendfile`, including the
+host: a sitemap, a `robots.txt` with a line appended, and with analytics on the
+tracker script and every page rewritten to load it — and everything in it is an
+ordinary stored blob with its compressed copies. So every body a site sends goes out through `sendfile`, including the
 ones npanel wrote, and all the work of making them happens once, when the host
 is built, rather than on a request. Only headers are decided per request.
 

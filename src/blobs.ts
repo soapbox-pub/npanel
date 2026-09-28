@@ -223,13 +223,17 @@ export class BlobStore {
    *
    * For the handful of places npanel reads a site's own file to answer a
    * question about it — a document's `<meta>` policy, a `robots.txt` — rather
-   * than to serve it. The cap is the whole point: these run on the serving
-   * path, and a site is free to publish a file of any size at any of those
-   * names.
+   * than to serve it. The cap is the whole point: a site is free to publish a
+   * file of any size at any of those names.
    */
   async readText(sha256: string, maxBytes: number): Promise<string> {
+    return (await this.readBytes(sha256, maxBytes)).toString("utf8");
+  }
+
+  /** The first `maxBytes` of a blob, as bytes, for a build that rewrites it. */
+  async readBytes(sha256: string, maxBytes: number): Promise<Buffer> {
     const size = await this.size(sha256);
-    if (size === undefined || size === 0) return "";
+    if (size === undefined || size === 0) return Buffer.alloc(0);
 
     const reader = this.read(sha256, { range: { start: 0, end: Math.min(size, maxBytes) - 1 } }).getReader();
     const chunks: Uint8Array[] = [];
@@ -244,7 +248,7 @@ export class BlobStore {
       reader.releaseLock();
     }
 
-    return Buffer.concat(chunks).toString("utf8");
+    return Buffer.concat(chunks);
   }
 
   /**

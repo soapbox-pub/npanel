@@ -247,3 +247,79 @@ test("startup clears builds a crash left unfinished", async () => {
   assert.deepEqual(statuses, [{ status: "ready" }]);
   assert.equal((await page(harness)).body, "v1");
 });
+
+const PAGE = "<!doctype html><html><head><title>Docs</title></head><body>hi</body></html>";
+const SCRIPT_TAG = '<script type="module" src="/.npanel/script.js"></script>';
+
+test("a host counting visits serves every page with the tracker added", async () => {
+  const { harness, hostId } = await setup();
+  await deploy(harness, "a".repeat(64), 1000, { "/index.html": PAGE, "/about.html": PAGE, "/app.js": "code" });
+  await harness.db.updateTable("hosts").set({ analytics: 1 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged();
+
+  const index = await page(harness);
+  assert.equal(index.body, PAGE.replace("</head>", `${SCRIPT_TAG}</head>`));
+  assert.equal((await page(harness, "/about")).body, index.body);
+  assert.equal((await page(harness, "/app.js")).body, "code");
+
+  // Rewritten once, however many paths share the page, and recorded as a
+  // rewrite of what the site published.
+  const rows = await harness.db
+    .selectFrom("host_build_files")
+    .select(["path", "sha256", "source_sha256"])
+    .where("path", "in", ["/index.html", "/about.html"])
+    .execute();
+  assert.equal(new Set(rows.map((row) => row.sha256)).size, 1);
+  assert.ok(rows.every((row) => row.source_sha256 === sha256(PAGE)));
+});
+
+test("the tracker is served from the site, reporting under the site's name", async () => {
+  const { harness, hostId } = await setup();
+  await deploy(harness, "a".repeat(64), 1000, { "/index.html": PAGE });
+  await harness.db.updateTable("hosts").set({ analytics: 1 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged();
+
+  const response = await harness.site("docs.example.com", "/.npanel/script.js", {
+    headers: { "accept-encoding": "br" },
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/javascript; charset=utf-8");
+  // Stored like any other file, so it goes out as its compressed copy.
+  assert.equal(response.headers.get("content-encoding"), "br");
+
+  const plain = await (await harness.site("docs.example.com", "/.npanel/script.js")).text();
+  assert.match(plain, /init\(\{"domain":"docs\.example\.com","endpoint":"\/\.npanel\/api\/event"/);
+});
+
+test("a site's own policy is widened in its page and in the header it is served under", async () => {
+  const { harness, hostId } = await setup();
+  const declared = `<html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'"></head></html>`;
+  await deploy(harness, "a".repeat(64), 1000, { "/index.html": declared });
+
+  await harness.builder.hostsChanged();
+  const before = (await harness.site("docs.example.com", "/")).headers.get("content-security-policy");
+  assert.equal(before, "default-src 'none'");
+
+  await harness.db.updateTable("hosts").set({ analytics: 1 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged();
+  harness.serveCache.clear();
+
+  const response = await harness.site("docs.example.com", "/");
+  const policy = "default-src 'none'; script-src 'self'; connect-src 'self'";
+  assert.equal(response.headers.get("content-security-policy"), policy);
+  assert.match(await response.text(), new RegExp(`content="${policy}"`));
+});
+
+test("turning analytics off rebuilds the site as published", async () => {
+  const { harness, hostId } = await setup();
+  await deploy(harness, "a".repeat(64), 1000, { "/index.html": PAGE });
+  await harness.db.updateTable("hosts").set({ analytics: 1 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged();
+
+  await harness.db.updateTable("hosts").set({ analytics: 0 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged();
+
+  assert.equal((await page(harness)).body, PAGE);
+  assert.equal((await page(harness, "/.npanel/script.js")).status, 404);
+});

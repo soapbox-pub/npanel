@@ -5,6 +5,7 @@
     "": {
       "dependencies": {
         "@nostrify/nostrify": "^0.54.0",
+        "@plausible-analytics/tracker": "0.4.6",
         "entities": "^8.0.0",
         "hono": "^4.13.1",
         "kysely": "^0.29.5",
@@ -49,6 +50,8 @@
     "@nostrify/nostrify": ["@nostrify/nostrify@0.54.0", "", { "dependencies": { "@nostrify/types": "0.37.0", "@scure/base": "^2.0.0", "@smithy/util-base64": "^4.3.0", "@smithy/util-hex-encoding": "^4.2.0", "@types/node": "^24.1.0", "lru-cache": "^10.2.0", "nostr-tools": "^2.13.0", "websocket-ts": "^2.2.1", "ws": "^8.18.3", "zod": "^4.3.6" } }, "sha512-stN5NCInMN/kXFnNw0ZL6vf/QBdokpsZXMNxIbsM7UVBLvUzsKH37gdbaI3afi3Lcnq8szrXv8qNu/to+3yc7g=="],
 
     "@nostrify/types": ["@nostrify/types@0.37.0", "", {}, "sha512-P0AKR+qcNeBBTA5UDnJM6SxLAQbgud2+ZcdVyheoP37XGQvi7rUncQUDKwebG+Ui5kswp/IPEmvqNtCMQpwRoA=="],
+
+    "@plausible-analytics/tracker": ["@plausible-analytics/tracker@0.4.6", "", {}, "sha512-nbu6xGgSP6jeYuoVklZBzucUnIpo75tVu3Kr+R0EDycVKaMC/jF5Q/YCaM/8gR4fPZ1IDcXt6FdBJFZ1uZwEPA=="],
 
     "@scure/base": ["@scure/base@2.0.0", "", {}, "sha512-3E1kpuZginKkek01ovG8krQ0Z44E3DHPjc5S2rjJw9lZn3KSQOs8S7wqikF/AH7iRanHypj85uGyxk0XAyC37w=="],
 

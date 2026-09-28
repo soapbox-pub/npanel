@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@nostrify/nostrify": "^0.54.0",
+    "@plausible-analytics/tracker": "0.4.6",
     "entities": "^8.0.0",
     "hono": "^4.13.1",
     "kysely": "^0.29.5",

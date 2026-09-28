@@ -357,12 +357,25 @@ those are exactly the files the next deploy removes. The generated
 keeping a withdrawn URL answering is not a reason to invite a crawler to index
 it.
 
+`analytics` counts visits to the site, and defaults to `false`. With it on,
+every HTML page the site serves loads npanel's tracker — Plausible's own
+`@plausible-analytics/tracker`, served from the site at `/.npanel/script.js`
+and reporting to `/.npanel/api/event` on the same origin — so nothing needs
+configuring and a visit over the site's onion address counts too. The pages are
+rewritten when the host is built, not per request: the one tag is added at the
+end of `<head>`, every other byte is left as published, and the result is
+stored and compressed like any other file. A `<meta>` Content Security Policy
+in a page is widened just enough for the tracker — `'self'` added to whichever
+directives govern loading a script and `fetch`ing — and the header follows
+the page. A site that publishes files under `/.npanel/` has
+`/.npanel/script.js` shadowed while this is on.
+
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
 
-A change to `hostname`, `address`, `pinned_event_id`, `seo`, or
-`merge_deployments` rebuilds the host in the background, since each changes
+A change to `hostname`, `address`, `pinned_event_id`, `seo`,
+`merge_deployments`, or `analytics` rebuilds the host in the background, since each changes
 the files it serves. The response doesn't wait: the previous build goes on
 serving until the new one is complete, which is usually a moment.
 
@@ -435,8 +448,8 @@ version's own manifest and nothing else.
 spot exactly what a stalled deploy is missing. `inherited` is true for a path
 the named version doesn't publish and a merged earlier one does. `source` is
 `site` for a file as published, `generated` for one npanel made outright — a
-sitemap — and `modified` for one it rewrote, like a `robots.txt` with a line
-appended.
+sitemap, the analytics tracker — and `modified` for one it rewrote, like a
+`robots.txt` with a line appended or a page loading the tracker.
 
 ### `POST /api/hosts/:hostname/sync`
 

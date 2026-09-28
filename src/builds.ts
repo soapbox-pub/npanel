@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { extname } from "node:path/posix";
 import type { Kysely } from "kysely";
+import { MAX_INJECT_BYTES, injectAnalytics } from "./analytics/inject.ts";
+import { TRACKER_PATH, type TrackerSource, trackerScript, trackerSource } from "./analytics/tracker.ts";
 import { recordBlob, recordVariantSizes } from "./blob-records.ts";
 import type { BlobStore } from "./blobs.ts";
 import type { BuildKind, Database, Host, HostBuild, SiteEvent } from "./db/schema.ts";
@@ -36,6 +39,9 @@ const RETRY_BACKOFF = 5_000;
 /** Rows written per insert, under SQLite's bound-parameter limit. */
 const INSERT_CHUNK = 200;
 
+/** Extensions of the pages the analytics tracker is added to. */
+const PAGE_EXTENSIONS = new Set([".html", ".htm"]);
+
 const UTF8 = new TextEncoder();
 
 /** One path of a build, as it goes into `host_build_files`. */
@@ -57,6 +63,8 @@ interface BuildTarget {
   event: SiteEvent;
   /** The versions it merges, newest first, starting with {@link event}. */
   chain: string[];
+  /** The tracker its pages load, when the host counts visits. */
+  tracker: TrackerSource | undefined;
   fingerprint: string;
 }
 
@@ -290,6 +298,8 @@ export class HostBuilder {
       .where("host_id", "=", hostId)
       .executeTakeFirst();
 
+    const tracker = host.analytics === 1 ? await trackerSource() : undefined;
+
     const origins: [BuildKind, RequestOrigin][] = [["clearnet", { hostname: host.hostname, scheme: "https" }]];
     // The onion gets a build of its own because its generated files name it:
     // a sitemap fetched over Tor lists onion URLs. What the two share is
@@ -302,7 +312,8 @@ export class HostBuilder {
       origin,
       event,
       chain,
-      fingerprint: fingerprint(host, origin, chain),
+      tracker,
+      fingerprint: fingerprint(host, origin, chain, tracker),
     }));
   }
 
@@ -397,8 +408,60 @@ export class HostBuilder {
     }
 
     if (target.host.seo !== 0) await this.seo(target, files);
+    if (target.tracker) await this.analytics(target, target.tracker, files);
 
     return files;
+  }
+
+  /**
+   * The tracker, and every page of the site loading it.
+   *
+   * Each page is rewritten once per distinct blob — a site whose pages share
+   * one shell rewrites it once — and stored like any other file, so a page
+   * that comes out the same as last build's costs a hash and nothing more.
+   * The rewritten page names the published one as its source, which is how
+   * the dashboard can say what npanel changed.
+   */
+  private async analytics(target: BuildTarget, tracker: TrackerSource, files: Map<string, BuildFile>): Promise<void> {
+    const script = UTF8.encode(trackerScript(tracker, target.host.hostname));
+    const integrity = `sha384-${createHash("sha384").update(script).digest("base64")}`;
+
+    const rewritten = new Map<string, string | null>();
+    let pages = 0;
+    let skipped = 0;
+
+    for (const [path, file] of files) {
+      if (!PAGE_EXTENSIONS.has(extname(path).toLowerCase())) continue;
+
+      let sha256 = rewritten.get(file.sha256);
+      if (sha256 === undefined) {
+        sha256 = null;
+        const size = await this.blobs.size(file.sha256);
+        if (size !== undefined && size <= MAX_INJECT_BYTES) {
+          const page = injectAnalytics(await this.blobs.readBytes(file.sha256, MAX_INJECT_BYTES), integrity);
+          if (page) sha256 = await this.store(path, page);
+        }
+        rewritten.set(file.sha256, sha256);
+      }
+
+      if (sha256 === null) {
+        skipped++;
+        continue;
+      }
+
+      files.set(path, { sha256, event_id: file.event_id, source_sha256: file.sha256 });
+      pages++;
+    }
+
+    files.set(TRACKER_PATH, { sha256: await this.store(TRACKER_PATH, script), event_id: null, source_sha256: null });
+
+    await writeDeployLog(this.db, target.event.event_id, "debug", "analytics_added", {
+      hostname: target.origin.hostname,
+      kind: target.kind,
+      pages,
+      // Too large to rewrite, or fragments with no document to add a script to.
+      skipped,
+    });
   }
 
   /**
@@ -452,8 +515,8 @@ export class HostBuilder {
    * reason it isn't during a deploy: an uncompressed file is a slower site,
    * not a broken one.
    */
-  private async store(path: string, text: string): Promise<string> {
-    const bytes = UTF8.encode(text);
+  private async store(path: string, content: string | Uint8Array): Promise<string> {
+    const bytes = typeof content === "string" ? UTF8.encode(content) : content;
     const sha256 = createHash("sha256").update(bytes).digest("hex");
 
     if (!(await this.blobs.has(sha256))) await this.blobs.put(sha256, bytes);
@@ -532,16 +595,20 @@ export class HostBuilder {
  *
  * The origin covers the hostname and onion address its generated files name,
  * the chain covers which bytes it serves, and the flags cover what it
- * generates. Anything that affects only headers — the CSP switch, SPA mode —
- * is read per request and deliberately left out, so flipping one rebuilds
- * nothing.
+ * generates. The hostname is there too because the tracker reports under it
+ * from the onion as well, and the tracker's own hash because a new release of
+ * it is a new file every page loads. Anything that affects only headers — the
+ * CSP switch, SPA mode — is read per request and deliberately left out, so
+ * flipping one rebuilds nothing.
  */
-function fingerprint(host: Host, origin: RequestOrigin, chain: string[]): string {
+function fingerprint(host: Host, origin: RequestOrigin, chain: string[], tracker: TrackerSource | undefined): string {
   const inputs = {
     builder: BUILDER_VERSION,
     origin: originUrl(origin),
+    hostname: host.hostname,
     chain,
     seo: host.seo,
+    tracker: tracker?.sha256 ?? null,
   };
 
   return createHash("sha256").update(JSON.stringify(inputs)).digest("hex");
