@@ -21,6 +21,8 @@ background worker that keeps local storage in sync with Nostr.
                     │ relays (manifests) ── Blossom (blobs) ───┘
                     │
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
+
+   proxy: /.npanel/api/event on any site ──► analytics thread :3002 ──► analytics.sqlite3
 ```
 
 ## Request routing
@@ -220,6 +222,8 @@ in it — and older ones are deleted as the new one goes live.
 ## Storage
 
 **SQLite** via Kysely, at `DATA_DIR/npanel.sqlite3`. Migrations run at startup.
+Analytics live in a database of their own beside it — see
+[analytics](#analytics).
 The dialect in `src/db/sqlite.ts` is a thin adapter over whichever synchronous
 binding the runtime has: `node:sqlite` if it's there — which now includes Bun
 and Deno, not just Node — and `bun:sqlite` otherwise. Either way there's no
@@ -538,6 +542,72 @@ Clearnet HTML responses carry `Onion-Location`, which is how Tor Browser offers
 the address to a visitor without anyone having to hand it out. It is sent only
 over HTTPS, because on a plain-HTTP hop anything in the path could rewrite it
 and point the visitor at an onion of its own choosing.
+
+## Analytics
+
+A site with `analytics` on counts its visitors, and npanel is the analytics
+server: it implements the part of Plausible's that a site talks to and the part
+its dashboard reads, rather than sending anything anywhere else. There is no
+Plausible to install, no site to register in one, and nothing for a site's
+author to add — turning the switch on is the whole setup.
+
+**Collection.** The host's build adds Plausible's own tracker
+(`@plausible-analytics/tracker`, unmodified) to every page, served from the
+site at `/.npanel/script.js` with the site's name baked in, reporting to
+`/.npanel/api/event` on the same origin. Same-origin is what keeps it inside
+the site's Content Security Policy and working over the site's onion address;
+the path is neutral because `plausible` and `analytics` are exactly what
+blocklists look for. See [the builds section](#builds) — the pages are rewritten
+once, when the host is built, and served over `sendfile` like everything else.
+
+**Isolation.** Events are received and recorded on a worker thread with its own
+port, `ANALYTICS_PORT`, which the proxy routes that one path to on every site
+(`src/analytics/worker.ts`). Serving sites is always the first priority, so
+nothing about counting visits runs on the thread that serves them: not the
+parsing, not the user-agent and location lookups, not the writes, and not the
+dashboard's queries. An event that reaches the main listener instead — every
+visit over Tor, since those never pass through the proxy — is read and handed
+across whole, a few hundred bytes. The thread owns its database file and its
+caches outright; an uncaught error closes its port and ends it, and the main
+thread starts another with backoff (`src/analytics/service.ts`). It is never
+terminated from outside, because a worker killed that way keeps its listening
+socket bound for the life of the process.
+
+**Ingestion** follows Plausible's closely enough that anything written against
+its `POST /api/event` works here: the same fields and limits, the same
+`202 ok`, `x-plausible-dropped` for events it chose not to keep, and the same
+`400` bodies (`src/analytics/request.ts`, `ingest.ts`). Each event is matched to
+a site by its `d`, and dropped with a `202` if that site isn't counting, if the
+user agent is a bot, or if the referrer is on Matomo's spam list. Browsers and
+operating systems are read with the same Matomo database Plausible uses;
+sources and channels are ports of Plausible's rules over its own data files;
+locations come from DB-IP's free City Lite database, downloaded into
+`DATA_DIR/geo` the first time a site counts visits and refreshed monthly.
+
+**Privacy** is Plausible's model. No cookie is set and nothing identifying is
+stored. A visitor is a 48-bit hash of their user agent, address and the site
+under a salt that is replaced every day at midnight UTC and deleted the day
+after, so one person is one visitor for one day on one site and cannot be
+linked further than that by anyone, npanel included. The address is used for
+that hash and the location lookup, and dropped.
+
+**Sessions** are Plausible's too: a visit lasts until thirty minutes pass with
+no event, takes its source, location and device from the event that began it,
+and stops being a bounce on a second pageview or any interactive event.
+Engagement events — time on page and scroll depth — keep a visit alive without
+counting as anything in it. Open visits live in memory, where each event is
+matched to one, and are written back as they change.
+
+**Storage** is SQLite, in `DATA_DIR/analytics.sqlite3`, apart from npanel's own
+database so the tables that grow with every pageview are nowhere near the ones
+serving reads. Nothing is written per event: events collect in memory and are
+written with every changed visit in one transaction every two seconds, so a
+crash costs at most those seconds — for counting visitors, a fair price for
+never making a visitor's request wait on a disk. Both tables are clustered by
+site and time, because every question the dashboard asks is one site over one
+range of dates. Every in-memory structure is bounded — open visits, the write
+buffer, the user-agent cache — so a flood of events costs accuracy rather than
+memory.
 
 ## Authentication
 

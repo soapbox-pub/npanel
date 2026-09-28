@@ -6,6 +6,7 @@ import type { NostrEvent } from "@nostrify/nostrify";
 import type { Hono } from "hono";
 import type { Kysely } from "kysely";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
+import { AnalyticsService } from "../analytics/service.ts";
 import { createApp } from "../app.ts";
 import { NIP98_KIND } from "../auth.ts";
 import { BlobStore } from "../blobs.ts";
@@ -200,7 +201,14 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   });
 
   const siteCsp = new SiteCsp(db, blobs, log);
-  const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
+  // Not started: no test here needs the thread, and an analytics service that
+  // isn't running answers the event path with a 503 and ignores host changes.
+  const analytics = new AnalyticsService({
+    db,
+    log,
+    config: { port: 0, address: "127.0.0.1", dataDir: dir, logLevel: "error", downloadGeo: false },
+  });
+  const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, analytics, log });
   // Inert unless a test turns `tor_enabled` on: with no control connection its
   // reconciles return immediately and it binds no port.
   const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
@@ -210,6 +218,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     settings,
     sync,
     builder,
+    analytics,
     blobs,
     dns,
     log,

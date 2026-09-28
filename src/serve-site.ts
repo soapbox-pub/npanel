@@ -1,5 +1,7 @@
 import { extname } from "node:path/posix";
 import type { Kysely } from "kysely";
+import type { AnalyticsService } from "./analytics/service.ts";
+import { EVENT_PATH } from "./analytics/tracker.ts";
 import { type BlobStore, type BlobVariants, ENCODINGS, type Encoding } from "./blobs.ts";
 import type { Database } from "./db/schema.ts";
 import { isOnionAddress, wwwApex } from "./hostname.ts";
@@ -14,6 +16,12 @@ import type { ServedHost } from "./sites.ts";
 
 export interface SiteServerDeps {
   db: Kysely<Database>;
+  /**
+   * Where an analytics event that reached a site is sent. The proxy normally
+   * routes them straight to the analytics thread; this is for the ones it
+   * can't, like every visit over Tor.
+   */
+  analytics: Pick<AnalyticsService, "event">;
   blobs: BlobStore;
   /** Reads the policy a site declares for itself. Shared, so its cache is. */
   siteCsp: SiteCsp;
@@ -104,7 +112,7 @@ export const CSP = [
  * every relay and Blossom server it came from is offline.
  */
 export function createSiteServer(deps: SiteServerDeps): SiteServer {
-  const { db, blobs, siteCsp, serveCache, log } = deps;
+  const { db, blobs, siteCsp, serveCache, analytics, log } = deps;
 
   // Built here rather than injected: the path map is only ever read to serve a
   // file, so nothing outside this server has a lookup to share with it.
@@ -141,10 +149,7 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     });
   }
 
-  async function handle(request: Request, origin: RequestOrigin): Promise<Response> {
-    // Parsed once for everything below; three callees want the path.
-    const url = new URL(request.url);
-
+  async function handle(request: Request, url: URL, origin: RequestOrigin): Promise<Response> {
     // Both answers in one cache lookup. The build comes along because the
     // policy below is the build's and applies to every answer this host
     // gives — including the ones that never reach a file.
@@ -341,9 +346,18 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
   }
 
   return async function serveSite(request: Request, origin: RequestOrigin): Promise<Response> {
+    // Parsed once for everything below; several callees want the path.
+    const url = new URL(request.url);
+
+    // The one path that isn't the site's, on any site: npanel's own event
+    // endpoint, which the tracker in every counting site's build reports to.
+    // Ahead of everything, preflights included, because the answer is the
+    // analytics thread's to give.
+    if (url.pathname === EVENT_PATH) return await analytics.event(request);
+
     if (isPreflight(request)) return preflight(request);
 
-    const response = await handle(request, origin);
+    const response = await handle(request, url, origin);
     allowCrossOrigin(response.headers);
 
     return response;

@@ -14,7 +14,7 @@ looks the way it does.
 src/                    server (Bun/Node, Hono, Kysely)
   server.ts             entry point; wires everything together
   app.ts                Host-based routing: dashboard vs nsite
-  config.ts             the six environment variables
+  config.ts             the seven environment variables
   hostname.ts           hostname validation and root-domain rules (tldts)
   rate-limit.ts         token buckets, used to meter certificate authorization
   settings.ts           runtime settings, DB-backed and live-reloading
@@ -26,6 +26,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   sync.ts               the sync worker: subscribe, resync, deploy
   builds.ts             host builds: the frozen bundle each host serves
   tls-check.ts          certificate authorization, on its own port
+  analytics/            the Plausible-compatible analytics thread
   blobs.ts              content-addressed filesystem store
   sites.ts              queries over stored versions
   site-preview.ts       link-preview metadata, read from a site's own index.html
@@ -70,8 +71,8 @@ through Bun, and nothing in the repo needs Node or npm installed.
 
 ## Configuration
 
-Only six things are environment variables: `PORT`, `BIND_ADDRESS`,
-`TLS_CHECK_PORT`, `DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else
+Only seven things are environment variables: `PORT`, `BIND_ADDRESS`,
+`TLS_CHECK_PORT`, `ANALYTICS_PORT`, `DASHBOARD_HOST`, `LOG_LEVEL`, `DATA_DIR`. Everything else
 belongs in the `settings` table so
 admins can change it from the dashboard without a restart.
 

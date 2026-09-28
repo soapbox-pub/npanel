@@ -5,10 +5,12 @@
     "": {
       "dependencies": {
         "@nostrify/nostrify": "^0.54.0",
-        "@plausible-analytics/tracker": "0.4.6",
+        "@plausible-analytics/tracker": "^0.4.6",
         "entities": "^8.0.0",
         "hono": "^4.13.1",
         "kysely": "^0.29.5",
+        "mmdb-lib": "^3.0.3",
+        "node-device-detector": "^2.2.7",
         "node-html-parser": "^9.0.1",
         "nostr-tools": "^2.24.1",
         "tldts": "^7.4.10",
@@ -108,6 +110,10 @@
     "kysely": ["kysely@0.29.5", "", {}, "sha512-ooa+eSbBNPTo3MycPEuW5jdrxQdQwdtB3LC3h43FiXQbIry5tR0C5lDG7eealK0E4D7XjrnOP5DIUg/LyjRMYQ=="],
 
     "lru-cache": ["lru-cache@10.4.3", "", {}, "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="],
+
+    "mmdb-lib": ["mmdb-lib@3.0.3", "", {}, "sha512-xQPoBXcNjjHiOvOraFBKtA++uNWF6aCVHL9dRKFXEov8eI3QJwtgiw3qApsonFT5SpoqsEVISUTg3HIDs2DiXw=="],
+
+    "node-device-detector": ["node-device-detector@2.2.7", "", {}, "sha512-75DMuWtUq5g7bLAd6wNpS/TWoGQD+xM30s4IbxsGHwvbSlZ5XbV2nmgn1sg4Fdqs29Sjf6bCLi8MUyiXDL9YTg=="],
 
     "node-html-parser": ["node-html-parser@9.0.1", "", { "dependencies": { "css-select": "^5.1.0", "entities": "^8.0.0" } }, "sha512-QrdiYYm1NnLRXsMXThUgVcF/syWfWIgHFmy8hylWMGFbHFtnRuXLBxxGQvIm3xaIJMUDJ0ayOmT/FGJYT3pZIw=="],
 

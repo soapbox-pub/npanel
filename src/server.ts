@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { AnalyticsService } from "./analytics/service.ts";
 import { createApp } from "./app.ts";
 import { BlobStore } from "./blobs.ts";
 import { HostBuilder } from "./builds.ts";
@@ -37,7 +38,20 @@ const sync = new SyncWorker({ db, blobs, nostr, settings, builder, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 // One instance, so the serving path and the dashboard share its cache.
 const siteCsp = new SiteCsp(db, blobs, log);
-const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
+// npanel's Plausible server, on a thread and a port of its own so that nothing
+// it does competes with serving sites.
+const analytics = new AnalyticsService({
+  db,
+  log,
+  config: {
+    port: config.analyticsPort,
+    address: config.bindAddress,
+    dataDir: config.dataDir,
+    logLevel: config.logLevel,
+    downloadGeo: true,
+  },
+});
+const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, analytics, log });
 const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
 
 // Ahead of sync, so a deploy that finishes early finds nothing stale left to
@@ -45,6 +59,10 @@ const tor = new TorService({ db, settings, log, serveSite, serveCache, builder }
 // current costs a hash.
 await builder.start();
 await sync.start();
+
+// Not awaited either: the analytics thread starting late, or failing to bind
+// its port and retrying, must never hold up serving sites.
+void analytics.start();
 
 // Onion services, if an admin has turned them on. Everything here is driven by
 // the setting, so a gateway with Tor off never opens a socket for it. Not
@@ -64,6 +82,7 @@ const app = createApp({
   settings,
   sync,
   builder,
+  analytics,
   blobs,
   dns,
   log,
@@ -79,6 +98,7 @@ log.info("started", {
   bind_address: config.bindAddress,
   port: config.port,
   tls_check_port: config.tlsCheckPort,
+  analytics_port: config.analyticsPort,
   dashboard_host: config.dashboardHost,
   data_dir: config.dataDir,
 });
@@ -96,6 +116,7 @@ async function shutdown(): Promise<void> {
     await tor.stop();
     await sync.stop();
     await builder.stop();
+    await analytics.stop();
     await db.destroy();
   } catch (error) {
     log.error("shutdown_failed", errFields(error));

@@ -32,6 +32,14 @@ test("tlsCheckPort defaults to 3001 and cannot collide with PORT", () => {
   assert.equal(config({ PORT: "3001", TLS_CHECK_PORT: "3002" }).tlsCheckPort, 3002);
 });
 
+test("analyticsPort defaults to 3002 and cannot collide with the other listeners", () => {
+  assert.equal(config({}).analyticsPort, 3002);
+  assert.equal(config({ ANALYTICS_PORT: "3005" }).analyticsPort, 3005);
+  assert.throws(() => config({ ANALYTICS_PORT: "nope" }).analyticsPort, /ANALYTICS_PORT/);
+  assert.throws(() => config({ ANALYTICS_PORT: "3000" }).analyticsPort, /different from PORT and TLS_CHECK_PORT/);
+  assert.throws(() => config({ TLS_CHECK_PORT: "3002" }).analyticsPort, /different from PORT and TLS_CHECK_PORT/);
+});
+
 test("dashboardHost is required and normalized", () => {
   assert.throws(() => config({}).dashboardHost, /DASHBOARD_HOST/);
   assert.equal(config({ DASHBOARD_HOST: "Panel.Example.com" }).dashboardHost, "panel.example.com");

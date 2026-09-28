@@ -60,7 +60,7 @@ const grantsSchema = z.object({
 
 /** Routes for the hostname → nsite mappings that are npanel's whole point. */
 export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
-  const { db, settings, sync, builder, tor, serveCache, log } = deps;
+  const { db, settings, sync, builder, analytics, tor, serveCache, log } = deps;
   const app = new Hono<ApiEnv>();
 
   app.get("/", async (c) => {
@@ -159,6 +159,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     // A site another host already serves has a ready version to build from
     // straight away, and no deploy is coming along to say so.
     void builder.hostsChanged([inserted.id]);
+    void analytics.hostsChanged();
 
     const host = await db.selectFrom("hosts").selectAll().where("id", "=", inserted.id).executeTakeFirstOrThrow();
 
@@ -303,6 +304,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     // Every edit, rather than the ones that feed a build: the builder hashes
     // what the build is made of and does nothing if that didn't change.
     void builder.hostsChanged([host.id]);
+    void analytics.hostsChanged();
 
     // A narrower condition than the sync worker's: Tor publishes a name, and
     // does not care which nsite is behind it.
@@ -331,6 +333,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     serveCache.clear();
     void sync.hostsChanged();
     void tor.hostsChanged();
+    void analytics.hostsChanged();
 
     return c.json({ ok: true });
   });

@@ -52,5 +52,11 @@ https:// {
 	#
 	#     bun run compress-blobs
 
+	# Analytics events go straight to npanel's analytics thread, which listens
+	# on a port of its own, so recording a visit never queues behind serving
+	# one. Every site that counts visits reports to this path on its own
+	# origin. Caddy tries the more specific path first, whatever the order.
+	reverse_proxy /.npanel/api/event {$NPANEL_ANALYTICS:127.0.0.1:3002}
+
 	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }

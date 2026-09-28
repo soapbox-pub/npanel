@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { Kysely } from "kysely";
+import { AnalyticsService } from "./analytics/service.ts";
 import { BlobStore } from "./blobs.ts";
 import { HostBuilder } from "./builds.ts";
 import { openDatabase } from "./db/index.ts";
@@ -51,7 +52,18 @@ async function setup(): Promise<Setup> {
     db,
     settings,
     log,
-    serveSite: createSiteServer({ db, blobs, siteCsp: new SiteCsp(db, blobs, log), serveCache, log }),
+    serveSite: createSiteServer({
+      db,
+      blobs,
+      siteCsp: new SiteCsp(db, blobs, log),
+      serveCache,
+      analytics: new AnalyticsService({
+        db,
+        log,
+        config: { port: 0, address: "127.0.0.1", dataDir: dir, logLevel: "error", downloadGeo: false },
+      }),
+      log,
+    }),
     serveCache,
     builder,
     // No test should sit through a reconnect's backoff.

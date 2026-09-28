@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import type { AnalyticsService } from "../analytics/service.ts";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
 import { type HostBuilder, currentBuild } from "../builds.ts";
@@ -21,6 +22,8 @@ export interface ApiDeps {
   sync: SyncWorker;
   /** Rebuilds a host whenever an edit changes what its build is made of. */
   builder: HostBuilder;
+  /** Told whenever a host changes, since which sites are counting may have. */
+  analytics: AnalyticsService;
   blobs: BlobStore;
   dns: DnsTargets;
   log: Logger;

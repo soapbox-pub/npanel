@@ -30,6 +30,7 @@ cp .env.example .env
 PORT="3000"
 BIND_ADDRESS="127.0.0.1"
 TLS_CHECK_PORT="3001"
+ANALYTICS_PORT="3002"
 DASHBOARD_HOST="localhost"
 LOG_LEVEL="debug"
 DATA_DIR="./data"

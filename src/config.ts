@@ -75,6 +75,26 @@ export class Config {
   }
 
   /**
+   * Port the analytics thread receives events on, on the same address as
+   * {@link Config.bindAddress}.
+   *
+   * A listener of its own so that recording a visit never queues behind
+   * serving one, or the other way round: the proxy sends `/.npanel/api/event`
+   * here on every site, and nothing else reaches it.
+   */
+  get analyticsPort(): number {
+    const value = this.env.get("ANALYTICS_PORT");
+    const port = value ? Number.parseInt(value, 10) : 3002;
+    if (Number.isNaN(port) || port < 1 || port > 65535) {
+      throw new Error("ANALYTICS_PORT must be a valid port number (1-65535).");
+    }
+    if (port === this.port || port === this.tlsCheckPort) {
+      throw new Error("ANALYTICS_PORT must be different from PORT and TLS_CHECK_PORT.");
+    }
+    return port;
+  }
+
+  /**
    * Hostname serving the dashboard and JSON API. Requests with any other
    * `Host` header are served as nsites.
    */

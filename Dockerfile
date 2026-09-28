@@ -52,6 +52,10 @@ ENV PORT=3000
 # not reachable through any hostname npanel serves.
 ENV TLS_CHECK_PORT=3001
 
+# Analytics events, received by a thread of their own. The proxy routes one
+# path on every site here.
+ENV ANALYTICS_PORT=3002
+
 # The database and the blob store. Mount a volume here or the configuration
 # lives only as long as the container does; compose.yaml declares one.
 # Pre-created so a fresh volume inherits an owner the server can write as.
@@ -60,9 +64,11 @@ RUN mkdir -p /data && chown bun:bun /data
 
 USER bun
 
-EXPOSE 3000 3001
+EXPOSE 3000 3001 3002
 
-# Both listeners, since either one being down is a broken gateway: /api/instance
+# Both of the listeners that make a gateway, since either one being down is a
+# broken one — analytics is left out, because a gateway that can't count visits
+# still serves them: /api/instance
 # is unauthenticated but served only on the dashboard hostname, hence the Host
 # header, and answering it means the database opened; the second call proves the
 # proxy can still get certificates authorized. The dashboard hostname is never
