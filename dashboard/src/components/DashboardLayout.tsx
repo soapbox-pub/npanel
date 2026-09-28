@@ -1,166 +1,206 @@
-import { Globe, ScrollText, Settings as SettingsIcon, Users } from 'lucide-react';
+import { Globe, History, Lock, Settings as SettingsIcon, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, Outlet, useLocation } from 'react-router-dom';
 
 import { LoginArea } from '@/components/auth/LoginArea';
+import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
-import { ServerInfo } from '@/components/ServerInfo';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useMe } from '@/hooks/useNpanel';
 import { safeNpub } from '@/lib/format';
-import { SOURCE_URL } from '@/lib/links';
 import { cn } from '@/lib/utils';
 import { HomePage } from '@/pages/HomePage';
 
 const NAV = [
-  { to: '/', label: 'Sites', icon: Globe, adminOnly: false, end: true },
-  { to: '/users', label: 'Users', icon: Users, adminOnly: true, end: false },
-  { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true, end: false },
-  { to: '/audit', label: 'Audit log', icon: ScrollText, adminOnly: true, end: false },
+  { to: '/', label: 'Sites', icon: Globe, adminOnly: false },
+  { to: '/users', label: 'Users', icon: Users, adminOnly: true },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true },
+  { to: '/audit', label: 'Activity', icon: History, adminOnly: true },
 ];
 
-/** App shell: login gate, navigation, and the signed-in account switcher. */
+type NavItem = (typeof NAV)[number];
+
+/**
+ * App shell: a sidebar on a desktop and a tab bar on a phone, the way a Mac
+ * app and its iPhone version lay out the same places.
+ */
 export function DashboardLayout() {
   const { user } = useCurrentUser();
   const me = useMe();
 
+  if (!user) return <HomePage />;
+
+  if (me.isLoading) {
+    return (
+      <Centered>
+        <Skeleton className="mx-auto size-16 rounded-2xl" />
+      </Centered>
+    );
+  }
+
+  if (me.isError || !me.data) {
+    return (
+      <Centered>
+        <NoAccess pubkey={user.pubkey} message={me.error instanceof Error ? me.error.message : undefined} />
+      </Centered>
+    );
+  }
+
+  const items = NAV.filter((item) => !item.adminOnly || me.data.role === 'admin');
+
   return (
-    <div className="flex min-h-screen flex-col bg-background">
-      <TopBar />
+    <div className="min-h-screen">
+      <Sidebar items={items} />
+      <MobileBar />
 
-      {!user ? (
-        <HomePage />
-      ) : me.isLoading ? (
-        <Centered>
-          <Skeleton className="h-56 w-full max-w-lg" />
-        </Centered>
-      ) : me.isError || !me.data ? (
-        <Centered>
-          <NoAccess
-            pubkey={user.pubkey}
-            message={me.error instanceof Error ? me.error.message : undefined}
-          />
-        </Centered>
-      ) : (
-        <div className="flex flex-1 flex-col md:flex-row">
-          <Rail admin={me.data.role === 'admin'} />
-          <main className="grid-canvas min-w-0 flex-1">
-            <div className="mx-auto max-w-6xl px-4 py-6 md:px-8 md:py-8">
-              <Outlet />
-            </div>
-          </main>
+      <main className="md:pl-60">
+        <div
+          className={cn(
+            'mx-auto max-w-5xl px-4 pt-4 pb-12 sm:px-6 md:px-10 md:pt-10',
+            // Room for the tab bar, which only exists when there is somewhere else to go.
+            items.length > 1 && 'pb-28 md:pb-12',
+          )}
+        >
+          <Outlet />
         </div>
-      )}
+      </main>
 
-      <SiteFooter />
+      {items.length > 1 && <TabBar items={items} />}
     </div>
   );
 }
 
-/** The dark bar across the top, capped with the brand gradient hairline. */
-function TopBar() {
-  return (
-    <header className="sticky top-0 z-40 bg-sidebar text-sidebar-foreground">
-      <div className="flex h-14 items-center gap-3 px-4">
-        <Link
-          to="/"
-          className="flex items-center gap-2.5 rounded-md focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar focus-visible:outline-hidden"
-        >
-          <Logo className="size-8" />
-          <span className="text-lg font-semibold tracking-tight text-white">npanel</span>
-        </Link>
-        <span className="hidden rounded-full border border-sidebar-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-widest text-sidebar-foreground/60 sm:inline-block">
-          nsite gateway
-        </span>
-
-        <div className="ml-auto flex items-center gap-1">
-          <ThemeToggle />
-          <LoginArea />
-        </div>
-      </div>
-      <div className="h-0.5 bg-linear-to-r from-brand to-brand-glow" />
-    </header>
-  );
+/** Whether a nav item is where the reader is: Sites owns every page under a site. */
+function useActive() {
+  const { pathname } = useLocation();
+  return (to: string) => (to === '/' ? pathname === '/' || pathname.startsWith('/hosts/') : pathname.startsWith(to));
 }
 
-/** Navigation and server readout: a column on desktop, a strip on mobile. */
-function Rail({ admin }: { admin: boolean }) {
+function Sidebar({ items }: { items: NavItem[] }) {
+  const active = useActive();
+
   return (
-    <aside className="bg-sidebar text-sidebar-foreground md:w-56 md:shrink-0 md:border-r md:border-sidebar-border">
-      <nav className="flex overflow-x-auto p-2 md:flex-col md:overflow-visible md:py-3">
-        {NAV.filter((item) => !item.adminOnly || admin).map((item) => (
-          <NavLink
+    <aside className="material fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
+      <Link
+        to="/"
+        className="mx-3 mt-4 mb-3 flex items-center gap-2.5 rounded-lg px-2 py-1.5 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+      >
+        <Logo className="size-7 drop-shadow-sm" />
+        <span className="text-[15px] font-semibold tracking-tight">npanel</span>
+      </Link>
+
+      <nav className="flex-1 space-y-0.5 px-3" aria-label="Main">
+        {items.map((item) => (
+          <Link
             key={item.to}
             to={item.to}
-            end={item.end}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-2.5 whitespace-nowrap rounded-md px-3 py-2 text-sm transition-colors',
-                'focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-hidden',
-                isActive
-                  ? 'bg-sidebar-accent font-medium text-sidebar-accent-foreground md:shadow-[inset_3px_0_0_0_var(--color-brand)]'
-                  : 'hover:bg-sidebar-accent/60 hover:text-sidebar-accent-foreground',
-              )
-            }
+            aria-current={active(item.to) ? 'page' : undefined}
+            className={cn(
+              'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors',
+              'focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden',
+              active(item.to) ? 'bg-sidebar-accent font-medium' : 'hover:bg-sidebar-accent/60',
+            )}
           >
-            <item.icon className="size-4 shrink-0" />
+            <item.icon className="size-4 shrink-0 text-primary" aria-hidden />
             {item.label}
-          </NavLink>
+          </Link>
         ))}
       </nav>
 
-      <div className="hidden md:block">
-        <ServerInfo />
+      <div className="flex items-center gap-1 border-t border-sidebar-border p-3">
+        <LoginArea showName className="min-w-0 flex-1" />
+        <ThemeToggle />
       </div>
     </aside>
   );
 }
 
-/** The canvas used by the states that have no navigation yet. */
-function Centered({ children }: { children: ReactNode }) {
+function MobileBar() {
   return (
-    <main className="grid-canvas flex flex-1 items-center justify-center px-4 py-12">
-      <div className="w-full max-w-lg">{children}</div>
-    </main>
+    <header className="material sticky top-0 z-30 flex h-13 items-center gap-2 border-b bg-material px-4 md:hidden">
+      <Link to="/" className="flex items-center gap-2 rounded-lg">
+        <Logo className="size-7" />
+        <span className="text-[15px] font-semibold tracking-tight">npanel</span>
+      </Link>
+      <div className="ml-auto flex items-center gap-1">
+        <ThemeToggle />
+        <LoginArea />
+      </div>
+    </header>
   );
 }
 
-function SiteFooter() {
+/** The iPhone's tab bar: every top-level place, one tap away, above the home indicator. */
+function TabBar({ items }: { items: NavItem[] }) {
+  const active = useActive();
+
   return (
-    <footer className="border-t bg-card">
-      <div className="flex flex-col gap-1 px-4 py-4 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between md:px-8">
-        <span>npanel — a self-hostable nsite gateway.</span>
-        <a
-          href={SOURCE_URL}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="font-medium text-foreground underline-offset-4 hover:text-primary hover:underline"
-        >
-          Source code
-        </a>
+    <nav
+      aria-label="Main"
+      className="material fixed inset-x-0 bottom-0 z-30 border-t bg-material pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
+      <div className="grid" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+        {items.map((item) => (
+          <Link
+            key={item.to}
+            to={item.to}
+            aria-current={active(item.to) ? 'page' : undefined}
+            className={cn(
+              'flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[10px] font-medium transition-colors',
+              active(item.to) ? 'text-primary' : 'text-muted-foreground',
+            )}
+          >
+            <item.icon className="size-6" aria-hidden />
+            {item.label}
+          </Link>
+        ))}
       </div>
-    </footer>
+    </nav>
+  );
+}
+
+/** The states before there is anywhere to navigate: a card in the middle of the window. */
+function Centered({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex min-h-screen flex-col">
+      <header className="flex h-14 items-center justify-between px-4 sm:px-6">
+        <Link to="/" className="flex items-center gap-2">
+          <Logo className="size-7" />
+          <span className="text-[15px] font-semibold tracking-tight">npanel</span>
+        </Link>
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <LoginArea />
+        </div>
+      </header>
+      <main className="flex flex-1 items-center justify-center px-4 pb-24">
+        <div className="w-full max-w-sm">{children}</div>
+      </main>
+    </div>
   );
 }
 
 function NoAccess({ pubkey, message }: { pubkey: string; message?: string }) {
+  const npub = safeNpub(pubkey);
+
   return (
-    <Card className="border-t-2 border-t-destructive">
-      <CardHeader>
-        <CardTitle className="text-2xl">No access</CardTitle>
-        <CardDescription className="text-base">
-          {message ?? 'This account cannot use npanel.'}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <p className="text-sm text-muted-foreground">Give an admin your npub so they can add you:</p>
-        <code className="block break-all rounded-md bg-muted p-3 font-mono text-xs">
-          {safeNpub(pubkey)}
-        </code>
-      </CardContent>
-    </Card>
+    <div className="space-y-6 text-center">
+      <div className="mx-auto flex size-16 items-center justify-center rounded-2xl bg-secondary text-muted-foreground">
+        <Lock className="size-7" aria-hidden />
+      </div>
+      <div className="space-y-2">
+        <h1 className="text-2xl font-bold tracking-tight">No access</h1>
+        <p className="text-muted-foreground">{message ?? 'This account cannot use npanel.'}</p>
+      </div>
+      <div className="space-y-2">
+        <p className="text-sm text-muted-foreground">Send an admin your npub so they can add you.</p>
+        <div className="flex items-center gap-1 rounded-xl bg-card py-2 pr-2 pl-3 text-left shadow-sm">
+          <code className="min-w-0 flex-1 truncate font-mono text-xs">{npub}</code>
+          <CopyButton value={npub} label="Copy your npub" />
+        </div>
+      </div>
+    </div>
   );
 }

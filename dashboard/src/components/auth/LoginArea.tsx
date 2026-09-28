@@ -25,9 +25,11 @@ function getNip07Provider(): Nip07Provider | undefined {
 
 export interface LoginAreaProps {
   className?: string;
+  /** Show the signed-in account's name, not only its picture. */
+  showName?: boolean;
 }
 
-export function LoginArea({ className }: LoginAreaProps) {
+export function LoginArea({ className, showName }: LoginAreaProps) {
   const { currentUser } = useLoggedInAccounts();
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
   const [quickLoginPubkey, setQuickLoginPubkey] = useState<string | null>(null);
@@ -51,13 +53,10 @@ export function LoginArea({ className }: LoginAreaProps) {
   return (
     <div className={cn('inline-flex items-center justify-center', className)}>
       {currentUser ? (
-        <AccountSwitcher onAddAccountClick={() => setAuthDialogOpen(true)} />
+        <AccountSwitcher showName={showName} onAddAccountClick={() => setAuthDialogOpen(true)} />
       ) : (
-        <Button
-          onClick={handleJoin}
-          className="flex items-center gap-2 px-5 py-2 rounded-full bg-primary text-primary-foreground font-medium transition-all hover:bg-primary/90 animate-scale-in"
-        >
-          <span className="truncate">Join</span>
+        <Button onClick={handleJoin} className="rounded-full px-5">
+          Sign in
         </Button>
       )}
 

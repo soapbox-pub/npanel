@@ -32,6 +32,19 @@ export function useStats(hostname: string, body: StatsQueryBody, options: { live
   });
 }
 
+/** Every site's last 24 hours, for the list of sites. Refreshed as often as the list. */
+export function useSparklines() {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('sparklines'),
+    queryFn: async () => (await api!.sparklines()).sparklines,
+    enabled: !!api,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+}
+
 /** A details dialog's rows, a hundred at a time. */
 export function useStatsPages(hostname: string, body: StatsQueryBody) {
   const api = useApi();

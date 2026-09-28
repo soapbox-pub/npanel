@@ -1,10 +1,9 @@
+import { Plus } from 'lucide-react';
 import { useState } from 'react';
 
 import { AddressInput } from '@/components/AddressInput';
 import { DnsRecords } from '@/components/DnsRecords';
-import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
 import {
   Dialog,
   DialogContent,
@@ -16,11 +15,13 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { useCreateHost } from '@/hooks/useNpanel';
+import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { useToast } from '@/hooks/useToast';
 import { isRootDomain } from '@shared/hostname';
 
-/** Add a domain → nsite mapping, the DNS-editor moment of the dashboard. */
+/** Map a domain to an nsite. */
 export function AddHostDialog() {
   const [open, setOpen] = useState(false);
   const [hostname, setHostname] = useState('');
@@ -39,7 +40,7 @@ export function AddHostDialog() {
   const submit = async () => {
     try {
       await createHost.mutateAsync({ hostname, address, hidden, redirect_www: redirectWww });
-      toast({ title: 'Site added', description: `${hostname.trim().toLowerCase()} is now configured.` });
+      toast({ title: `${domain} added` });
       setOpen(false);
       setHostname('');
       setAddress('');
@@ -57,18 +58,25 @@ export function AddHostDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>Add site</Button>
+        <Button className="rounded-full">
+          <Plus aria-hidden />
+          Add Site
+        </Button>
       </DialogTrigger>
 
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add a site</DialogTitle>
-          <DialogDescription>
-            Point the domain at this server with the DNS records below, then map it to an nsite here.
-          </DialogDescription>
+          <DialogTitle>Add Site</DialogTitle>
+          <DialogDescription>Serve an nsite from a domain you control.</DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4">
+        <form
+          className="space-y-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
           <div className="space-y-2">
             <Label htmlFor="hostname">Domain</Label>
             <Input
@@ -79,49 +87,37 @@ export function AddHostDialog() {
               autoComplete="off"
               spellCheck={false}
             />
-            {www && (
-              <div className="flex items-start gap-3">
-                <Checkbox
-                  id="redirect-www"
-                  checked={redirectWww}
-                  onCheckedChange={(checked) => setRedirectWww(checked === true)}
-                  className="mt-0.5"
-                />
-                <Label htmlFor="redirect-www" className="font-normal text-sm text-muted-foreground">
-                  Redirect <span className="font-mono">www.{domain}</span> to{' '}
-                  <span className="font-mono">{domain}</span>, keeping the path.
-                </Label>
-              </div>
-            )}
-
-            <DnsRecords hostname={hostname} www={redirectWww} />
+            <DnsRecords hostname={hostname} www={www && redirectWww} />
           </div>
 
           <AddressInput value={address} onChange={setAddress} parsed={parsed} />
 
-          {/* Offered here rather than only after the fact, so a site that was
-              never meant to be listed is never listed. */}
-          <div className="flex items-start gap-3">
-            <Checkbox
-              id="hidden"
-              checked={hidden}
-              onCheckedChange={(checked) => setHidden(checked === true)}
-              className="mt-0.5"
-            />
-            <Label htmlFor="hidden" className="font-normal text-sm text-muted-foreground">
-              Unlisted — keep this site off the public list and away from staff without access.
-            </Label>
+          <div className="space-y-3">
+            {www && (
+              <label htmlFor="redirect-www" className="flex items-center justify-between gap-4 text-sm">
+                <span>
+                  Redirect <span className="font-medium">www.{domain}</span>
+                </span>
+                <Switch id="redirect-www" checked={redirectWww} onCheckedChange={setRedirectWww} />
+              </label>
+            )}
+            {/* Offered here rather than only after the fact, so a site that was
+                never meant to be listed is never listed. */}
+            <label htmlFor="listed" className="flex items-center justify-between gap-4 text-sm">
+              <span>Show on the public site list</span>
+              <Switch id="listed" checked={!hidden} onCheckedChange={(listed) => setHidden(!listed)} />
+            </label>
           </div>
-        </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={!hostname.trim() || !parsed.address || createHost.isPending}>
-            {createHost.isPending ? 'Adding…' : 'Add site'}
-          </Button>
-        </DialogFooter>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!domain || !parsed.address || createHost.isPending}>
+              {createHost.isPending ? 'Adding…' : 'Add Site'}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

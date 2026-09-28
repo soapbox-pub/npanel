@@ -1,4 +1,4 @@
-import { Monitor, Moon, Sun } from 'lucide-react';
+import { Check, Monitor, Moon, Sun } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -25,7 +25,7 @@ export function ThemeToggle() {
         <button
           type="button"
           aria-label={`Theme: ${active.label}`}
-          className="flex size-9 items-center justify-center rounded-full text-current transition-colors hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-hidden"
+          className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
         >
           <active.icon className="size-4.5" />
         </button>
@@ -39,7 +39,7 @@ export function ThemeToggle() {
           >
             <option.icon className="size-4" />
             <span className="flex-1">{option.label}</span>
-            {option.value === theme && <span className="size-1.5 rounded-full bg-primary" />}
+            {option.value === theme && <Check className="size-4" />}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>

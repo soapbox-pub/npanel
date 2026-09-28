@@ -17,6 +17,8 @@ interface PubkeySearchInputProps {
   onChange(value: string): void;
   id?: string;
   placeholder?: string;
+  /** For a field with no visible label. */
+  'aria-label'?: string;
 }
 
 /**
@@ -26,7 +28,13 @@ interface PubkeySearchInputProps {
  * from the dropdown just fills their npub in. Either way the server re-parses
  * it, and the line underneath shows who is about to be added.
  */
-export function PubkeySearchInput({ value, onChange, id, placeholder }: PubkeySearchInputProps) {
+export function PubkeySearchInput({
+  value,
+  onChange,
+  id,
+  placeholder,
+  'aria-label': ariaLabel,
+}: PubkeySearchInputProps) {
   const queryClient = useQueryClient();
   const listId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -114,6 +122,7 @@ export function PubkeySearchInput({ value, onChange, id, placeholder }: PubkeySe
       <div ref={containerRef} className="relative">
         <Input
           id={id}
+          aria-label={ariaLabel}
           value={value}
           onChange={(event) => {
             onChange(event.target.value);
@@ -149,7 +158,7 @@ export function PubkeySearchInput({ value, onChange, id, placeholder }: PubkeySe
             // Keep the focus in the input, so clicking a result doesn't close
             // the list out from under the click.
             onMouseDown={(event) => event.preventDefault()}
-            className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-md border bg-popover py-1 shadow-md"
+            className="absolute z-50 mt-1 max-h-64 w-full overflow-y-auto rounded-xl bg-popover p-1 shadow-xl ring-1 ring-black/10 backdrop-blur-xl dark:ring-white/10"
           >
             {results.map((result, index) => (
               <ProfileOption
@@ -164,7 +173,7 @@ export function PubkeySearchInput({ value, onChange, id, placeholder }: PubkeySe
         )}
       </div>
 
-      {pubkey && <PubkeyLabel pubkey={pubkey} className="text-sm" />}
+      {pubkey && <PubkeyLabel pubkey={pubkey} className="text-xs text-muted-foreground" />}
     </div>
   );
 }
@@ -193,8 +202,8 @@ function ProfileOption({
       aria-selected={active}
       onClick={() => onSelect(result)}
       className={cn(
-        'flex w-full items-center gap-2 px-3 py-2 text-left',
-        active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50',
+        'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left',
+        active ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
       )}
     >
       <Avatar className="size-7 shrink-0">
@@ -204,7 +213,7 @@ function ProfileOption({
 
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">{name ?? shorten(npub)}</span>
-        <span className="block truncate text-xs text-muted-foreground">
+        <span className="block truncate text-xs text-muted-foreground group-aria-selected:text-primary-foreground/80">
           {metadata.nip05 ?? shorten(npub)}
         </span>
       </span>

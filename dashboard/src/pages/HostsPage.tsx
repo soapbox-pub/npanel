@@ -1,119 +1,83 @@
 import { useSeoMeta } from '@unhead/react';
-import { ExternalLink, EyeOff, Globe } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Globe, Search } from 'lucide-react';
+import { type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { AddHostDialog } from '@/components/AddHostDialog';
-import { PubkeyLabel } from '@/components/PubkeyLabel';
-import { StatusBadge } from '@/components/StatusBadge';
-import { Card, CardContent } from '@/components/ui/card';
+import { PageHeader } from '@/components/PageHeader';
+import { SiteIcon } from '@/components/SiteIcon';
+import { SiteStatus } from '@/components/SiteStatus';
+import { Sparkline } from '@/components/Sparkline';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useSparklines } from '@/hooks/useAnalytics';
 import { useHosts } from '@/hooks/useNpanel';
-import { NAMED_SITE_KIND } from '@shared/nsite-address';
+import type { Host, Sparkline as SparklineData } from '@/lib/api-types';
+import { compactNumber } from '@/lib/format';
+import { siteStatus } from '@/lib/site-status';
+import { cn } from '@/lib/utils';
 
-/** The site table: npanel's DNS-editor-like home screen. */
+/**
+ * Every site this user manages, laid out as Plausible lays out its list of
+ * sites: a card each, with the last 24 hours drawn on it, so which sites are
+ * busy — and which have gone quiet — shows before anything is opened.
+ */
 export function HostsPage() {
   useSeoMeta({ title: 'Sites — npanel' });
 
   const hosts = useHosts();
-  const mine = hosts.data?.hosts;
+  const sparklines = useSparklines();
+  const [search, setSearch] = useState('');
+
+  const mine = hosts.data?.hosts ?? [];
   const others = hosts.data?.other_sites ?? [];
+  const needle = search.trim().toLowerCase();
+  const shown = needle ? mine.filter((host) => host.hostname.includes(needle)) : mine;
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Sites</h1>
-          <p className="text-sm text-muted-foreground">
-            Each site serves one nsite on its own domain, mirrored locally from Nostr and Blossom.
-          </p>
+      <PageHeader title="Sites" actions={<AddHostDialog />} />
+
+      {mine.length > 6 && (
+        <div className="relative max-w-xs">
+          <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+          <Input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search"
+            aria-label="Search sites"
+            className="rounded-full bg-secondary pl-9 border-transparent"
+          />
         </div>
-        <AddHostDialog />
-      </div>
+      )}
 
       {hosts.isLoading ? (
-        <Skeleton className="h-48 w-full" />
+        <Grid>
+          {[0, 1, 2].map((index) => (
+            <Skeleton key={index} className="h-52 rounded-2xl" />
+          ))}
+        </Grid>
       ) : hosts.isError ? (
-        <Card className="border-t-2 border-t-destructive">
-          <CardContent className="py-6 text-sm text-destructive">
-            {hosts.error instanceof Error ? hosts.error.message : 'Failed to load sites.'}
-          </CardContent>
-        </Card>
-      ) : !mine?.length ? (
-        <Card className="border-dashed">
-          <CardContent className="flex flex-col items-center gap-3 px-8 py-14 text-center">
-            <div className="rounded-full bg-accent p-3 text-accent-foreground">
-              <Globe className="size-6" />
-            </div>
-            <p className="max-w-sm text-sm text-muted-foreground">
-              No sites yet. Point a DNS record at this server and add it here.
-            </p>
-          </CardContent>
-        </Card>
+        <p className="rounded-xl bg-destructive/10 p-4 text-sm text-destructive">
+          {hosts.error instanceof Error ? hosts.error.message : "Couldn't load your sites. Reload the page to try again."}
+        </p>
+      ) : !mine.length ? (
+        <Empty />
+      ) : !shown.length ? (
+        <p className="py-16 text-center text-muted-foreground">No sites match “{search.trim()}”.</p>
       ) : (
-        <Card className="gap-0 overflow-hidden py-0">
-          <div className="flex items-center justify-between gap-3 border-b bg-muted/50 px-6 py-2.5">
-            <h2 className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Your sites
-            </h2>
-            <span className="font-mono text-xs text-muted-foreground">{mine.length}</span>
-          </div>
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead>Domain</TableHead>
-                <TableHead>nsite</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Files</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {mine.map((host) => (
-                <TableRow key={host.hostname}>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Link
-                        to={`/hosts/${host.hostname}`}
-                        className="font-mono text-sm font-medium hover:text-primary hover:underline"
-                      >
-                        {host.hostname}
-                      </Link>
-                      {host.hidden && (
-                        <EyeOff
-                          className="size-3.5 shrink-0 text-muted-foreground"
-                          aria-label="Unlisted"
-                        />
-                      )}
-                      <a
-                        href={`https://${host.hostname}`}
-                        target="_blank"
-                        rel="noreferrer noopener"
-                        className="text-muted-foreground transition-colors hover:text-primary"
-                        aria-label={`Open ${host.hostname}`}
-                      >
-                        <ExternalLink className="size-3.5" />
-                      </a>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-0.5">
-                      <PubkeyLabel pubkey={host.pubkey} />
-                      <span className="text-xs text-muted-foreground">
-                        {host.kind === NAMED_SITE_KIND ? host.identifier : 'root site'}
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge host={host} />
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-sm text-muted-foreground">
-                    {host.active ? host.active.files_total : '—'}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <Grid>
+          {shown.map((host) => (
+            <li key={host.hostname}>
+              <SiteCard
+                host={host}
+                sparkline={sparklines.data?.[host.hostname]}
+                loading={sparklines.isLoading}
+              />
+            </li>
+          ))}
+        </Grid>
       )}
 
       {others.length > 0 && <OtherSites hostnames={others.map((site) => site.hostname)} />}
@@ -121,42 +85,114 @@ export function HostsPage() {
   );
 }
 
+function Grid({ children }: { children: ReactNode }) {
+  return <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>;
+}
+
+function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: SparklineData; loading: boolean }) {
+  const status = siteStatus(host);
+
+  return (
+    <Link
+      to={`/hosts/${host.hostname}`}
+      className="group flex h-full flex-col gap-5 rounded-2xl bg-card p-5 shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-[box-shadow,transform] duration-200 hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] dark:hover:bg-secondary/40"
+    >
+      <div className="flex items-center gap-3">
+        <SiteIcon hostname={host.hostname} className="size-7" />
+        <span className="min-w-0 flex-1 truncate font-semibold">{host.hostname}</span>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3" aria-hidden>
+          <Skeleton className="h-12" />
+          <Skeleton className="h-10 w-1/2" />
+        </div>
+      ) : (
+        <>
+          <Sparkline
+            values={sparkline?.hours ?? []}
+            className={cn('h-12', host.analytics ? 'text-primary' : 'text-muted-foreground/40')}
+          />
+
+          <div className="mt-auto flex items-end justify-between gap-3">
+            {host.analytics || sparkline?.visitors ? (
+              <div>
+                <p className="text-xl font-bold tabular-nums">{compactNumber(sparkline?.visitors ?? 0)}</p>
+                <p className="text-sm text-muted-foreground">
+                  {sparkline?.visitors === 1 ? 'visitor' : 'visitors'} in last 24h
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Analytics off</p>
+            )}
+
+            {status.tone === 'green' ? (
+              host.analytics && <Change value={sparkline?.change ?? null} />
+            ) : (
+              <SiteStatus host={host} className="text-xs" />
+            )}
+          </div>
+        </>
+      )}
+    </Link>
+  );
+}
+
+/** Visitors up or down on the day before, as Plausible marks it. */
+function Change({ value }: { value: number | null }) {
+  if (value === null) return null;
+  const Arrow = value > 0 ? ArrowUpRight : ArrowDownRight;
+
+  return (
+    <p className="flex items-center gap-0.5 text-sm font-medium tabular-nums">
+      {value !== 0 && (
+        <Arrow className={cn('size-3.5', value > 0 ? 'text-success' : 'text-destructive')} aria-hidden />
+      )}
+      <span className="sr-only">{value > 0 ? 'Up' : value < 0 ? 'Down' : 'Unchanged'}</span>
+      {Math.abs(value)}%
+    </p>
+  );
+}
+
+function Empty() {
+  return (
+    <div className="flex flex-col items-center gap-4 rounded-2xl border-2 border-dashed px-8 py-16 text-center">
+      <span className="flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+        <Globe className="size-7" aria-hidden />
+      </span>
+      <div className="space-y-1">
+        <p className="text-lg font-semibold">No sites yet</p>
+        <p className="max-w-xs text-sm text-muted-foreground">Add a domain and the nsite it should serve.</p>
+      </div>
+      <AddHostDialog />
+    </div>
+  );
+}
+
 /**
- * What else this gateway serves.
- *
- * Only names — managing one of these takes a grant from an admin. It is here
- * so staff can see a domain is already taken without having to ask.
+ * What else this gateway serves: names only, so staff can see a domain is
+ * taken without asking. Managing one takes a grant from an admin.
  */
 function OtherSites({ hostnames }: { hostnames: string[] }) {
   return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex items-center justify-between gap-3 border-b bg-muted/50 px-6 py-2.5">
-        <h2 className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Also on this gateway
-        </h2>
-        <span className="font-mono text-xs text-muted-foreground">{hostnames.length}</span>
-      </div>
-      <div className="px-6 py-4">
-        <ul className="grid gap-2 sm:grid-cols-2">
-          {hostnames.map((hostname) => (
-            <li key={hostname} className="flex items-center gap-2 min-w-0">
-              <a
-                href={`https://${hostname}`}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="truncate font-mono text-sm hover:text-primary hover:underline"
-              >
-                {hostname}
-              </a>
-              <ExternalLink className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-            </li>
-          ))}
-        </ul>
-        <p className="pt-3 text-xs text-muted-foreground">
-          Ask an admin for access if one of these should be yours to manage.
-        </p>
-      </div>
-    </Card>
+    <section className="space-y-3 pt-6">
+      <h2 className="px-1 text-[13px] font-semibold text-foreground/80">Also on this gateway</h2>
+      <ul className="flex flex-wrap gap-2">
+        {hostnames.map((hostname) => (
+          <li key={hostname}>
+            <a
+              href={`https://${hostname}`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="inline-flex items-center gap-2 rounded-full bg-card py-1 pr-3 pl-1 text-sm shadow-sm hover:text-primary"
+            >
+              <SiteIcon hostname={hostname} className="size-5" />
+              {hostname}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

@@ -1,19 +1,19 @@
 import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
 
+import { FieldRow, Row, Section, ToggleRow } from '@/components/Grouped';
+import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 import type { TorStatus as TorStatusView } from '@/lib/api-types';
 import { decodePubkey, formatBytes } from '@/lib/format';
+import { cn } from '@/lib/utils';
 
 interface Draft {
   relays?: string;
@@ -52,7 +52,7 @@ export function SettingsPage() {
   // effect is needed to copy loaded settings into state.
   const [draft, setDraft] = useState<Draft>({});
 
-  if (settings.isLoading) return <Skeleton className="h-96 w-full" />;
+  if (settings.isLoading) return <Skeleton className="h-96 w-full rounded-xl" />;
 
   const current = settings.data?.settings;
   const relays = draft.relays ?? current?.relays.join('\n') ?? '';
@@ -105,25 +105,16 @@ export function SettingsPage() {
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Applied immediately. Every change is recorded in the audit log.
-        </p>
-      </div>
+  const dirty = Object.keys(draft).length > 0;
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Public contact</CardTitle>
-          <CardDescription>
-            Whoever runs this instance, shown on the homepage to signed-out visitors so they can
-            tell whose gateway they landed on. An npub, an nprofile, or a hex pubkey — all are
-            stored as an npub. Leave it empty to name nobody.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
+  return (
+    <div className={cn('space-y-8', dirty && 'pb-20')}>
+      <PageHeader title="Settings" />
+
+      <ServerInformation />
+
+      <Section title="Homepage" footer="Shown to visitors who aren't signed in.">
+        <FieldRow label="Run by" htmlFor="contact-npub">
           <Input
             id="contact-npub"
             value={contactNpub}
@@ -134,104 +125,179 @@ export function SettingsPage() {
             className="font-mono text-sm"
           />
           <ContactPreview value={contactNpub} />
-        </CardContent>
-      </Card>
+        </FieldRow>
+        <ToggleRow
+          id="public-site-list"
+          label="List the sites served here"
+          description="Staff also see sites they don't manage. Any site can opt out."
+          checked={publicSiteList}
+          onCheckedChange={(checked) => setDraft({ ...draft, publicSiteList: checked })}
+        />
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Public site list</CardTitle>
-          <CardDescription>
-            List the sites this gateway serves on the homepage, where anyone can read them, and
-            show staff the sites they don't manage. Off by default — on a private gateway, which
-            sites it serves is often the part worth keeping to yourself. Any site can be left out
-            individually by marking it unlisted.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <label className="flex items-center gap-3 text-sm">
-            <Switch
-              checked={publicSiteList}
-              onCheckedChange={(checked) => setDraft({ ...draft, publicSiteList: checked })}
-            />
-            {publicSiteList ? 'Listed publicly' : 'Not listed'}
-          </label>
-        </CardContent>
-      </Card>
+      <Section
+        title="Domains"
+        footer="Leave the DNS target empty to use whatever the dashboard's own domain resolves to."
+      >
+        <FieldRow label="DNS target" htmlFor="dns-targets">
+          <Textarea
+            id="dns-targets"
+            value={dnsTargets}
+            onChange={(event) => setDraft({ ...draft, dnsTargets: event.target.value })}
+            rows={2}
+            spellCheck={false}
+            className="font-mono text-sm"
+            placeholder={dns.data?.records.map((record) => record.value).join('\n') || '203.0.113.10'}
+          />
+          <p className="text-xs text-muted-foreground">
+            IP addresses, or one domain for a CNAME. One per line.
+          </p>
+        </FieldRow>
+        <FieldRow label="Allowed domains" htmlFor="allowed-host-suffixes">
+          <Textarea
+            id="allowed-host-suffixes"
+            value={allowedHostSuffixes}
+            onChange={(event) => setDraft({ ...draft, allowedHostSuffixes: event.target.value })}
+            rows={3}
+            spellCheck={false}
+            className="font-mono text-sm"
+            placeholder="Any domain"
+          />
+          <p className="text-xs text-muted-foreground">
+            Sites must be on one of these or a subdomain of one. One per line.
+          </p>
+        </FieldRow>
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Tor</CardTitle>
-          <CardDescription>
-            Give every site a .onion address of its own. npanel asks a Tor daemon for one per site
-            and keeps the key, so an address survives restarts — there is nothing to configure per
-            site and nothing for staff to do. Visitors already using Tor Browser are offered the
-            address on their own. Needs a Tor daemon npanel can reach; see docs/deployment.md.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <label className="flex items-center gap-3 text-sm">
-            <Switch
-              checked={torEnabled}
-              onCheckedChange={(checked) => setDraft({ ...draft, torEnabled: checked })}
-            />
-            {torEnabled ? 'Every site also served over Tor' : 'Off'}
-          </label>
+      <Section title="Nostr">
+        <FieldRow label="Relays" htmlFor="relays">
+          <Textarea
+            id="relays"
+            value={relays}
+            onChange={(event) => setDraft({ ...draft, relays: event.target.value })}
+            rows={4}
+            spellCheck={false}
+            className="font-mono text-sm"
+          />
+        </FieldRow>
+        <FieldRow label="Fallback Blossom servers" htmlFor="servers">
+          <Textarea
+            id="servers"
+            value={servers}
+            onChange={(event) => setDraft({ ...draft, servers: event.target.value })}
+            rows={2}
+            spellCheck={false}
+            className="font-mono text-sm"
+            placeholder="https://blossom.example.com/"
+          />
+          <p className="text-xs text-muted-foreground">
+            For authors who name no Blossom servers of their own. Most sites need none.
+          </p>
+        </FieldRow>
+      </Section>
 
-          {current?.tor_enabled && <TorStatus status={status.data?.tor} />}
+      <Section title="Deploys">
+        <NumberRow
+          id="max-file-size"
+          label="Largest file"
+          unit="MB"
+          min={1}
+          value={maxFileSize}
+          onChange={(value) => setDraft({ ...draft, maxFileSize: value })}
+        />
+        <NumberRow
+          id="resync-interval"
+          label="Check relays every"
+          unit="seconds"
+          min={60}
+          value={resyncInterval}
+          onChange={(value) => setDraft({ ...draft, resyncInterval: value })}
+        />
+        <NumberRow
+          id="deploy-attempts"
+          label="Attempts before giving up"
+          description="Until the next check. Each retry waits twice as long."
+          min={1}
+          max={10}
+          value={deployAttempts}
+          onChange={(value) => setDraft({ ...draft, deployAttempts: value })}
+        />
+      </Section>
 
-          <div className="space-y-2">
-            <Label htmlFor="tor-control-url">Control address</Label>
-            <Input
-              id="tor-control-url"
-              value={torControlUrl}
-              onChange={(event) => setDraft({ ...draft, torControlUrl: event.target.value })}
-              placeholder="tcp://127.0.0.1:9051"
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Where Tor listens for control connections — <code>tcp://host:port</code>, or{' '}
-              <code>unix:/run/tor/control</code> for the socket a distribution's Tor package
-              usually opens. The default suits both the bundled container and a Tor installed
-              beside npanel.
-            </p>
-          </div>
+      <Section
+        title="Certificates"
+        footer="Caps how often npanel lets your proxy request a certificate, so a misconfigured domain can't use up your certificate authority's limits."
+      >
+        <NumberRow
+          id="tls-check-limit-per-host"
+          label="Per domain"
+          unit="an hour"
+          min={1}
+          value={tlsCheckLimitPerHost}
+          onChange={(value) => setDraft({ ...draft, tlsCheckLimitPerHost: value })}
+        />
+        <NumberRow
+          id="tls-check-limit-total"
+          label="In total"
+          unit="an hour"
+          min={1}
+          value={tlsCheckLimitTotal}
+          onChange={(value) => setDraft({ ...draft, tlsCheckLimitTotal: value })}
+        />
+      </Section>
 
-          <div className="space-y-2">
-            <Label htmlFor="tor-control-password">Control password</Label>
-            <Input
-              id="tor-control-password"
-              type="password"
-              value={torControlPassword}
-              onChange={(event) => setDraft({ ...draft, torControlPassword: event.target.value })}
-              autoComplete="off"
-              spellCheck={false}
-              className="font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Only for a control port guarded by a <code>HashedControlPassword</code>. Leave it
-              empty to authenticate with Tor's cookie file, which is what both usual setups do.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
+      <Section
+        title="Tor"
+        footer={
+          current?.tor_enabled ? (
+            <TorStatus status={status.data?.tor} />
+          ) : (
+            'Gives every site a .onion address. Needs a Tor daemon npanel can reach.'
+          )
+        }
+      >
+        <ToggleRow
+          id="tor-enabled"
+          label="Serve every site over Tor"
+          checked={torEnabled}
+          onCheckedChange={(checked) => setDraft({ ...draft, torEnabled: checked })}
+        />
+        {torEnabled && (
+          <>
+            <FieldRow label="Control address" htmlFor="tor-control-url">
+              <Input
+                id="tor-control-url"
+                value={torControlUrl}
+                onChange={(event) => setDraft({ ...draft, torControlUrl: event.target.value })}
+                placeholder="tcp://127.0.0.1:9051"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-sm"
+              />
+            </FieldRow>
+            <FieldRow label="Control password" htmlFor="tor-control-password">
+              <Input
+                id="tor-control-password"
+                type="password"
+                value={torControlPassword}
+                onChange={(event) => setDraft({ ...draft, torControlPassword: event.target.value })}
+                placeholder="Cookie authentication"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-sm"
+              />
+            </FieldRow>
+          </>
+        )}
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Analytics</CardTitle>
-          <CardDescription>
-            The time zone every site's analytics are reported in: where one day's visitors end and
-            the next day's begin. Changing it re-draws every chart on the new clock, including past
-            days. Whether a site is counted at all is set on the site itself.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+      <Section title="Analytics" footer="Where one day ends and the next begins, for every site.">
+        <Row label="Time zone">
           <Select
             value={analyticsTimezone}
             onValueChange={(value) => setDraft({ ...draft, analyticsTimezone: value })}
           >
-            <SelectTrigger className="w-72" aria-label="Time zone">
+            <SelectTrigger className="w-56" aria-label="Time zone">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -242,228 +308,125 @@ export function SettingsPage() {
               ))}
             </SelectContent>
           </Select>
-        </CardContent>
-      </Card>
+        </Row>
+      </Section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Relays</CardTitle>
-          <CardDescription>
-            One per line. Used to watch for new site manifests and to look up authors' relay lists
-            (kind 10002) and Blossom servers (kind 10063).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Textarea
-            value={relays}
-            onChange={(event) => setDraft({ ...draft, relays: event.target.value })}
-            rows={6}
-            spellCheck={false}
-            className="font-mono text-sm"
-          />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Blossom fallback servers</CardTitle>
-          <CardDescription>
-            Only used when a manifest names no servers and its author publishes no kind 10063 list.
-            Most sites need none. One per line.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Textarea
-            value={servers}
-            onChange={(event) => setDraft({ ...draft, servers: event.target.value })}
-            rows={4}
-            spellCheck={false}
-            className="font-mono text-sm"
-            placeholder="https://blossom.example.com/"
-          />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Limits</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="max-file-size">Maximum file size (MB)</Label>
-            <Input
-              id="max-file-size"
-              type="number"
-              min={1}
-              value={maxFileSize}
-              onChange={(event) => setDraft({ ...draft, maxFileSize: event.target.value })}
-            />
+      {dirty && (
+        <div className="fixed inset-x-0 bottom-20 z-20 flex justify-center px-4 md:bottom-6 md:pl-60">
+          <div className="material flex items-center gap-3 rounded-full bg-popover py-2 pr-2 pl-5 shadow-xl ring-1 ring-black/10 dark:ring-white/10">
+            <span className="text-sm">Unsaved changes</span>
+            <Button variant="outline" size="sm" className="rounded-full" onClick={() => setDraft({})}>
+              Revert
+            </Button>
+            <Button size="sm" className="rounded-full" onClick={save} disabled={updateSettings.isPending}>
+              {updateSettings.isPending ? 'Saving…' : 'Save'}
+            </Button>
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="resync-interval">Resync interval (seconds)</Label>
-            <Input
-              id="resync-interval"
-              type="number"
-              min={60}
-              value={resyncInterval}
-              onChange={(event) => setDraft({ ...draft, resyncInterval: event.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="deploy-attempts">Deploy attempts</Label>
-            <Input
-              id="deploy-attempts"
-              type="number"
-              min={1}
-              max={10}
-              value={deployAttempts}
-              onChange={(event) => setDraft({ ...draft, deployAttempts: event.target.value })}
-            />
-            <p className="text-sm text-muted-foreground">
-              How many times a failed deploy is tried before npanel waits for the next resync. Each
-              attempt waits twice as long as the last, and keeps the files already downloaded. Set
-              it to 1 to never retry.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">DNS target</CardTitle>
-          <CardDescription>
-            What staff are told to point a domain at when they add a site. One per line: an IP address
-            becomes an A or AAAA record, a domain becomes a CNAME and must be the only entry. Leave
-            this empty to use whatever {dns.data?.dashboard_host ?? 'the dashboard domain'} itself
-            resolves to.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <Textarea
-            value={dnsTargets}
-            onChange={(event) => setDraft({ ...draft, dnsTargets: event.target.value })}
-            rows={3}
-            spellCheck={false}
-            className="font-mono text-sm"
-            placeholder="203.0.113.10"
-          />
-          {!dnsTargets.trim() && dns.data && (
-            <p className="text-sm text-muted-foreground">
-              {dns.data.records.length
-                ? `Detected: ${dns.data.records.map((record) => `${record.type} ${record.value}`).join(', ')}`
-                : `Nothing detected — ${dns.data.dashboard_host} doesn't resolve from this server, so staff are shown no records.`}
-            </p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Allowed domains</CardTitle>
-          <CardDescription>
-            One per line, and a site's domain must match one of them or sit under it. Adding a site
-            authorizes a certificate for it, and certificate authorities meter issuance per
-            registered domain — so this limits how much of that budget any one person can spend.
-            Leave empty to allow any domain. Sites that already exist keep working.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Textarea
-            value={allowedHostSuffixes}
-            onChange={(event) => setDraft({ ...draft, allowedHostSuffixes: event.target.value })}
-            rows={4}
-            spellCheck={false}
-            className="font-mono text-sm"
-            placeholder="example.com"
-          />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Certificate authorization</CardTitle>
-          <CardDescription>
-            How many certificates npanel will approve per hour when your proxy asks, per domain and
-            in total. A site whose DNS doesn't point here would otherwise retry forever and
-            exhaust your certificate authority's issuance limits. The dashboard's own domain is
-            always approved.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="tls-check-limit-per-host">Per domain, each hour</Label>
-            <Input
-              id="tls-check-limit-per-host"
-              type="number"
-              min={1}
-              value={tlsCheckLimitPerHost}
-              onChange={(event) => setDraft({ ...draft, tlsCheckLimitPerHost: event.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="tls-check-limit-total">Across all domains, each hour</Label>
-            <Input
-              id="tls-check-limit-total"
-              type="number"
-              min={1}
-              value={tlsCheckLimitTotal}
-              onChange={(event) => setDraft({ ...draft, tlsCheckLimitTotal: event.target.value })}
-            />
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="flex items-center gap-4">
-        <Button onClick={save} disabled={updateSettings.isPending}>
-          {updateSettings.isPending ? 'Saving…' : 'Save settings'}
-        </Button>
-
-        {status.data && (
-          <p className="text-sm text-muted-foreground">
-            {status.data.hosts} sites · {status.data.blobs} blobs · {formatBytes(status.data.blob_bytes)}{' '}
-            stored
-          </p>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
 
-/** Who the pasted identifier turns out to be, before it's saved. */
+/**
+ * The readout every control panel has, answering the question staff ask
+ * first: is this box doing anything?
+ */
+function ServerInformation() {
+  const status = useStatus();
+  const rows: [string, string][] = status.data
+    ? [
+        ['Sites', String(status.data.hosts)],
+        ['Deployed versions', String(status.data.ready_versions)],
+        ['Stored files', String(status.data.blobs)],
+        ['Disk used', formatBytes(status.data.blob_bytes)],
+        ['Relays', String(status.data.relays.length)],
+      ]
+    : [];
+
+  return (
+    <Section title="Server Information">
+      {status.isLoading ? (
+        <Skeleton className="h-60 rounded-none" />
+      ) : !rows.length ? (
+        <p className="px-4 py-3 text-sm text-muted-foreground">Unavailable.</p>
+      ) : (
+        rows.map(([label, value]) => (
+          <Row key={label} label={label}>
+            <span className="text-sm text-muted-foreground tabular-nums">{value}</span>
+          </Row>
+        ))
+      )}
+    </Section>
+  );
+}
+
+function NumberRow({
+  id,
+  label,
+  description,
+  unit,
+  value,
+  onChange,
+  min,
+  max,
+}: {
+  id: string;
+  label: string;
+  description?: string;
+  unit?: string;
+  value: string;
+  onChange(value: string): void;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <Row label={label} description={description} htmlFor={id}>
+      <span className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Input
+          id={id}
+          type="number"
+          min={min}
+          max={max}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-8 w-24 text-right tabular-nums"
+        />
+        {unit}
+      </span>
+    </Row>
+  );
+}
+
 /** Whether npanel is actually reaching Tor, which only it can tell you. */
 function TorStatus({ status }: { status: TorStatusView | undefined }) {
   if (!status) return null;
 
   if (status.connected) {
     return (
-      <p className="text-xs text-muted-foreground">
-        Connected. {status.services} {status.services === 1 ? 'site is' : 'sites are'} published
-        over Tor.
-      </p>
+      <span className="flex items-center gap-1.5">
+        <span className="size-2 rounded-full bg-success" aria-hidden />
+        Connected · {status.services} {status.services === 1 ? 'site' : 'sites'} on Tor
+      </span>
     );
   }
 
   return (
-    <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs">
-      {status.error || 'Not connected to Tor.'} npanel keeps trying, so fixing this needs no
-      restart.
-    </p>
+    <span className="flex items-start gap-1.5">
+      <span className="mt-1 size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
+      <span>{status.error || 'Not connected to Tor.'} npanel keeps trying, so fixing this needs no restart.</span>
+    </span>
   );
 }
 
 function ContactPreview({ value }: { value: string }) {
   const pubkey = decodePubkey(value);
 
-  if (!value.trim()) {
-    return <p className="text-sm text-muted-foreground">Nobody is named on the homepage.</p>;
-  }
-
-  if (!pubkey) {
-    return <p className="text-sm text-destructive">That isn't an npub.</p>;
-  }
+  if (!value.trim()) return <p className="text-xs text-muted-foreground">Nobody is named.</p>;
+  if (!pubkey) return <p className="text-xs text-destructive">That isn't an npub.</p>;
 
   return (
-    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+    <p className="flex items-center gap-2 text-xs text-muted-foreground">
       Shown as <PubkeyLabel pubkey={pubkey} className="text-foreground" />
     </p>
   );

@@ -1,24 +1,24 @@
-import { useSeoMeta } from "@unhead/react";
-import { Link } from "react-router-dom";
+import { useSeoMeta } from '@unhead/react';
+import { Link } from 'react-router-dom';
 
-import { Card, CardContent } from "@/components/ui/card";
+import { buttonVariants } from '@/components/ui/button-variants';
+import { cn } from '@/lib/utils';
 
+/** A nod to cPanel's most famous page, for the dashboard's missing ones. */
 const NotFound = () => {
-  useSeoMeta({
-    title: "404 — npanel",
-    description: "The page you are looking for could not be found.",
-  });
+  useSeoMeta({ title: 'Not found — npanel' });
 
   return (
-    <Card>
-      <CardContent className="py-12 text-center space-y-3">
-        <h1 className="text-3xl font-semibold">404</h1>
-        <p className="text-muted-foreground">That page does not exist.</p>
-        <Link to="/" className="text-sm underline">
-          Back to sites
-        </Link>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col items-center gap-6 py-24 text-center">
+      <p className="text-7xl font-bold tracking-tight text-muted-foreground/30">404</p>
+      <div className="space-y-2">
+        <h1 className="text-2xl font-bold tracking-tight">There is no page configured at this address.</h1>
+        <p className="text-muted-foreground">It may have moved, or it was never here.</p>
+      </div>
+      <Link to="/" className={cn(buttonVariants(), 'rounded-full px-5')}>
+        Go to Sites
+      </Link>
+    </div>
   );
 };
 

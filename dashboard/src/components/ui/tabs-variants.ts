@@ -5,7 +5,7 @@ export const tabsListVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-muted",
+        default: "bg-foreground/[0.06] dark:bg-foreground/10",
         line: "gap-1 bg-transparent",
       },
     },

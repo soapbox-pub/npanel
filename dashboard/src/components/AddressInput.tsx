@@ -1,4 +1,4 @@
-import { formatNsiteAddress, NAMED_SITE_KIND } from '@shared/nsite-address';
+import { NAMED_SITE_KIND } from '@shared/nsite-address';
 
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { Input } from '@/components/ui/input';
@@ -17,7 +17,7 @@ interface AddressInputProps {
 /**
  * Address field accepting every format an nsite might be pasted in — npub,
  * nprofile, naddr, an `a` tag, an nsite subdomain label, or a full nsite URL —
- * showing the single canonical form that will be stored.
+ * and saying whose site it turned out to be.
  */
 export function AddressInput({ value, onChange, parsed, label = 'nsite', id = 'address' }: AddressInputProps) {
   return (
@@ -27,31 +27,22 @@ export function AddressInput({ value, onChange, parsed, label = 'nsite', id = 'a
         id={id}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="npub1…, naddr1…, or https://npub1….nsite.lol"
+        placeholder="npub1…, naddr1…, or an nsite URL"
         autoComplete="off"
         spellCheck={false}
+        aria-invalid={parsed.error ? true : undefined}
       />
 
-      {parsed.error && <p className="text-sm text-destructive">{parsed.error}</p>}
+      {parsed.error && <p className="text-xs text-destructive">{parsed.error}</p>}
 
       {parsed.address && (
-        <div className="rounded-md border bg-muted/40 p-3 text-sm space-y-1">
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Author</span>
-            <PubkeyLabel pubkey={parsed.address.pubkey} />
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">nsite</span>
-            <span>
-              {parsed.address.kind === NAMED_SITE_KIND
-                ? `Named site "${parsed.address.identifier}"`
-                : 'Root site'}
-            </span>
-          </div>
-          <div className="text-xs font-mono text-muted-foreground break-all">
-            {formatNsiteAddress(parsed.address)}
-          </div>
-        </div>
+        <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <PubkeyLabel pubkey={parsed.address.pubkey} className="font-medium text-foreground" />
+          <span aria-hidden>·</span>
+          <span className="truncate">
+            {parsed.address.kind === NAMED_SITE_KIND ? parsed.address.identifier : 'Root site'}
+          </span>
+        </p>
       )}
     </div>
   );

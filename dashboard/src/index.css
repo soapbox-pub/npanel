@@ -52,6 +52,11 @@
   --color-brand-glow: var(--brand-glow);
   --color-brand-foreground: var(--brand-foreground);
 
+  --color-material: var(--material);
+  --color-success: var(--success);
+  --color-toggle: var(--toggle);
+  --color-warning: var(--warning);
+
   --font-sans: var(--font-ui);
   --font-mono: var(--font-code);
 
@@ -92,77 +97,79 @@
 }
 
 /*
- * The faint blueprint grid behind the content area. It reads as "machine you
- * administer" rather than "web page", which is the whole point of the theme.
+ * Frosted glass: the toolbar, the sidebar and the tab bar blur what scrolls
+ * under them, the way AppKit and UIKit chrome does, over a translucent
+ * `bg-material` or `bg-sidebar`.
  */
-@utility grid-canvas {
-  background-image:
-    linear-gradient(to right, var(--grid-line) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--grid-line) 1px, transparent 1px);
-  background-size: 40px 40px;
-  background-position: center top;
+@utility material {
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
 }
 
 :root {
   --radius: 0.625rem;
 
-  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
-    Arial, "Noto Sans", sans-serif;
-  --font-code: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-code: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono",
+    monospace;
 
   color-scheme: light;
 
-  /* cPanel's orange, and the amber it fades into in the logo. */
+  /* The logo's orange: cPanel's, kept for the mark and nothing that has to be read. */
   --brand: hsl(18 100% 58%);
   --brand-glow: hsl(33 100% 57%);
   --brand-foreground: hsl(0 0% 100%);
 
-  --background: hsl(210 33% 96%);
-  --foreground: hsl(213 32% 15%);
+  /* Apple's system colours, light appearance. */
+  --background: hsl(240 11% 96%);
+  --foreground: hsl(240 3% 11%);
 
   --card: hsl(0 0% 100%);
-  --card-foreground: hsl(213 32% 15%);
+  --card-foreground: hsl(240 3% 11%);
 
-  --popover: hsl(0 0% 100%);
-  --popover-foreground: hsl(213 32% 15%);
+  --popover: hsl(0 0% 100% / 0.92);
+  --popover-foreground: hsl(240 3% 11%);
 
-  --primary: hsl(18 100% 55%);
+  --primary: hsl(211 100% 45%);
   --primary-foreground: hsl(0 0% 100%);
 
-  --secondary: hsl(210 28% 91%);
-  --secondary-foreground: hsl(213 32% 20%);
+  --secondary: hsl(240 6% 92%);
+  --secondary-foreground: hsl(240 3% 11%);
 
-  --muted: hsl(210 30% 94%);
-  --muted-foreground: hsl(213 14% 42%);
+  --muted: hsl(240 7% 94%);
+  --muted-foreground: hsl(240 3% 43%);
 
-  --accent: hsl(20 90% 95%);
-  --accent-foreground: hsl(15 78% 32%);
+  --accent: hsl(240 6% 92%);
+  --accent-foreground: hsl(240 3% 11%);
 
-  --destructive: hsl(0 72% 45%);
+  --destructive: hsl(3 100% 45%);
   --destructive-foreground: hsl(0 0% 100%);
 
-  --border: hsl(212 24% 87%);
-  --input: hsl(212 22% 84%);
-  --ring: hsl(18 100% 55%);
+  --success: hsl(135 64% 40%);
+  --toggle: hsl(135 59% 49%);
+  --warning: hsl(35 100% 42%);
 
-  --chart-1: hsl(18 100% 55%);
-  --chart-2: hsl(199 89% 44%);
-  --chart-3: hsl(161 62% 36%);
-  --chart-4: hsl(43 96% 50%);
-  --chart-5: hsl(258 68% 58%);
+  --border: hsl(240 6% 88%);
+  --input: hsl(240 6% 84%);
+  --ring: hsl(211 100% 50%);
 
-  /* The dark chrome: top bar and left rail, on both themes. */
-  --sidebar: hsl(212 44% 14%);
-  --sidebar-foreground: hsl(210 26% 80%);
-  --sidebar-primary: hsl(18 100% 58%);
+  --chart-1: hsl(211 100% 50%);
+  --chart-2: hsl(135 59% 49%);
+  --chart-3: hsl(35 100% 52%);
+  --chart-4: hsl(280 68% 60%);
+  --chart-5: hsl(3 100% 59%);
+
+  --material: hsl(240 11% 96% / 0.72);
+
+  --sidebar: hsl(240 9% 93% / 0.8);
+  --sidebar-foreground: hsl(240 3% 11%);
+  --sidebar-primary: hsl(211 100% 45%);
   --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(212 38% 21%);
-  --sidebar-accent-foreground: hsl(0 0% 100%);
-  --sidebar-border: hsl(212 36% 23%);
-  --sidebar-ring: hsl(18 100% 58%);
-
-  --grid-line: hsl(213 25% 94%);
+  --sidebar-accent: hsl(240 3% 11% / 0.08);
+  --sidebar-accent-foreground: hsl(240 3% 11%);
+  --sidebar-border: hsl(240 6% 86%);
+  --sidebar-ring: hsl(211 100% 50%);
 }
 
 .dark {
@@ -172,50 +179,54 @@
   --brand-glow: hsl(35 100% 60%);
   --brand-foreground: hsl(0 0% 100%);
 
-  --background: hsl(213 35% 8%);
-  --foreground: hsl(210 30% 94%);
+  --background: hsl(240 3% 7%);
+  --foreground: hsl(0 0% 96%);
 
-  --card: hsl(213 32% 12%);
-  --card-foreground: hsl(210 30% 94%);
+  --card: hsl(240 3% 12%);
+  --card-foreground: hsl(0 0% 96%);
 
-  --popover: hsl(213 32% 12%);
-  --popover-foreground: hsl(210 30% 94%);
+  --popover: hsl(240 3% 16% / 0.92);
+  --popover-foreground: hsl(0 0% 96%);
 
-  --primary: hsl(20 100% 58%);
+  --primary: hsl(210 100% 52%);
   --primary-foreground: hsl(0 0% 100%);
 
-  --secondary: hsl(213 28% 18%);
-  --secondary-foreground: hsl(210 30% 94%);
+  --secondary: hsl(240 3% 20%);
+  --secondary-foreground: hsl(0 0% 96%);
 
-  --muted: hsl(213 26% 17%);
-  --muted-foreground: hsl(212 16% 64%);
+  --muted: hsl(240 3% 16%);
+  --muted-foreground: hsl(240 5% 65%);
 
-  --accent: hsl(18 45% 20%);
-  --accent-foreground: hsl(24 96% 76%);
+  --accent: hsl(240 3% 20%);
+  --accent-foreground: hsl(0 0% 96%);
 
-  --destructive: hsl(0 68% 52%);
+  --destructive: hsl(3 100% 61%);
   --destructive-foreground: hsl(0 0% 100%);
 
-  --border: hsl(213 24% 21%);
-  --input: hsl(213 24% 24%);
-  --ring: hsl(20 100% 58%);
+  --success: hsl(135 64% 55%);
+  --toggle: hsl(135 64% 50%);
+  --warning: hsl(35 100% 55%);
 
-  --chart-1: hsl(20 100% 60%);
-  --chart-2: hsl(199 88% 55%);
-  --chart-3: hsl(161 58% 48%);
-  --chart-4: hsl(43 96% 58%);
-  --chart-5: hsl(258 76% 70%);
+  --border: hsl(240 3% 20%);
+  --input: hsl(240 3% 26%);
+  --ring: hsl(210 100% 55%);
 
-  --sidebar: hsl(213 40% 10%);
-  --sidebar-foreground: hsl(210 24% 78%);
-  --sidebar-primary: hsl(20 100% 60%);
+  --chart-1: hsl(210 100% 60%);
+  --chart-2: hsl(135 64% 50%);
+  --chart-3: hsl(35 100% 55%);
+  --chart-4: hsl(280 85% 70%);
+  --chart-5: hsl(3 100% 61%);
+
+  --material: hsl(240 3% 9% / 0.72);
+
+  --sidebar: hsl(240 3% 11% / 0.8);
+  --sidebar-foreground: hsl(0 0% 96%);
+  --sidebar-primary: hsl(210 100% 52%);
   --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(213 34% 17%);
+  --sidebar-accent: hsl(0 0% 100% / 0.1);
   --sidebar-accent-foreground: hsl(0 0% 100%);
-  --sidebar-border: hsl(213 32% 19%);
-  --sidebar-ring: hsl(20 100% 60%);
-
-  --grid-line: hsl(213 26% 11%);
+  --sidebar-border: hsl(240 3% 18%);
+  --sidebar-ring: hsl(210 100% 55%);
 }
 
 /*
@@ -225,7 +236,7 @@
  */
 @media (prefers-color-scheme: dark) {
   html:not(.light):not(.dark) {
-    background-color: hsl(213 35% 8%);
+    background-color: hsl(240 3% 7%);
   }
 }
 
@@ -242,6 +253,13 @@
     @apply bg-background text-foreground;
     font-family: var(--font-ui);
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+  }
+
+  /* A focus ring the way macOS draws one: the accent colour, soft, outside. */
+  :focus-visible {
+    outline-color: var(--ring);
   }
 
   /* Tabular figures everywhere numbers are compared down a column. */

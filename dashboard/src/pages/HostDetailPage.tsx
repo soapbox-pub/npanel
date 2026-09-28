@@ -1,17 +1,34 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowLeft, BarChart3, Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  BarChart3,
+  ChevronRight,
+  Code,
+  Eye,
+  Layers,
+  Network,
+  Power,
+  RefreshCw,
+  Search,
+  Shield,
+} from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { AddressInput } from '@/components/AddressInput';
+import { CopyButton } from '@/components/CopyButton';
 import { DnsRecords } from '@/components/DnsRecords';
-import { useParsedAddress } from '@/hooks/useParsedAddress';
+import { Row, RowIcon, Section, ToggleRow } from '@/components/Grouped';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
 import { Nip05Editor } from '@/components/host/Nip05Editor';
 import { VersionList } from '@/components/host/VersionList';
+import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
-import { StatusBadge } from '@/components/StatusBadge';
+import { SiteIcon } from '@/components/SiteIcon';
+import { SiteStatus } from '@/components/SiteStatus';
+import { Sparkline } from '@/components/Sparkline';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,41 +41,53 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useSparklines } from '@/hooks/useAnalytics';
 import { useDeleteHost, useHost, useMe, useSyncHost, useUpdateHost } from '@/hooks/useNpanel';
+import { useParsedAddress } from '@/hooks/useParsedAddress';
 import { useToast } from '@/hooks/useToast';
 import type { Host, HostPatch } from '@/lib/api-types';
+import { compactNumber } from '@/lib/format';
+import { cn } from '@/lib/utils';
 import { isRootDomain } from '@shared/hostname';
 
-/** Everything about one site: what it points at, its versions, its access. */
-export function HostDetailPage() {
-  const params = useParams();
-  const hostname = params.hostname;
-  const navigate = useNavigate();
-  const { toast } = useToast();
+const BACK = { to: '/', label: 'Sites' };
 
+/** Everything about one site: how it's doing, what it serves, how, and who may change it. */
+export function HostDetailPage() {
+  const hostname = useParams().hostname;
   const host = useHost(hostname);
   const me = useMe();
-  const updateHost = useUpdateHost();
-  const deleteHost = useDeleteHost();
   const syncHost = useSyncHost();
-
-  const [address, setAddress] = useState('');
-  const parsed = useParsedAddress(address);
+  const { toast } = useToast();
 
   useSeoMeta({ title: host.data ? `${host.data.hostname} — npanel` : 'npanel' });
 
-  if (host.isLoading) return <Skeleton className="h-64 w-full" />;
+  if (host.isLoading) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-16 w-72 rounded-xl" />
+        <Skeleton className="h-40 rounded-2xl" />
+      </div>
+    );
+  }
 
   if (host.isError || !host.data) {
     return (
-      <div className="space-y-4">
-        <BackLink />
-        <p className="text-sm text-destructive">
-          {host.error instanceof Error ? host.error.message : 'Site not found.'}
+      <div className="space-y-6">
+        <PageHeader back={BACK} title="Site not found" />
+        <p className="text-muted-foreground">
+          {host.error instanceof Error ? host.error.message : 'There is no site by that name.'}
         </p>
       </div>
     );
@@ -66,377 +95,107 @@ export function HostDetailPage() {
 
   const data = host.data;
 
-  const run = async (action: () => Promise<unknown>, success: string) => {
+  const sync = async () => {
     try {
-      await action();
-      toast({ title: success });
+      await syncHost.mutateAsync(data.hostname);
+      toast({ title: 'Checking for a new version' });
     } catch (error) {
       toast({
-        title: 'That did not work',
+        title: "Couldn't check for a new version",
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
       });
     }
   };
 
-  const patch = (values: HostPatch, success: string) =>
-    run(() => updateHost.mutateAsync({ hostname: data.hostname, patch: values }), success);
-
   return (
-    <div className="space-y-6">
-      <BackLink />
-
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">{data.hostname}</h1>
-            <a
-              href={`https://${data.hostname}`}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="text-muted-foreground hover:text-foreground"
-              aria-label={`Open ${data.hostname}`}
+    <div className="space-y-8">
+      <PageHeader
+        back={BACK}
+        icon={<SiteIcon hostname={data.hostname} className="size-14" />}
+        title={data.hostname}
+        subtitle={
+          <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <SiteStatus host={data} />
+            <span aria-hidden>·</span>
+            <PubkeyLabel pubkey={data.pubkey} compact />
+            {data.identifier && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="truncate">{data.identifier}</span>
+              </>
+            )}
+          </span>
+        }
+        actions={
+          <>
+            <Button
+              variant="outline"
+              size="icon"
+              className="rounded-full"
+              disabled={syncHost.isPending}
+              onClick={sync}
+              aria-label="Check for a new version"
+              title="Check for a new version"
             >
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          </div>
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <PubkeyLabel pubkey={data.pubkey} />
-            <span>·</span>
-            <span>{data.identifier || 'root site'}</span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <StatusBadge host={data} />
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`/hosts/${data.hostname}/analytics`}>
-              <BarChart3 className="mr-2 h-4 w-4" />
-              Analytics
-            </Link>
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={syncHost.isPending}
-            onClick={() =>
-              run(() => syncHost.mutateAsync(data.hostname), 'Checking relays for a new version')
-            }
-          >
-            <RefreshCw className="mr-2 h-4 w-4" />
-            Sync now
-          </Button>
-        </div>
-      </div>
+              <RefreshCw className={cn(syncHost.isPending && 'animate-spin')} aria-hidden />
+            </Button>
+            <Button asChild className="rounded-full">
+              <a href={`https://${data.hostname}`} target="_blank" rel="noreferrer noopener">
+                Visit
+                <ArrowUpRight aria-hidden />
+              </a>
+            </Button>
+          </>
+        }
+      />
 
       {data.latest?.status === 'failed' && data.latest.error && (
-        <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
-          Latest deploy failed: {data.latest.error}
+        <p className="rounded-xl bg-destructive/10 p-4 text-sm [overflow-wrap:anywhere]">
+          <span className="font-semibold text-destructive">The latest deploy failed.</span> {data.latest.error}
         </p>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Target</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <code className="block break-all rounded-md bg-muted p-3 text-xs">{data.address}</code>
+      <Visitors host={data} />
 
-          <AddressInput
-            value={address}
-            onChange={setAddress}
-            parsed={parsed}
-            label="Change target"
-            id="retarget"
-          />
+      <Tabs defaultValue="general" className="gap-6">
+        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+          <TabsList>
+            <TabsTrigger value="general" className="px-3">
+              General
+            </TabsTrigger>
+            <TabsTrigger value="versions" className="px-3">
+              Versions
+            </TabsTrigger>
+            <TabsTrigger value="files" className="px-3">
+              Files
+            </TabsTrigger>
+            <TabsTrigger value="nip05" className="px-3">
+              NIP-05
+            </TabsTrigger>
+            {me.data?.role === 'admin' && (
+              <TabsTrigger value="access" className="px-3">
+                Access
+              </TabsTrigger>
+            )}
+          </TabsList>
+        </div>
 
-          <Button
-            size="sm"
-            disabled={!parsed.address || updateHost.isPending}
-            onClick={() =>
-              run(async () => {
-                await updateHost.mutateAsync({ hostname: data.hostname, patch: { address } });
-                setAddress('');
-              }, 'Target updated')
-            }
-          >
-            Update target
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Only once Tor has actually published one. An empty card on every site
-          would say nothing on the instances where Tor is switched off. */}
-      {data.onion && <OnionCard address={data.onion} />}
-
-      <Tabs defaultValue="versions">
-        <TabsList>
-          <TabsTrigger value="versions">Versions</TabsTrigger>
-          <TabsTrigger value="files">Files</TabsTrigger>
-          <TabsTrigger value="nip05">NIP-05</TabsTrigger>
-          <TabsTrigger value="settings">Settings</TabsTrigger>
-          {me.data?.role === 'admin' && <TabsTrigger value="access">Access</TabsTrigger>}
-        </TabsList>
-
-        <TabsContent value="versions" className="pt-4">
-          <Card>
-            <VersionList hostname={data.hostname} />
-          </Card>
+        <TabsContent value="general">
+          <General host={data} />
         </TabsContent>
-
-        <TabsContent value="files" className="pt-4">
-          <Card>
-            <FileList hostname={data.hostname} />
-          </Card>
+        <TabsContent value="versions">
+          <VersionList hostname={data.hostname} />
         </TabsContent>
-
-        <TabsContent value="nip05" className="pt-4">
-          <Card>
-            <CardContent className="pt-6">
-              <Nip05Editor hostname={data.hostname} />
-            </CardContent>
-          </Card>
+        <TabsContent value="files">
+          <FileList hostname={data.hostname} />
         </TabsContent>
-
-        <TabsContent value="settings" className="space-y-6 pt-4">
-          {/* Only a root domain owns its `www`; on a subdomain the switch would
-              be a promise npanel has no business making about someone's zone. */}
-          {isRootDomain(data.hostname) && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">www</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <label className="flex items-center gap-3 text-sm">
-                  <Switch
-                    checked={data.redirect_www}
-                    onCheckedChange={(redirect) =>
-                      patch(
-                        { redirect_www: redirect },
-                        redirect ? 'www now redirects here' : 'www no longer redirects here',
-                      )
-                    }
-                  />
-                  <span className="font-mono text-xs">
-                    www.{data.hostname} → {data.hostname}
-                  </span>
-                </label>
-                <p className="text-sm text-muted-foreground">
-                  {data.redirect_www
-                    ? 'A permanent redirect that keeps the path. It needs the DNS record below: the redirect is an HTTPS response like any other, so www has to reach this server and get a certificate of its own before a browser will follow it.'
-                    : `www.${data.hostname} is not served at all, unless you add it as a site of its own.`}
-                </p>
-                {data.redirect_www && <DnsRecords hostname={data.hostname} www />}
-              </CardContent>
-            </Card>
-          )}
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Visibility</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {/* The switch reads as "listed", not as "hidden": a site is listed
-                  unless someone says otherwise, and a toggle sitting off while
-                  the label says Listed would contradict itself. */}
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={!data.hidden}
-                  onCheckedChange={(listed) =>
-                    patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')
-                  }
-                />
-                {data.hidden ? 'Unlisted' : 'Listed'}
-              </label>
-              <p className="text-sm text-muted-foreground">
-                An unlisted site is left out of the list on the homepage, and out of sight of staff
-                who can't manage it. It changes nothing about who can visit the site itself.
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Routing</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.spa}
-                  onCheckedChange={(spa) =>
-                    patch(
-                      { spa },
-                      spa ? 'Serving as a single-page app' : 'Serving as a static site',
-                    )
-                  }
-                />
-                Single-page app
-              </label>
-              <p className="text-sm text-muted-foreground">
-                {data.spa
-                  ? "A path this site has no file for serves its shell — 404.html, or index.html — with a 200, so the app's own router decides what the page is. Missing images, scripts and stylesheets still return 404."
-                  : 'A path this site has no file for returns 404, showing its own 404.html if it published one. Turn this on for a site that routes in the browser, or its deep links will be 404s.'}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Deployments</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.merge_deployments}
-                  onCheckedChange={(merge) =>
-                    patch(
-                      { merge_deployments: merge },
-                      merge ? 'Merging deployments' : 'Serving the latest deployment only',
-                    )
-                  }
-                />
-                Merge deployments
-              </label>
-              <p className="text-sm text-muted-foreground">
-                {data.merge_deployments
-                  ? 'Every earlier deployment is stacked underneath this one, oldest first, so the newest file at each path wins and a file a later deploy deleted goes on being served. Turn this on for a build that loads modules by name at runtime, like Vite: a page a visitor already has open keeps asking for the chunks of the deploy it came from.'
-                  : 'Only the files in the deployment being served. A path it does not have is a 404, even if an earlier deployment published one — which breaks a page that is already open in a browser and still loading chunks by the old names.'}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Content Security Policy</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.csp}
-                  onCheckedChange={(csp) =>
-                    patch(
-                      { csp },
-                      csp ? 'Content Security Policy on' : 'Content Security Policy off',
-                    )
-                  }
-                />
-                {cspLabel(data.csp_source)}
-              </label>
-              <p className="text-sm text-muted-foreground">
-                {data.csp_source === 'off'
-                  ? `This site runs without a policy. An inline or third-party script in a future deploy of it will execute on ${data.hostname}. Every other site keeps its own protection.`
-                  : data.csp_source === 'site'
-                    ? `This site declares a policy in the <meta> tags of its index.html, and npanel sends that one instead of its own. The site decides what may run on ${data.hostname} — including, if its policy is a loose one, less than npanel would have allowed. Redeploy the site to change it.`
-                    : `Scripts may only load from ${data.hostname} itself — no inline <script>, no CDN — so a bad deploy of this site can't run code against the domain. A site that declares its own policy in its index.html is served under that one instead. Turn this off only for a site that needs neither and can't be rebuilt.`}
-              </p>
-              {data.csp_policy && (
-                <p className="font-mono text-xs break-all text-muted-foreground">{data.csp_policy}</p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Analytics</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.analytics}
-                  onCheckedChange={(analytics) =>
-                    patch(
-                      { analytics },
-                      analytics ? 'Counting visits to this site' : 'No longer counting visits',
-                    )
-                  }
-                />
-                {data.analytics ? 'Counting visits' : 'Off'}
-              </label>
-              <p className="text-sm text-muted-foreground">
-                {data.analytics
-                  ? `npanel adds a small script to every page of ${data.hostname}, served from the site's own domain, and counts visits the way Plausible does: no cookies, and no IP address or browser fingerprint is ever stored. Visitors are told apart by a hash that changes every day, so nobody can be followed from one day to the next.`
-                  : 'Turn this on to see who visits this site: pages, sources, countries and devices, without cookies or storing anything that identifies a visitor. npanel adds a small script to every page, served from the site itself.'}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Search engines</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.seo}
-                  onCheckedChange={(seo) =>
-                    patch({ seo }, seo ? 'SEO defaults on' : 'SEO defaults off')
-                  }
-                />
-                SEO defaults
-              </label>
-              <p className="text-sm text-muted-foreground">
-                {data.seo
-                  ? "npanel generates a sitemap.xml when this site publishes none, and marks the canonical URL of every page so search engines index one spelling of each. A robots.txt that names no sitemap gets a Sitemap: line appended, leaving everything the site wrote untouched; one that already names a sitemap, or that disallows crawling outright, is served exactly as published."
-                  : 'This site is served exactly as published: no generated sitemap.xml, nothing appended to its robots.txt, and no canonical URL header. Turn this back on unless the site manages canonical URLs itself.'}
-              </p>
-            </CardContent>
-          </Card>
-
-          <Card className="border-destructive/40">
-            <CardHeader>
-              <CardTitle className="text-base text-destructive">Danger zone</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-wrap items-center justify-between gap-4">
-              <label className="flex items-center gap-3 text-sm">
-                <Switch
-                  checked={data.enabled}
-                  onCheckedChange={(enabled) =>
-                    patch({ enabled }, enabled ? 'Site enabled' : 'Site disabled')
-                  }
-                />
-                {data.enabled ? 'Serving' : 'Disabled — requests return 404'}
-              </label>
-
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" size="sm">
-                    Delete site
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete {data.hostname}?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      The site stops being served. Downloaded files stay on disk until you prune
-                      them.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={() =>
-                        run(async () => {
-                          await deleteHost.mutateAsync(data.hostname);
-                          navigate('/');
-                        }, 'Site deleted')
-                      }
-                    >
-                      Delete
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </CardContent>
-          </Card>
+        <TabsContent value="nip05">
+          <Nip05Editor hostname={data.hostname} />
         </TabsContent>
-
         {me.data?.role === 'admin' && (
-          <TabsContent value="access" className="pt-4">
-            <Card>
-              <CardContent className="pt-6">
-                <GrantsEditor hostname={data.hostname} />
-              </CardContent>
-            </Card>
+          <TabsContent value="access">
+            <GrantsEditor hostname={data.hostname} />
           </TabsContent>
         )}
       </Tabs>
@@ -444,67 +203,331 @@ export function HostDetailPage() {
   );
 }
 
-/** Who the policy in force came from, in the words the switch is read with. */
-function cspLabel(source: Host['csp_source']): string {
-  if (source === 'off') return 'Off for this site';
-  return source === 'site' ? "The site's own policy" : 'Protected';
+/** The site's last day at a glance, and the way into its analytics. */
+function Visitors({ host }: { host: Host }) {
+  const sparklines = useSparklines();
+  const sparkline = sparklines.data?.[host.hostname];
+  const change = sparkline?.change ?? null;
+
+  return (
+    <Link
+      to={`/hosts/${host.hostname}/analytics`}
+      className="group flex items-center gap-6 rounded-2xl bg-card p-5 shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-shadow hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+    >
+      <div className="shrink-0 space-y-1">
+        <p className="flex items-center gap-1.5 text-sm font-medium text-primary">
+          <BarChart3 className="size-4" aria-hidden />
+          Analytics
+        </p>
+        {!host.analytics && !sparkline?.visitors ? (
+          <p className="text-sm text-muted-foreground">Not counting visits</p>
+        ) : sparklines.isLoading ? (
+          <Skeleton className="h-8 w-24" />
+        ) : (
+          <>
+            <p className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold tabular-nums">{compactNumber(sparkline?.visitors ?? 0)}</span>
+              {change !== null && change !== 0 && (
+                <span
+                  className={cn(
+                    'flex items-center text-sm font-medium tabular-nums',
+                    change > 0 ? 'text-success' : 'text-destructive',
+                  )}
+                >
+                  {change > 0 ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
+                  {Math.abs(change)}%
+                </span>
+              )}
+            </p>
+            <p className="text-xs text-muted-foreground">visitors in last 24h</p>
+          </>
+        )}
+      </div>
+
+      <Sparkline
+        values={sparkline?.hours ?? []}
+        className={cn('h-14 min-w-0 flex-1', host.analytics ? 'text-primary' : 'text-muted-foreground/40')}
+      />
+      <ChevronRight className="size-5 shrink-0 text-muted-foreground/60" aria-hidden />
+    </Link>
+  );
 }
 
-/** The site's Tor address. npanel assigned it; nobody chooses or types one. */
-function OnionCard({ address }: { address: string }) {
-  const [copied, setCopied] = useState(false);
+function General({ host }: { host: Host }) {
+  const updateHost = useUpdateHost();
   const { toast } = useToast();
 
-  const copy = async () => {
+  const patch = async (values: HostPatch, success: string) => {
     try {
-      await navigator.clipboard.writeText(`http://${address}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard access needs a secure context, which a plain-HTTP dashboard isn't.
-      toast({ title: "Couldn't copy", description: 'Select the address and copy it manually.' });
+      await updateHost.mutateAsync({ hostname: host.hostname, patch: values });
+      toast({ title: success });
+    } catch (error) {
+      toast({
+        title: "Couldn't save that",
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
     }
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Tor</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 break-all rounded-md bg-muted p-3 text-xs">{address}</code>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="size-8 shrink-0"
-            onClick={copy}
-            aria-label={`Copy ${address}`}
-          >
-            {copied ? (
-              <Check className="size-3" aria-hidden />
-            ) : (
-              <Copy className="size-3" aria-hidden />
+    <div className="space-y-8">
+      <Section title="nsite">
+        <Row
+          label={<PubkeyLabel pubkey={host.pubkey} />}
+          description={<span className="block truncate font-mono">{host.address}</span>}
+        >
+          <div className="flex items-center gap-1">
+            <CopyButton value={host.address} label="Copy the nsite address" />
+            <RetargetDialog host={host} />
+          </div>
+        </Row>
+        {host.onion && (
+          <Row label="Tor" description={<span className="block truncate font-mono">{host.onion}</span>}>
+            <CopyButton value={`http://${host.onion}`} label="Copy the onion address" />
+          </Row>
+        )}
+      </Section>
+
+      <Section title="Serving">
+        <ToggleRow
+          id="enabled"
+          icon={
+            <RowIcon color="green">
+              <Power />
+            </RowIcon>
+          }
+          label="Serve this site"
+          description={host.enabled ? undefined : 'Every request gets a 404.'}
+          checked={host.enabled}
+          onCheckedChange={(enabled) => patch({ enabled }, enabled ? 'Site turned on' : 'Site turned off')}
+        />
+        <ToggleRow
+          id="spa"
+          icon={
+            <RowIcon color="blue">
+              <Code />
+            </RowIcon>
+          }
+          label="Single-page app"
+          description="Unknown paths load the app instead of a 404."
+          checked={host.spa}
+          onCheckedChange={(spa) => patch({ spa }, spa ? 'Serving as a single-page app' : 'Serving as a static site')}
+        />
+        <ToggleRow
+          id="merge"
+          icon={
+            <RowIcon color="indigo">
+              <Layers />
+            </RowIcon>
+          }
+          label="Keep files from earlier deploys"
+          description="Pages already open keep loading their old chunks."
+          checked={host.merge_deployments}
+          onCheckedChange={(merge) =>
+            patch({ merge_deployments: merge }, merge ? 'Keeping earlier files' : 'Serving the latest deploy only')
+          }
+        />
+        {/* Only a root domain owns its `www`; on a subdomain the switch would be
+            a promise npanel has no business making about someone's zone. */}
+        {isRootDomain(host.hostname) && (
+          <>
+            <ToggleRow
+              id="www"
+              icon={
+                <RowIcon color="teal">
+                  <Network />
+                </RowIcon>
+              }
+              label={`Redirect www.${host.hostname}`}
+              checked={host.redirect_www}
+              onCheckedChange={(redirect) =>
+                patch({ redirect_www: redirect }, redirect ? 'www now redirects here' : 'www no longer redirects here')
+              }
+            />
+            {host.redirect_www && (
+              <div className="pr-4 pb-3 pl-14">
+                <DnsRecords hostname={host.hostname} www />
+              </div>
             )}
-          </Button>
-        </div>
-        <p className="text-xs text-muted-foreground">
-          The same site, reached over Tor. It opens in Tor Browser; an ordinary browser can't resolve
-          a .onion address. Visitors who are already using Tor Browser are offered this address on
-          their own, so there is nothing to hand out.
-        </p>
-      </CardContent>
-    </Card>
+          </>
+        )}
+      </Section>
+
+      <Section
+        title="Privacy & Security"
+        footer={
+          host.csp_policy && (
+            <details>
+              <summary className="cursor-pointer text-primary select-none">Show the policy</summary>
+              <p className="mt-2 font-mono break-all">{host.csp_policy}</p>
+            </details>
+          )
+        }
+      >
+        <ToggleRow
+          id="csp"
+          icon={
+            <RowIcon color="blue">
+              <Shield />
+            </RowIcon>
+          }
+          label="Content Security Policy"
+          description={cspDescription(host)}
+          checked={host.csp}
+          onCheckedChange={(csp) => patch({ csp }, csp ? 'Content Security Policy on' : 'Content Security Policy off')}
+        />
+        <ToggleRow
+          id="analytics"
+          icon={
+            <RowIcon color="orange">
+              <BarChart3 />
+            </RowIcon>
+          }
+          label="Analytics"
+          description="Counts visits without cookies or personal data."
+          checked={host.analytics}
+          onCheckedChange={(analytics) =>
+            patch({ analytics }, analytics ? 'Counting visits' : 'No longer counting visits')
+          }
+        />
+        <ToggleRow
+          id="listed"
+          icon={
+            <RowIcon color="purple">
+              <Eye />
+            </RowIcon>
+          }
+          label="Show on the public site list"
+          checked={!host.hidden}
+          onCheckedChange={(listed) => patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')}
+        />
+        <ToggleRow
+          id="seo"
+          icon={
+            <RowIcon color="gray">
+              <Search />
+            </RowIcon>
+          }
+          label="Search engine defaults"
+          description="A sitemap and canonical URLs, when the site has none."
+          checked={host.seo}
+          onCheckedChange={(seo) => patch({ seo }, seo ? 'Search engine defaults on' : 'Search engine defaults off')}
+        />
+      </Section>
+
+      <DeleteSite hostname={host.hostname} />
+    </div>
   );
 }
 
-function BackLink() {
+function cspDescription(host: Host): string {
+  if (host.csp_source === 'off') return 'Off. Any script a deploy includes will run.';
+  if (host.csp_source === 'site') return "Using the site's own policy, from its index.html.";
+  return 'Scripts may only load from this domain.';
+}
+
+/** Point the domain at a different nsite. */
+function RetargetDialog({ host }: { host: Host }) {
+  const [open, setOpen] = useState(false);
+  const [address, setAddress] = useState('');
+  const parsed = useParsedAddress(address);
+  const updateHost = useUpdateHost();
+  const { toast } = useToast();
+
+  const save = async () => {
+    try {
+      await updateHost.mutateAsync({ hostname: host.hostname, patch: { address } });
+      toast({ title: `${host.hostname} now serves the new nsite` });
+      setOpen(false);
+      setAddress('');
+    } catch (error) {
+      toast({
+        title: "Couldn't change the nsite",
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
+  };
+
   return (
-    <Link to="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="h-4 w-4" />
-      All sites
-    </Link>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" className="rounded-full">
+          Change…
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Change nsite</DialogTitle>
+          <DialogDescription>Serve a different nsite from {host.hostname}.</DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <AddressInput value={address} onChange={setAddress} parsed={parsed} id="retarget" />
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!parsed.address || updateHost.isPending}>
+              Change
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteSite({ hostname }: { hostname: string }) {
+  const deleteHost = useDeleteHost();
+  const navigate = useNavigate();
+  const { toast } = useToast();
+
+  const remove = async () => {
+    try {
+      await deleteHost.mutateAsync(hostname);
+      toast({ title: `${hostname} deleted` });
+      navigate('/');
+    } catch (error) {
+      toast({
+        title: "Couldn't delete the site",
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <button
+          type="button"
+          className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-card text-sm text-destructive shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:bg-destructive/5 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+        >
+          Delete Site…
+        </button>
+      </AlertDialogTrigger>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete {hostname}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            It stops being served right away. Its files stay on disk until they're pruned.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={remove}>
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

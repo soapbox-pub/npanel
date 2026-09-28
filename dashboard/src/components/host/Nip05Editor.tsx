@@ -1,12 +1,12 @@
 import { useState } from 'react';
 import { z } from 'zod';
 
+import { Row, Section } from '@/components/Grouped';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
   useDeleteNip05Name,
   useFiles,
@@ -36,8 +36,9 @@ const EMPTY: Draft = { name: '', pubkey: '', relays: '' };
  * The NIP-05 names this site answers for.
  *
  * npanel serves whatever is here at `/.well-known/nostr.json`, in place of any
- * `nostr.json` the site itself deploys. Nothing on this tab is admin-only:
- * a name is a setting of the site, so anyone who can manage the site sets it.
+ * `nostr.json` the site itself deploys. A request naming no name gets the
+ * whole list. Nothing here is admin-only: a name is a setting of the site, so
+ * anyone who can manage the site sets it.
  */
 export function Nip05Editor({ hostname }: { hostname: string }) {
   const names = useNip05Names(hostname);
@@ -54,12 +55,12 @@ export function Nip05Editor({ hostname }: { hostname: string }) {
 
   const parsed = parseDraft(draft);
 
-  if (names.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (names.isLoading) return <Skeleton className="h-40 w-full rounded-xl" />;
 
   if (names.isError) {
     return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        {names.error instanceof Error ? names.error.message : 'Failed to load names.'}
+      <p className="py-12 text-center text-muted-foreground">
+        {names.error instanceof Error ? names.error.message : "Couldn't load the names."}
       </p>
     );
   }
@@ -157,128 +158,126 @@ export function Nip05Editor({ hostname }: { hostname: string }) {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-2">
-        <p className="text-sm text-muted-foreground">
-          {entries.length
-            ? `npanel serves these at https://${hostname}${NIP05_PATH}, in place of any nostr.json this site deploys. Remove them all to hand the path back to the site.`
-            : `Nothing is stored yet, so ${NIP05_PATH} is served from the site's own files if it published one, and 404s otherwise.`}
-        </p>
-        <p className="text-xs text-muted-foreground">
-          A request naming no name gets the whole list, which is how other tools
-          discover who this domain hosts. Use <code className="font-mono">_</code> for
-          the identifier that reads as just <code className="font-mono">{hostname}</code>.
-        </p>
-
-        {!entries.length && deployed && (
-          <Button variant="outline" size="sm" disabled={importing} onClick={importDeployed}>
-            {importing ? 'Importing…' : 'Import from the deployed site'}
-          </Button>
-        )}
-      </div>
-
-      <div className="grid gap-3 rounded-md border p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,2fr)]">
-        <div className="space-y-1">
-          <Label htmlFor="nip05-name">Name</Label>
-          <Input
-            id="nip05-name"
-            value={draft.name}
-            disabled={!!editing}
-            placeholder="bob"
-            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="nip05-pubkey">Pubkey</Label>
-          <Input
-            id="nip05-pubkey"
-            value={draft.pubkey}
-            placeholder="npub1… or hex"
-            onChange={(event) => setDraft({ ...draft, pubkey: event.target.value })}
-          />
-        </div>
-        <div className="space-y-1">
-          <Label htmlFor="nip05-relays">Relays</Label>
-          <Input
-            id="nip05-relays"
-            value={draft.relays}
-            placeholder="wss://relay.example.com, wss://…"
-            onChange={(event) => setDraft({ ...draft, relays: event.target.value })}
-          />
-        </div>
-
-        <div className="flex items-center gap-3 sm:col-span-3">
-          <Button size="sm" disabled={'error' in parsed || setName.isPending} onClick={save}>
-            {editing ? 'Save name' : 'Add name'}
-          </Button>
-          {editing && (
-            <Button variant="ghost" size="sm" onClick={reset}>
-              Cancel
+    <div className="space-y-8">
+      <Section
+        footer={
+          <>
+            Served at <span className="font-mono">{NIP05_PATH}</span>
+            {entries.length ? ", in place of any the site deploys." : '. Until a name is added, the site\'s own file is served.'}{' '}
+            Use <code className="font-mono">_</code> for <span className="font-mono">{hostname}</span> itself.
+          </>
+        }
+        action={
+          !entries.length &&
+          deployed && (
+            <Button variant="link" disabled={importing} onClick={importDeployed}>
+              {importing ? 'Importing…' : 'Import from the site'}
             </Button>
-          )}
-          {/* Only once something has been typed, so an untouched form isn't
-              scolding anyone for not having filled it in yet. */}
-          {'error' in parsed && !isBlank(draft) && (
-            <span className="text-sm text-destructive">{parsed.error}</span>
-          )}
-        </div>
-      </div>
+          )
+        }
+      >
+        {entries.length ? (
+          entries.map((entry) => (
+            <Row
+              key={entry.name}
+              label={
+                <span className="font-mono text-[13px]">
+                  {entry.name === '_' ? hostname : `${entry.name}@${hostname}`}
+                </span>
+              }
+              description={
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2">
+                  <PubkeyLabel pubkey={entry.pubkey} compact />
+                  {entry.relays.length > 0 && (
+                    <span className="truncate font-mono">
+                      {entry.relays.length} {entry.relays.length === 1 ? 'relay' : 'relays'}
+                    </span>
+                  )}
+                </span>
+              }
+            >
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setDraft({ name: entry.name, pubkey: entry.pubkey, relays: entry.relays.join(', ') });
+                    setEditing(entry.name);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:bg-destructive/10"
+                  disabled={deleteName.isPending}
+                  onClick={() => remove(entry.name)}
+                >
+                  Remove
+                </Button>
+              </div>
+            </Row>
+          ))
+        ) : (
+          <p className="px-4 py-8 text-center text-sm text-muted-foreground">No names yet.</p>
+        )}
+      </Section>
 
-      {!entries.length ? (
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          No names yet.
-        </p>
-      ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Pubkey</TableHead>
-              <TableHead>Relays</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {entries.map((entry) => (
-              <TableRow key={entry.name}>
-                <TableCell className="font-mono text-xs">
-                  {entry.name}@{hostname}
-                </TableCell>
-                <TableCell>
-                  <PubkeyLabel pubkey={entry.pubkey} />
-                </TableCell>
-                <TableCell className="font-mono text-xs text-muted-foreground">
-                  {entry.relays.length ? entry.relays.join(', ') : '—'}
-                </TableCell>
-                <TableCell className="space-x-1 text-right">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setDraft({
-                        name: entry.name,
-                        pubkey: entry.pubkey,
-                        relays: entry.relays.join(', '),
-                      });
-                      setEditing(entry.name);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={deleteName.isPending}
-                    onClick={() => remove(entry.name)}
-                  >
-                    Remove
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      )}
+      <Section title={editing ? `Edit ${editing}@${hostname}` : 'Add a name'}>
+        <form
+          className="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="nip05-name">Name</Label>
+            <Input
+              id="nip05-name"
+              value={draft.name}
+              disabled={!!editing}
+              placeholder="bob"
+              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="nip05-pubkey">Pubkey</Label>
+            <Input
+              id="nip05-pubkey"
+              value={draft.pubkey}
+              placeholder="npub1…"
+              onChange={(event) => setDraft({ ...draft, pubkey: event.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="nip05-relays">
+              Relays <span className="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="nip05-relays"
+              value={draft.relays}
+              placeholder="wss://relay.example.com"
+              onChange={(event) => setDraft({ ...draft, relays: event.target.value })}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 sm:col-span-2">
+            <Button type="submit" size="sm" disabled={'error' in parsed || setName.isPending}>
+              {editing ? 'Save' : 'Add'}
+            </Button>
+            {editing && (
+              <Button type="button" variant="ghost" size="sm" onClick={reset}>
+                Cancel
+              </Button>
+            )}
+            {/* Only once something has been typed, so an untouched form isn't
+                scolding anyone for not having filled it in yet. */}
+            {'error' in parsed && !isBlank(draft) && <span className="text-xs text-destructive">{parsed.error}</span>}
+          </div>
+        </form>
+      </Section>
     </div>
   );
 }

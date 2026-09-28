@@ -46,3 +46,33 @@ export function formatBytes(bytes: number): string {
 
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
+
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 86_400],
+  ['month', 30 * 86_400],
+  ['week', 7 * 86_400],
+  ['day', 86_400],
+  ['hour', 3_600],
+  ['minute', 60],
+];
+
+/** "3 hours ago", for a Unix timestamp; the exact time belongs in a tooltip. */
+export function timeAgo(seconds: number, now = Date.now() / 1000): string {
+  const elapsed = seconds - now;
+  for (const [unit, size] of UNITS) {
+    if (Math.abs(elapsed) >= size) return RELATIVE.format(Math.round(elapsed / size), unit);
+  }
+  return 'just now';
+}
+
+/** The full date and time of a Unix timestamp, in the reader's locale. */
+export function fullDate(seconds: number): string {
+  return new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/** Visitor counts the way Plausible abbreviates them: 1.2k, 34k, 5.6M. */
+export function compactNumber(value: number): string {
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+}

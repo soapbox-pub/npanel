@@ -19,7 +19,7 @@ interface DeployLogDialogProps {
 const LEVEL_STYLES: Record<string, string> = {
   debug: 'text-muted-foreground',
   info: 'text-foreground',
-  warn: 'text-amber-600 dark:text-amber-500',
+  warn: 'text-warning',
   error: 'text-destructive',
 };
 
@@ -29,28 +29,28 @@ export function DeployLogDialog({ hostname, eventId, onClose }: DeployLogDialogP
 
   return (
     <Dialog open={!!eventId} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Deployment log</DialogTitle>
+          <DialogTitle>Deploy Log</DialogTitle>
           <DialogDescription className="font-mono text-xs break-all">{eventId}</DialogDescription>
         </DialogHeader>
 
         {log.isLoading ? (
-          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-64 w-full rounded-xl" />
         ) : log.isError ? (
           <p className="text-sm text-destructive">
-            {log.error instanceof Error ? log.error.message : 'Failed to load the log.'}
+            {log.error instanceof Error ? log.error.message : "Couldn't load the log."}
           </p>
         ) : (
           <>
             {log.data?.version.error && (
-              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
+              <p className="rounded-xl bg-destructive/10 p-3 text-sm">
                 {log.data.version.error}
               </p>
             )}
 
-            <ScrollArea className="h-96 rounded-md border">
-              <ul className="divide-y text-xs">
+            <ScrollArea className="h-96 rounded-xl bg-muted">
+              <ul className="divide-y divide-border/60 font-mono text-xs">
                 {log.data?.entries.map((entry) => (
                   <li key={entry.id} className="flex gap-3 px-3 py-2">
                     <span className="shrink-0 text-muted-foreground tabular-nums">

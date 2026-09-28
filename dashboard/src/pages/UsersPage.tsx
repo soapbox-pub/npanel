@@ -1,17 +1,18 @@
 import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
 
+import { Row, Section } from '@/components/Grouped';
+import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
 import { PubkeySearchInput } from '@/components/PubkeySearchInput';
-import { shorten } from '@/lib/format';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useCreateUser, useDeleteUser, useMe, useUpdateUser, useUsers } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
+import { shorten } from '@/lib/format';
+
+type Role = 'admin' | 'staff';
 
 /** Who can sign in, and with what role. Admin only. */
 export function UsersPage() {
@@ -25,7 +26,7 @@ export function UsersPage() {
   const { toast } = useToast();
 
   const [pubkey, setPubkey] = useState('');
-  const [role, setRole] = useState<'admin' | 'staff'>('staff');
+  const [role, setRole] = useState<Role>('staff');
 
   const run = async (action: () => Promise<unknown>, success: string) => {
     try {
@@ -33,7 +34,7 @@ export function UsersPage() {
       toast({ title: success });
     } catch (error) {
       toast({
-        title: 'That did not work',
+        title: "That didn't work",
         description: error instanceof Error ? error.message : String(error),
         variant: 'destructive',
       });
@@ -41,115 +42,90 @@ export function UsersPage() {
   };
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
-        <p className="text-sm text-muted-foreground">
-          Admins manage everything. Staff only see the sites granted to them.
-        </p>
-      </div>
+    <div className="space-y-8">
+      <PageHeader title="Users" />
 
-      <Card>
-        <CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="min-w-64 flex-1 space-y-2">
-            <Label htmlFor="new-user">Name, npub, or hex pubkey</Label>
+      <Section title="Add a user">
+        <form
+          className="flex flex-wrap items-start gap-3 p-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void run(async () => {
+              await createUser.mutateAsync({ pubkey, role });
+              setPubkey('');
+            }, 'User added');
+          }}
+        >
+          <div className="min-w-56 flex-1">
             <PubkeySearchInput
               id="new-user"
               value={pubkey}
               onChange={setPubkey}
-              placeholder="Search by name, or paste an npub…"
+              placeholder="Name or npub"
+              aria-label="Name or npub"
             />
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="new-user-role">Role</Label>
-            <Select value={role} onValueChange={(value) => setRole(value as 'admin' | 'staff')}>
-              <SelectTrigger id="new-user-role" className="w-32">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="staff">Staff</SelectItem>
-                <SelectItem value="admin">Admin</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Button
-            disabled={!pubkey.trim() || createUser.isPending}
-            onClick={() =>
-              run(async () => {
-                await createUser.mutateAsync({ pubkey, role });
-                setPubkey('');
-              }, 'User added')
-            }
-          >
-            Add user
+          <RoleSelect value={role} onChange={setRole} label="Role" />
+          <Button type="submit" disabled={!pubkey.trim() || createUser.isPending}>
+            Add
           </Button>
-        </CardContent>
-      </Card>
+        </form>
+      </Section>
 
       {users.isLoading ? (
-        <Skeleton className="h-40 w-full" />
+        <Skeleton className="h-40 w-full rounded-xl" />
       ) : (
-        <Card>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>User</TableHead>
-                <TableHead>npub</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Sites</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.data?.map((user) => (
-                <TableRow key={user.pubkey}>
-                  <TableCell>
-                    <PubkeyLabel pubkey={user.pubkey} />
-                  </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {shorten(user.npub)}
-                  </TableCell>
-                  <TableCell>
-                    <Select
-                      value={user.role}
-                      onValueChange={(value) =>
-                        run(
-                          () => updateUser.mutateAsync({ pubkey: user.pubkey, role: value as 'admin' | 'staff' }),
-                          'Role updated',
-                        )
-                      }
-                    >
-                      <SelectTrigger className="w-28">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="staff">Staff</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {user.role === 'admin' ? 'all' : user.hostnames.length}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={user.pubkey === me.data?.pubkey}
-                      onClick={() => run(() => deleteUser.mutateAsync(user.pubkey), 'User removed')}
-                    >
-                      Remove
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <Section title="Everyone" footer="Admins manage everything. Staff see only the sites granted to them.">
+          {users.data?.map((user) => (
+            <Row
+              key={user.pubkey}
+              label={<PubkeyLabel pubkey={user.pubkey} />}
+              description={
+                <>
+                  <span className="font-mono">{shorten(user.npub)}</span>
+                  {user.role === 'staff' &&
+                    ` · ${user.hostnames.length} ${user.hostnames.length === 1 ? 'site' : 'sites'}`}
+                </>
+              }
+            >
+              <div className="flex items-center gap-2">
+                <RoleSelect
+                  value={user.role}
+                  label={`Role of ${shorten(user.npub)}`}
+                  onChange={(value) =>
+                    run(() => updateUser.mutateAsync({ pubkey: user.pubkey, role: value }), 'Role changed')
+                  }
+                />
+                {user.pubkey !== me.data?.pubkey && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:bg-destructive/10"
+                    onClick={() => run(() => deleteUser.mutateAsync(user.pubkey), 'User removed')}
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </Row>
+          ))}
+        </Section>
       )}
     </div>
+  );
+}
+
+function RoleSelect({ value, onChange, label }: { value: Role; onChange(value: Role): void; label: string }) {
+  return (
+    <Select value={value} onValueChange={(next) => onChange(next as Role)}>
+      <SelectTrigger className="w-28" aria-label={label}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="staff">Staff</SelectItem>
+        <SelectItem value="admin">Admin</SelectItem>
+      </SelectContent>
+    </Select>
   );
 }
 

@@ -79,8 +79,8 @@ export function VisitorGraph({ hostname, state }: GraphProps) {
 
   return (
     <Card>
-      <CardContent className="space-y-6 pt-6">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+      <CardContent className="space-y-6">
+        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-6">
           {realtime && <CurrentVisitorsCard hostname={hostname} />}
           {metrics.map((metric, index) => (
             <StatCard
@@ -135,9 +135,9 @@ function CurrentVisitorsCard({ hostname }: { hostname: string }) {
   const current = useCurrentVisitors(hostname);
 
   return (
-    <div className="rounded-md border p-3">
-      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        <span className="size-2 animate-pulse rounded-full bg-green-500" />
+    <div className="rounded-xl p-3">
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="size-2 animate-pulse rounded-full bg-success" />
         Current visitors
       </div>
       <div className="mt-1 text-2xl font-semibold">{current.data ?? '-'}</div>
@@ -164,17 +164,19 @@ function StatCard(props: {
       disabled={!props.selectable}
       onClick={props.onSelect}
       className={cn(
-        'rounded-md border p-3 text-left transition-colors',
-        props.selectable && 'hover:bg-muted/60',
-        props.selected && 'border-primary bg-muted/40',
+        'rounded-xl p-3 text-left transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden',
+        props.selectable && 'hover:bg-muted',
+        props.selected && 'bg-primary/10 hover:bg-primary/10',
       )}
     >
-      <div className="line-clamp-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{props.label}</div>
+      <div className={cn('line-clamp-2 text-xs font-medium', props.selected ? 'text-primary' : 'text-muted-foreground')}>
+        {props.label}
+      </div>
       {props.loading ? (
         <Skeleton className="mt-2 h-7 w-16" />
       ) : (
         <div className="mt-1 flex items-baseline gap-2">
-          <span className="text-2xl font-semibold">{formatMetric(metric, value)}</span>
+          <span className="text-2xl font-bold tabular-nums">{formatMetric(metric, value)}</span>
           <Change metric={metric} change={change} />
         </div>
       )}
@@ -197,7 +199,7 @@ export function Change({ metric, change }: { metric: Metric; change: number | nu
   const unit = metric === 'bounce_rate' || metric === 'exit_rate' ? 'pp' : '%';
 
   return (
-    <span className={cn('flex items-center text-xs font-medium', good ? 'text-green-600' : 'text-red-600')}>
+    <span className={cn('flex items-center text-xs font-medium', good ? 'text-success' : 'text-destructive')}>
       <Arrow className="size-3" />
       {Math.abs(change)}
       {unit}
@@ -281,7 +283,7 @@ function Graph({ data, metric, interval }: { data: StatsResponse; metric: Metric
             const point = payload?.[0]?.payload as Point | undefined;
             if (!active || !point) return null;
             return (
-              <div className="rounded-md border bg-background p-2 text-xs shadow-md">
+              <div className="rounded-lg bg-popover p-2 text-xs shadow-xl ring-1 ring-black/10 backdrop-blur-xl dark:ring-white/10">
                 <div className="font-medium">{tooltipLabel(point.label, interval)}</div>
                 <div>
                   {METRIC_LABELS[metric]}: {formatMetric(metric, point.value ?? point.partial)}

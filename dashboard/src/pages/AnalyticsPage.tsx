@@ -1,10 +1,11 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowLeft } from 'lucide-react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 
 import { DetailsDialog } from '@/components/analytics/DetailsDialog';
 import { Filters } from '@/components/analytics/Filters';
 import { ComparisonPicker, PeriodPicker } from '@/components/analytics/PeriodPicker';
+import { PageHeader } from '@/components/PageHeader';
+import { SiteIcon } from '@/components/SiteIcon';
 import { DevicesCard, LocationsCard, PagesCard, SourcesCard } from '@/components/analytics/Reports';
 import { VisitorGraph } from '@/components/analytics/VisitorGraph';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -32,13 +33,15 @@ export function AnalyticsPage() {
 
   useSeoMeta({ title: `${hostname} analytics — npanel` });
 
-  if (host.isLoading) return <Skeleton className="h-96 w-full" />;
+  const back = { to: `/hosts/${hostname}`, label: hostname };
+
+  if (host.isLoading) return <Skeleton className="h-96 w-full rounded-2xl" />;
   if (host.isError || !host.data) {
     return (
-      <div className="space-y-4">
-        <BackLink hostname={hostname} />
-        <p className="text-sm text-destructive">
-          {host.error instanceof Error ? host.error.message : 'Site not found.'}
+      <div className="space-y-6">
+        <PageHeader back={back} title="Site not found" />
+        <p className="text-muted-foreground">
+          {host.error instanceof Error ? host.error.message : 'There is no site by that name.'}
         </p>
       </div>
     );
@@ -59,12 +62,12 @@ export function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      <BackLink hostname={hostname} />
-
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">{hostname}</h1>
-        <CurrentVisitors hostname={hostname} state={state} onChange={setState} />
-      </div>
+      <PageHeader
+        back={back}
+        icon={<SiteIcon hostname={hostname} className="size-10" />}
+        title="Analytics"
+        actions={<CurrentVisitors hostname={hostname} state={state} onChange={setState} />}
+      />
 
       {!host.data.analytics && <CountingOff hostname={hostname} />}
 
@@ -112,10 +115,10 @@ function CurrentVisitors({
   return (
     <button
       type="button"
-      className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+      className="flex h-8 items-center gap-2 rounded-full bg-card px-3 text-sm shadow-sm transition-colors hover:bg-secondary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
       onClick={() => onChange({ ...state, period: 'realtime', date: null, comparison: 'off' })}
     >
-      <span className="size-2 animate-pulse rounded-full bg-green-500" />
+      <span className="size-2 animate-pulse rounded-full bg-success" aria-hidden />
       {current.data} current visitor{current.data === 1 ? '' : 's'}
     </button>
   );
@@ -127,13 +130,12 @@ function CountingOff({ hostname }: { hostname: string }) {
   const { toast } = useToast();
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-md border border-dashed p-4">
-      <p className="max-w-2xl text-sm text-muted-foreground">
-        This site isn&apos;t counting visits. Turning it on adds a small script to every page, served from
-        the site itself — no cookies, and nothing that identifies a visitor is stored. Anything counted
-        before it was turned off is still shown below.
-      </p>
-      <label className="flex items-center gap-2 text-sm">
+    <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-card p-4 shadow-sm">
+      <div className="space-y-0.5">
+        <p className="text-sm font-medium">This site isn&apos;t counting visits.</p>
+        <p className="text-xs text-muted-foreground">No cookies, and nothing that identifies a visitor is kept.</p>
+      </div>
+      <label className="flex items-center gap-3 text-sm">
         <Switch
           disabled={update.isPending}
           onCheckedChange={async (analytics) => {
@@ -152,18 +154,6 @@ function CountingOff({ hostname }: { hostname: string }) {
         Count visits
       </label>
     </div>
-  );
-}
-
-function BackLink({ hostname }: { hostname: string }) {
-  return (
-    <Link
-      to={`/hosts/${hostname}`}
-      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="h-4 w-4" />
-      {hostname}
-    </Link>
   );
 }
 

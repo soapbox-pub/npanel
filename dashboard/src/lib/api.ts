@@ -16,6 +16,7 @@ import type {
   ServerStatus,
   Settings,
   SiteFile,
+  Sparkline,
 } from './api-types.ts';
 import type { StatsQueryBody, StatsResponse } from './analytics/query.ts';
 
@@ -150,6 +151,11 @@ export class ApiClient {
   /** Plausible's dashboard query, answered for this site. */
   statsQuery(hostname: string, body: StatsQueryBody): Promise<StatsResponse> {
     return this.request('POST', `/api/hosts/${path(hostname)}/stats/query`, body);
+  }
+
+  /** The last 24 hours of every site this user manages, keyed by hostname. */
+  sparklines(): Promise<{ sparklines: Record<string, Sparkline> }> {
+    return this.request('GET', '/api/stats/sparklines');
   }
 
   currentVisitors(hostname: string): Promise<number> {

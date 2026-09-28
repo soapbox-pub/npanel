@@ -1,6 +1,4 @@
 import { ChevronDown, LogOut, UserIcon, UserPlus } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import { nip19 } from 'nostr-tools';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,9 +12,11 @@ import { useLoggedInAccounts, type Account } from '@/hooks/useLoggedInAccounts';
 
 interface AccountSwitcherProps {
   onAddAccountClick: () => void;
+  /** Show the account's name beside its picture, as a sidebar has room to. */
+  showName?: boolean;
 }
 
-export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
+export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcherProps) {
   const { currentUser, otherUsers, isLoading, setLogin, removeLogin } = useLoggedInAccounts();
 
   if (!currentUser) return null;
@@ -32,7 +32,7 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className='flex items-center gap-2 h-10 p-1 pr-2.5 rounded-full hover:bg-sidebar-accent transition-all text-current'>
+        <button className='flex min-w-0 items-center gap-2 h-10 p-1 pr-2.5 rounded-full hover:bg-sidebar-accent transition-colors text-current focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden data-[name]:w-full data-[name]:rounded-lg' data-name={showName || undefined}>
           <Avatar className='w-8 h-8'>
             <AvatarImage
               src={currentUser.metadata.picture}
@@ -46,12 +46,16 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
               )}
             </AvatarFallback>
           </Avatar>
+          {showName && (
+            <span className='min-w-0 flex-1 truncate text-left text-sm font-medium'>
+              {isCurrentUserPending ? <Skeleton className='h-4 w-20' /> : getDisplayName(currentUser)}
+            </span>
+          )}
           <ChevronDown className='w-4 h-4 opacity-60' />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent className='w-56 p-2 animate-scale-in'>
-        <DropdownMenuItem asChild className='flex items-center gap-2 cursor-pointer p-2 rounded-md'>
-          <Link to={`/${nip19.npubEncode(currentUser.pubkey)}`}>
+      <DropdownMenuContent align='start' className='w-56'>
+        <div className='flex items-center gap-2 p-2'>
             <Avatar className='w-8 h-8'>
               <AvatarImage
                 src={currentUser.metadata.picture}
@@ -72,8 +76,7 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
                 <p className='text-sm font-medium'>{getDisplayName(currentUser)}</p>
               )}
             </div>
-          </Link>
-        </DropdownMenuItem>
+        </div>
         {otherUsers.map((user) => {
           const isPending = isLoading && !user.metadata.name;
           return (
@@ -111,14 +114,14 @@ export function AccountSwitcher({ onAddAccountClick }: AccountSwitcherProps) {
           className='flex items-center gap-2 cursor-pointer p-2 rounded-md'
         >
           <UserPlus className='w-4 h-4' />
-          <span>Add another account</span>
+          <span>Add account</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => removeLogin(currentUser.id)}
-          className='flex items-center gap-2 cursor-pointer p-2 rounded-md text-red-500'
+          className='flex items-center gap-2 cursor-pointer p-2 rounded-md text-destructive'
         >
           <LogOut className='w-4 h-4' />
-          <span>Log out</span>
+          <span>Sign out</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

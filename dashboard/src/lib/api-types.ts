@@ -207,3 +207,12 @@ export interface ServerStatus {
   relays: string[];
   tor: TorStatus;
 }
+
+/** One site's last 24 hours, as the list of sites draws it. */
+export interface Sparkline {
+  visitors: number;
+  /** Percent change against the 24 hours before; 100 from nothing, as Plausible has it. */
+  change: number | null;
+  /** Visitors in each hour, oldest first. */
+  hours: number[];
+}

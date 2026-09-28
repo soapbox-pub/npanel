@@ -1,182 +1,154 @@
-import { formatNsiteAddress, ROOT_SITE_KIND } from '@shared/nsite-address';
 import { useSeoMeta } from '@unhead/react';
-import { ExternalLink, Globe, Lock } from 'lucide-react';
+import { ArrowUpRight, ChevronRight, Globe, Signpost, Upload } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Logo } from '@/components/Logo';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
-import { Badge } from '@/components/ui/badge';
 import { buttonVariants } from '@/components/ui/button-variants';
-import { Card } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useInstance, usePublicSites } from '@/hooks/useNpanel';
+import type { SiteCard } from '@/lib/api-types';
 import { decodePubkey, shorten } from '@/lib/format';
 import { profileUrl, SOURCE_URL } from '@/lib/links';
-import type { SiteCard } from '@/lib/api-types';
 import { cn } from '@/lib/utils';
-
-/**
- * The NIP-19 specification's example key, used everywhere the demo needs a
- * plausible npub. Nobody's real profile is fetched for it, so the walkthrough
- * can't end up displaying a stranger's name and picture.
- */
-const EXAMPLE_NPUB = 'npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6';
-const EXAMPLE_ADDRESS = formatNsiteAddress({
-  pubkey: '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d',
-  kind: ROOT_SITE_KIND,
-  identifier: '',
-});
-
-/** Reserved for documentation by RFC 5737 and RFC 3849, so they point nowhere. */
-const EXAMPLE_A = '203.0.113.10';
-const EXAMPLE_AAAA = '2001:db8::10';
-
-const DEFAULT_DOMAIN = 'docs.example.com';
 
 /**
  * What a signed-out visitor sees.
  *
- * Most of them arrived by following a link to a site this gateway serves and
- * have never heard of npanel, so the page has to do three things in order:
- * admit that it is *an* instance and say who runs it, walk through what the
- * software actually does, and point at the source so they can run their own.
- * It demonstrates rather than describes — the walkthrough is the real UI, and
- * the domain in it is theirs to change.
+ * Most arrived by following a link to a site this gateway serves, so the page
+ * says whose gateway it is, what it's for, and how to run one of their own —
+ * and gets out of the way of staff who came to sign in.
  */
 export function HomePage() {
   useSeoMeta({
-    title: 'npanel — a self-hosted nsite gateway',
-    description:
-      'Point a domain at npanel, map it to an nsite, and your team serves that site from its own domain.',
+    title: 'npanel',
+    description: "Serve your team's nsites from your own domains.",
   });
 
-  const [hostname, setHostname] = useState(DEFAULT_DOMAIN);
-  const domain = hostname.trim().toLowerCase() || DEFAULT_DOMAIN;
-
   return (
-    <main className="grid-canvas flex-1">
-      <div className="mx-auto max-w-5xl space-y-12 px-4 py-8 md:px-8 md:py-12">
-        <InstanceBanner />
+    <div className="min-h-screen">
+      <header className="material sticky top-0 z-30 bg-material">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
+          <span className="flex items-center gap-2">
+            <Logo className="size-7" />
+            <span className="text-[15px] font-semibold tracking-tight">npanel</span>
+          </span>
+          <ThemeToggle />
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl space-y-24 px-4 pt-16 pb-16 sm:px-6 sm:pt-24">
+        <Hero />
         <ServedSites />
-        <Walkthrough domain={domain} hostname={hostname} onHostname={setHostname} />
+        <HowItWorks />
         <SelfHost />
-      </div>
-    </main>
+      </main>
+
+      <footer className="mx-auto max-w-5xl border-t px-4 py-6 text-xs text-muted-foreground sm:px-6">
+        npanel is free software. Not affiliated with cPanel, L.L.C. — obviously.
+      </footer>
+    </div>
   );
 }
 
-/** Whose gateway this is — the thing a stranger most needs to know. */
-function InstanceBanner() {
+function Hero() {
+  return (
+    <section className="space-y-8 text-center">
+      <Logo className="mx-auto size-24 drop-shadow-xl" />
+
+      <div className="space-y-4">
+        <h1 className="text-4xl font-bold tracking-tight text-balance sm:text-6xl">
+          Your team's sites, on your own domains.
+        </h1>
+        <p className="mx-auto max-w-xl text-lg text-balance text-muted-foreground sm:text-xl">
+          Publish an nsite to Nostr. Point a domain here. It's live.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-3">
+        <LoginArea />
+        <a href="#self-host" className="inline-flex items-center text-primary hover:opacity-80">
+          Run your own
+          <ChevronRight className="size-4" aria-hidden />
+        </a>
+      </div>
+
+      <Operator />
+    </section>
+  );
+}
+
+/** Whose gateway this is — the one thing a visitor from a served site needs to know. */
+function Operator() {
   const instance = useInstance();
+  const host = instance.data?.dashboard_host ?? window.location.hostname;
+
+  if (instance.isLoading) return <Skeleton className="mx-auto h-9 w-64 rounded-full" />;
 
   return (
-    <Card className="gap-0 overflow-hidden border-t-2 border-t-primary py-0">
-      <div className="flex flex-col gap-6 p-6 sm:flex-row sm:items-center sm:justify-between md:p-8">
-        <div className="min-w-0 space-y-3">
-          <p className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-            This is an npanel instance
-          </p>
-          <p className="truncate font-mono text-xl font-semibold sm:text-2xl">
-            {instance.data?.dashboard_host ?? window.location.hostname}
-          </p>
-
-          {instance.isLoading ? (
-            <Skeleton className="h-10 w-48" />
-          ) : instance.data?.contact_npub ? (
-            <Operator npub={instance.data.contact_npub} />
-          ) : (
-            <p className="text-sm text-muted-foreground">Nobody here has said who runs it.</p>
-          )}
-
-          <p className="text-sm text-muted-foreground">
-            Not your gateway?{' '}
-            <a
-              href="#self-host"
-              className="font-medium text-foreground underline-offset-4 hover:text-primary hover:underline"
-            >
-              Run your own.
-            </a>
-          </p>
-        </div>
-
-        <div className="shrink-0 space-y-2 sm:text-right">
-          <p className="text-sm text-muted-foreground">Staff and team members</p>
-          <LoginArea />
-        </div>
-      </div>
-    </Card>
+    <div className="mx-auto inline-flex max-w-full items-center gap-2 rounded-full bg-card py-1.5 pr-4 pl-1.5 text-sm shadow-sm">
+      {instance.data?.contact_npub ? (
+        <OperatorName npub={instance.data.contact_npub} host={host} />
+      ) : (
+        <span className="truncate pl-2.5 text-muted-foreground">{host}</span>
+      )}
+    </div>
   );
 }
 
-function Operator({ npub }: { npub: string }) {
+function OperatorName({ npub, host }: { npub: string; host: string }) {
   const author = useAuthor(decodePubkey(npub));
   const name = author.data?.metadata?.name;
   const picture = author.data?.metadata?.picture;
 
   return (
-    <a
-      href={profileUrl(npub)}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="group inline-flex max-w-full items-center gap-3 rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-hidden"
-    >
-      <Avatar className="size-10 shrink-0">
+    <>
+      <Avatar className="size-6 shrink-0">
         {picture && <AvatarImage src={picture} alt="" />}
-        <AvatarFallback>{(name ?? npub.slice(5)).slice(0, 2)}</AvatarFallback>
+        <AvatarFallback className="text-[10px]">{(name ?? npub.slice(5)).slice(0, 2)}</AvatarFallback>
       </Avatar>
-      <span className="min-w-0">
-        <span className="block text-xs text-muted-foreground">Operated by</span>
-        <span className="block truncate font-medium underline-offset-4 group-hover:text-primary group-hover:underline">
+      <span className="min-w-0 truncate text-muted-foreground">
+        {host} is run by{' '}
+        <a
+          href={profileUrl(npub)}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="font-medium text-foreground hover:text-primary"
+        >
           {name ?? shorten(npub)}
-        </span>
+        </a>
       </span>
-    </a>
+    </>
   );
 }
 
 /**
- * The sites this gateway serves, when its admins have chosen to say.
- *
- * Renders nothing at all otherwise — an empty "no sites listed" panel would
- * only advertise that there is something being kept quiet, and a gateway that
- * doesn't publish its list should look exactly like one with nothing on it.
+ * The sites this gateway serves, when its admins have chosen to say. Nothing
+ * at all otherwise: a gateway that keeps its list private should look exactly
+ * like one with nothing on it.
  */
 function ServedSites() {
   const sites = usePublicSites();
-
   if (!sites.data?.length) return null;
 
   return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex items-center justify-between gap-3 border-b bg-muted/50 px-6 py-2.5">
-        <h2 className="font-mono text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-          Served from here
-        </h2>
-        <span className="font-mono text-xs text-muted-foreground">{sites.data.length}</span>
-      </div>
-      <ul className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3 md:p-6">
+    <section className="space-y-6">
+      <h2 className="text-center text-2xl font-bold tracking-tight sm:text-3xl">Served from here</h2>
+      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sites.data.map((site) => (
           <li key={site.hostname}>
             <SiteCardLink site={site} />
           </li>
         ))}
       </ul>
-    </Card>
+    </section>
   );
 }
 
-/**
- * One site, as a link preview.
- *
- * The title, blurb and image are the site's own — the same Open Graph tags it
- * would show if someone pasted the link into a chat app. npanel reads them from
- * the copy of the page it already serves, so a listed site looks like itself
- * rather than like a row in a table.
- */
+/** One site as a link preview, from the Open Graph tags of its own landing page. */
 function SiteCardLink({ site }: { site: SiteCard }) {
   const [broken, setBroken] = useState(false);
   const image = broken ? null : site.image;
@@ -186,7 +158,7 @@ function SiteCardLink({ site }: { site: SiteCard }) {
       href={`https://${site.hostname}`}
       target="_blank"
       rel="noreferrer noopener"
-      className="group block h-full overflow-hidden rounded-lg border bg-card transition-colors hover:border-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-hidden"
+      className="group block h-full overflow-hidden rounded-2xl bg-card shadow-sm transition-shadow hover:shadow-lg focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
     >
       {image ? (
         <img
@@ -202,301 +174,92 @@ function SiteCardLink({ site }: { site: SiteCard }) {
         </div>
       )}
 
-      <div className="space-y-1 p-3">
-        <p className="truncate text-sm font-medium group-hover:text-primary">
-          {site.title ?? site.hostname}
-        </p>
-        {site.description && (
-          <p className="line-clamp-2 text-xs text-muted-foreground">{site.description}</p>
-        )}
-        <p className="flex items-center gap-1.5 pt-0.5 font-mono text-[11px] text-muted-foreground">
+      <div className="space-y-1 p-4">
+        <p className="truncate font-semibold">{site.title ?? site.hostname}</p>
+        {site.description && <p className="line-clamp-2 text-sm text-muted-foreground">{site.description}</p>}
+        <p className="flex items-center gap-1 pt-1 text-xs text-primary">
           <span className="truncate">{site.hostname}</span>
-          <ExternalLink className="size-3 shrink-0" aria-hidden />
+          <ArrowUpRight className="size-3 shrink-0" aria-hidden />
         </p>
       </div>
     </a>
   );
 }
 
-interface WalkthroughProps {
-  /** The hostname as the demo should render it, never empty. */
-  domain: string;
-  /** The raw field value, which may be mid-edit. */
-  hostname: string;
-  onHostname(value: string): void;
-}
-
-/** npanel's whole job, in the order it happens. */
-function Walkthrough({ domain, hostname, onHostname }: WalkthroughProps) {
-  const instance = useInstance();
-  const gateway = instance.data?.dashboard_host ?? window.location.hostname;
-
+function HowItWorks() {
   return (
-    <section className="space-y-6">
-      <div className="max-w-2xl space-y-3">
-        <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-          Your team's sites, on your own domains.
-        </h1>
-        <p className="text-lg text-muted-foreground">
-          Team members publish nsites to Nostr. Staff point a domain at the gateway and map it.
-          Nobody touches a web server, and nothing is uploaded twice.
-        </p>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Step index="01" who="Team member" title="Publish an nsite">
-          <Terminal />
-        </Step>
-
-        <Step index="02" who="Staff" title="Point the domain here">
-          <Zone domain={domain} gateway={gateway} />
-        </Step>
-
-        <Step index="03" who="Staff" title="Add the mapping">
-          <Mapping hostname={hostname} onHostname={onHostname} />
-        </Step>
-
-        <Step index="04" who="Anyone" title="Served from that domain">
-          <Browser domain={domain} />
-        </Step>
-      </div>
+    <section className="grid gap-4 sm:grid-cols-3">
+      <Step icon={<Upload />} tile="bg-linear-to-b from-[#64d2ff] to-[#0a84ff]" title="Publish">
+        Push a site to Nostr with any nsite tool.
+      </Step>
+      <Step icon={<Signpost />} tile="bg-linear-to-b from-[#ffd60a] to-[#ff9f0a]" title="Point">
+        Add one DNS record for your domain.
+      </Step>
+      <Step icon={<Globe />} tile="bg-linear-to-b from-[#30d158] to-[#00a86b]" title="Serve">
+        Served over HTTPS from this server's disk, even when relays go quiet.
+      </Step>
     </section>
   );
 }
 
-function Step({
-  index,
-  who,
-  title,
-  children,
-}: {
-  index: string;
-  who: string;
-  title: string;
-  children: ReactNode;
-}) {
+function Step({ icon, tile, title, children }: { icon: ReactNode; tile: string; title: string; children: ReactNode }) {
   return (
-    <Card className="gap-0 overflow-hidden py-0">
-      <div className="flex items-center gap-3 border-b bg-muted/50 px-4 py-2.5">
-        <span className="font-mono text-[11px] font-semibold tracking-widest text-primary">
-          {index}
-        </span>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h2>
-        <span className="shrink-0 rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          {who}
-        </span>
-      </div>
-      <div className="p-4">{children}</div>
-    </Card>
-  );
-}
-
-function Terminal() {
-  return (
-    <div className="space-y-2">
-      <div className="rounded-lg bg-sidebar p-3 font-mono text-xs leading-relaxed text-sidebar-foreground">
-        <div className="flex gap-1.5 pb-2">
-          <span className="size-2 rounded-full bg-white/20" />
-          <span className="size-2 rounded-full bg-white/20" />
-          <span className="size-2 rounded-full bg-white/20" />
-        </div>
-        <p className="truncate">
-          <span className="text-brand">~/docs $</span> nsite upload ./dist
-        </p>
-        <p className="truncate text-sidebar-foreground/70">24 files → 2 Blossom servers</p>
-        <p className="truncate text-sidebar-foreground/70">manifest signed, sent to 3 relays</p>
-        <p className="truncate">
-          <span className="text-brand">→</span> {shorten(EXAMPLE_NPUB)}
-        </p>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Any nsite publishing tool does this. The site now exists on Nostr, addressed by its author's
-        key — no server, no domain, nothing to point at yet.
-      </p>
+    <div className="space-y-3 rounded-2xl bg-card p-6 shadow-sm">
+      <span
+        aria-hidden
+        className={cn('flex size-11 items-center justify-center rounded-xl text-white shadow-sm [&_svg]:size-5', tile)}
+      >
+        {icon}
+      </span>
+      <h3 className="text-lg font-semibold">{title}</h3>
+      <p className="text-muted-foreground">{children}</p>
     </div>
   );
 }
 
-function Zone({ domain, gateway }: { domain: string; gateway: string }) {
-  return (
-    <div className="space-y-2">
-      <div className="space-y-2 rounded-lg border bg-muted/40 p-3 font-mono text-xs">
-        <p className="truncate font-medium">{domain}</p>
-
-        <dl className="space-y-1">
-          <Record type="A" value={EXAMPLE_A} />
-          <Record type="AAAA" value={EXAMPLE_AAAA} />
-        </dl>
-
-        <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          or
-          <span className="h-px flex-1 bg-border" />
-        </div>
-
-        <dl>
-          <Record type="CNAME" value={gateway} />
-        </dl>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        One record at your DNS provider, and it's the only step npanel can't do for you.
-      </p>
-    </div>
-  );
-}
-
-function Record({ type, value }: { type: string; value: string }) {
-  return (
-    <div className="flex items-baseline gap-3">
-      <dt className="w-14 shrink-0 text-muted-foreground">{type}</dt>
-      <dd className="min-w-0 truncate">{value}</dd>
-    </div>
-  );
-}
-
-function Mapping({ hostname, onHostname }: { hostname: string; onHostname(value: string): void }) {
-  return (
-    <div className="space-y-3">
-      <div className="space-y-1.5">
-        <Label htmlFor="demo-hostname" className="text-xs">
-          Domain
-        </Label>
-        <Input
-          id="demo-hostname"
-          value={hostname}
-          onChange={(event) => onHostname(event.target.value)}
-          placeholder={DEFAULT_DOMAIN}
-          aria-describedby="demo-hostname-hint"
-          autoComplete="off"
-          spellCheck={false}
-          className="font-mono text-sm"
-        />
-        <p id="demo-hostname-hint" className="text-xs text-muted-foreground">
-          Put your own domain in — it follows through the rest of this page.
-        </p>
-      </div>
-
-      <div className="space-y-1.5">
-        <Label htmlFor="demo-site" className="text-xs">
-          nsite
-        </Label>
-        <Input id="demo-site" value={EXAMPLE_NPUB} readOnly className="font-mono text-sm" />
-
-        <div className="space-y-1 rounded-md border bg-muted/40 p-2.5 text-xs">
-          <div className="flex gap-2">
-            <span className="w-12 shrink-0 text-muted-foreground">Author</span>
-            <span className="min-w-0 truncate font-mono">{shorten(EXAMPLE_NPUB)}</span>
-          </div>
-          <div className="flex gap-2">
-            <span className="w-12 shrink-0 text-muted-foreground">nsite</span>
-            <span>Root site</span>
-          </div>
-          <p className="break-all font-mono text-[11px] text-muted-foreground">{EXAMPLE_ADDRESS}</p>
-        </div>
-      </div>
-
-      {/* A picture of the button, not the button: there is nothing to submit. */}
-      <div aria-hidden className={cn(buttonVariants(), 'pointer-events-none w-full')}>
-        Add site
-      </div>
-    </div>
-  );
-}
-
-function Browser({ domain }: { domain: string }) {
-  return (
-    <div className="space-y-2">
-      <div className="overflow-hidden rounded-lg border shadow-sm">
-        <div className="flex items-center gap-2 border-b bg-muted/60 px-3 py-2">
-          <span className="flex shrink-0 gap-1">
-            <span className="size-2 rounded-full bg-border" />
-            <span className="size-2 rounded-full bg-border" />
-            <span className="size-2 rounded-full bg-border" />
-          </span>
-          <span className="flex min-w-0 flex-1 items-center gap-1.5 rounded-full bg-background px-2.5 py-1 font-mono text-[11px]">
-            <Lock className="size-3 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="truncate">https://{domain}</span>
-          </span>
-        </div>
-
-        <div className="bg-background p-4" aria-hidden>
-          <div className="h-1 w-full rounded bg-linear-to-r from-brand to-brand-glow" />
-          <div className="mt-3 space-y-2">
-            <div className="h-3 w-2/5 rounded bg-foreground/70" />
-            <div className="h-2 w-full rounded bg-muted-foreground/25" />
-            <div className="h-2 w-11/12 rounded bg-muted-foreground/25" />
-            <div className="h-2 w-3/5 rounded bg-muted-foreground/25" />
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <div className="h-10 rounded bg-muted" />
-            <div className="h-10 rounded bg-muted" />
-            <div className="h-10 rounded bg-muted" />
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 border-t bg-muted/40 px-3 py-2">
-          <Badge className="shrink-0">Live</Badge>
-          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">
-            24 files · served from disk
-          </span>
-        </div>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        A certificate is issued on the first request. Files come off this server's disk, so the site
-        stays up when the relays and Blossom servers it came from don't.
-      </p>
-    </div>
-  );
-}
-
-/** The point of the page: this is software, and it is meant to be yours. */
 function SelfHost() {
   return (
     <section id="self-host" className="scroll-mt-20">
-      <Card className="gap-0 overflow-hidden border-t-2 border-t-primary py-0">
-        <div className="grid gap-8 p-6 md:grid-cols-2 md:p-8">
-          <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <Logo className="size-10" />
-              <div>
-                <p className="text-lg font-semibold tracking-tight">Run your own npanel</p>
-                <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-                  AGPL-3.0 · self-hosted
-                </p>
-              </div>
-            </div>
-
-            <p className="text-muted-foreground">
-              One process, one SQLite file, one directory of blobs. No tenant, no account, and
-              nobody else's server standing between your team and its domains — which is rather the
-              point of publishing to Nostr in the first place.
-            </p>
-
-            <a
-              href={SOURCE_URL}
-              target="_blank"
-              rel="noreferrer noopener"
-              className={cn(buttonVariants(), 'w-full sm:w-auto')}
-            >
-              Source code
-            </a>
-          </div>
-
-          <div className="rounded-lg bg-sidebar p-4 font-mono text-xs leading-relaxed text-sidebar-foreground">
-            <p className="truncate">
-              <span className="text-brand">$</span> bun install
-            </p>
-            <p className="truncate">
-              <span className="text-brand">$</span> bun run dashboard:build
-            </p>
-            <p className="truncate">
-              <span className="text-brand">$</span> DASHBOARD_HOST=panel.example.com bun start
-            </p>
-            <p className="truncate pt-1 text-sidebar-foreground/70">listening on 127.0.0.1:3000</p>
-          </div>
+      <div className="grid items-center gap-10 rounded-3xl bg-card p-6 shadow-sm sm:p-10 md:grid-cols-2">
+        <div className="space-y-4">
+          <h2 className="text-3xl font-bold tracking-tight">Run your own.</h2>
+          <p className="text-lg text-muted-foreground">
+            One process, one SQLite file, one folder of files. No account with anyone.
+          </p>
+          <a href={SOURCE_URL} target="_blank" rel="noreferrer noopener" className={cn(buttonVariants(), 'rounded-full px-5')}>
+            View source
+            <ArrowUpRight aria-hidden />
+          </a>
         </div>
-      </Card>
+
+        <Terminal />
+      </div>
     </section>
+  );
+}
+
+/** A Terminal window, traffic lights and all. */
+function Terminal() {
+  return (
+    <div className="overflow-hidden rounded-xl bg-[#1e1e1e] font-mono text-[13px] leading-relaxed text-[#e5e5e5] shadow-xl ring-1 ring-black/20">
+      <div className="flex items-center gap-2 bg-[#2d2d2d] px-3 py-2" aria-hidden>
+        <span className="size-3 rounded-full bg-[#ff5f57]" />
+        <span className="size-3 rounded-full bg-[#febc2e]" />
+        <span className="size-3 rounded-full bg-[#28c840]" />
+      </div>
+      <div className="space-y-0.5 overflow-x-auto p-4 whitespace-nowrap">
+        <p>
+          <span className="text-[#28c840]">$</span> bun install
+        </p>
+        <p>
+          <span className="text-[#28c840]">$</span> bun run dashboard:build
+        </p>
+        <p>
+          <span className="text-[#28c840]">$</span> DASHBOARD_HOST=panel.example.com bun start
+        </p>
+        <p className="text-[#8e8e93]">listening on 127.0.0.1:3000</p>
+      </div>
+    </div>
   );
 }
 

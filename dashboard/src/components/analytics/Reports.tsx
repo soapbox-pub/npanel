@@ -137,15 +137,18 @@ function ReportCard({
   return (
     <Card className="flex flex-col">
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-2">
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap rounded-lg bg-foreground/[0.06] p-0.5 dark:bg-foreground/10">
           {tabs.map((candidate) => (
             <button
               key={candidate.id}
               type="button"
+              aria-pressed={candidate.id === tab.id}
               onClick={() => setActive(candidate.id)}
               className={cn(
-                'rounded-md px-2 py-1 text-sm font-medium transition-colors',
-                candidate.id === tab.id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
+                'rounded-md px-2.5 py-1 text-xs font-medium transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden',
+                candidate.id === tab.id
+                  ? 'bg-card text-foreground shadow-sm dark:bg-secondary'
+                  : 'text-muted-foreground hover:text-foreground',
               )}
             >
               {candidate.label ?? (candidate.list === 'map' ? '' : candidate.list.tab)}
@@ -195,7 +198,7 @@ function ListView({ list, hostname, state, onChange, onDetails }: CardProps & { 
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="mb-1 flex justify-between text-xs font-medium uppercase tracking-wide text-muted-foreground">
+      <div className="mb-1 flex justify-between px-2 text-xs font-medium text-muted-foreground">
         <span>{list.title}</span>
         <span>{state.period === 'realtime' ? 'Current visitors' : 'Visitors'}</span>
       </div>
@@ -210,7 +213,7 @@ function ListView({ list, hostname, state, onChange, onDetails }: CardProps & { 
             <li key={row.dimensions.join('\u0000')} className="group flex items-center gap-2 text-sm">
               <button
                 type="button"
-                className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded px-2 py-1 text-left"
+                className="relative flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-md px-2 py-1 text-left hover:bg-muted/60"
                 onClick={() =>
                   onChange(
                     withFilter(
@@ -222,7 +225,7 @@ function ListView({ list, hostname, state, onChange, onDetails }: CardProps & { 
                 }
               >
                 <span
-                  className="absolute inset-y-0 left-0 rounded bg-primary/10"
+                  className="absolute inset-y-0 left-0 rounded-md bg-primary/10"
                   style={{ width: `${(visitors / max) * 100}%` }}
                 />
                 <span className="relative truncate">
@@ -250,7 +253,7 @@ function ListView({ list, hostname, state, onChange, onDetails }: CardProps & { 
         })}
       </ul>
       <div className="mt-3 flex justify-center">
-        <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground" onClick={() => onDetails(list.id)}>
+        <Button variant="ghost" size="sm" className="gap-1" onClick={() => onDetails(list.id)}>
           <Maximize2 className="size-3.5" />
           Details
         </Button>
