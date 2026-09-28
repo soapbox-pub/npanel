@@ -190,6 +190,9 @@ async function answer(request: WorkerRequest): Promise<WorkerResponse> {
     case "current-visitors":
       flush();
       return stats.currentVisitors(request.host);
+    case "sparklines":
+      flush();
+      return stats.sparklines(request.hosts, timezone);
     case "suggestions":
       return stats.suggestions(request.host, request.filter, request.params, timezone);
   }

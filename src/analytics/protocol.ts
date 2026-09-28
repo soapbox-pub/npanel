@@ -29,6 +29,8 @@ export type WorkerRequest =
   | { type: "event"; method: string; body: string; headers: SenderHeaders }
   | { type: "query"; host: QueryHost; body: unknown }
   | { type: "current-visitors"; host: QueryHost }
+  /** The last 24 hours of several sites at once, for the dashboard's list of them. */
+  | { type: "sparklines"; hosts: QueryHost[] }
   /** `params` are the query string of Plausible's suggestions endpoint. */
   | { type: "suggestions"; host: QueryHost; filter: string; params: Record<string, string> };
 

@@ -92,3 +92,31 @@ test("analytics that aren't running say so", async () => {
   assert.equal(response.status, 503);
   assert.match((await response.json()).error, /starting/);
 });
+
+test("the list of sites gets each one's last 24 hours in one request", async () => {
+  const { harness, admin, staff } = await setup();
+  await harness.analytics.start();
+
+  await fetch(`http://127.0.0.1:${harness.analytics.port}/api/event`, {
+    method: "POST",
+    headers: { "content-type": "text/plain", "user-agent": FIREFOX },
+    body: JSON.stringify({ n: "pageview", u: "https://docs.example.com/", d: "docs.example.com" }),
+  });
+
+  const response = await harness.request(admin, "GET", "/api/stats/sparklines");
+  assert.equal(response.status, 200);
+
+  const { sparklines } = await response.json();
+  const docs = sparklines["docs.example.com"];
+  assert.equal(docs.visitors, 1);
+  assert.equal(docs.change, 100);
+  assert.equal(docs.hours.length, 25);
+  assert.equal(
+    docs.hours.reduce((sum: number, hour: number) => sum + hour, 0),
+    1,
+  );
+
+  // Only the sites a user may manage.
+  const denied = await harness.request(staff, "GET", "/api/stats/sparklines");
+  assert.deepEqual(await denied.json(), { sparklines: {} });
+});

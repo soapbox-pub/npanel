@@ -603,6 +603,17 @@ JSON list of filters as above, and `q` for what has been typed.
 [{ "value": "DE", "label": "Germany" }, { "value": "US", "label": "United States" }]
 ```
 
+### `GET /api/stats/sparklines`
+
+The last 24 hours of every site the caller may manage, for the dashboard's
+list of sites: unique visitors, their percent change against the 24 hours
+before (100 when there were none), and visitors in each hour, oldest first —
+25 buckets, the first and last partial.
+
+```json
+{ "sparklines": { "docs.example.com": { "visitors": 42, "change": -8, "hours": [0, 3, 1, "…"] } } }
+```
+
 ## Users — admin
 
 ### `GET /api/users`

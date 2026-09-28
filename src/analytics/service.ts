@@ -150,6 +150,11 @@ export class AnalyticsService {
     return this.call({ type: "current-visitors", host }, QUERY_TIMEOUT);
   }
 
+  /** Each site's visitors over the last 24 hours, hour by hour, for the list of sites. */
+  sparklines(hosts: QueryHost[]): Promise<WorkerResponse> {
+    return this.call({ type: "sparklines", hosts }, QUERY_TIMEOUT);
+  }
+
   /** Filter autocomplete, Plausible's `GET /api/stats/:domain/suggestions/:filter_name`. */
   suggestions(host: QueryHost, filter: string, params: Record<string, string>): Promise<WorkerResponse> {
     return this.call({ type: "suggestions", host, filter, params }, QUERY_TIMEOUT);

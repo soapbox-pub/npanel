@@ -28,6 +28,25 @@ const SUGGESTION_DIMENSIONS: Record<string, Dimension> = {
   os_version: "visit:os_version",
 };
 
+/** One site's last 24 hours, as the list of sites draws it. */
+export interface Sparkline {
+  visitors: number;
+  /** Percent change against the 24 hours before, as Plausible reckons it: 100 from nothing. */
+  change: number | null;
+  /** Visitors in each hour, oldest first; the first and last hours are partial. */
+  hours: number[];
+}
+
+/** The parts of the engine's answers a sparkline is read from. */
+interface TotalAnswer {
+  results: { metrics: (number | null)[]; comparison?: { change: (number | null)[] | null } }[];
+}
+
+interface SeriesAnswer {
+  results: { metrics: (number | null)[] }[];
+  meta: { time_label_result_indices: (number | null)[] };
+}
+
 /**
  * The dashboard's three questions — a query, the live visitor count, and
  * filter suggestions — answered as the HTTP responses Plausible's endpoints
@@ -45,6 +64,47 @@ export class Stats {
 
   currentVisitors(host: QueryHost): WorkerResponse {
     return this.answer(() => this.engine.currentVisitors(host));
+  }
+
+  /**
+   * The last 24 hours of each site, the way Plausible's list of sites shows
+   * them: unique visitors, their change against the 24 hours before, and the
+   * visitors of each hour.
+   *
+   * Two queries a site, since hourly buckets don't add up to a day's unique
+   * visitors. The comparison is instant for instant rather than a week back,
+   * which is what "since yesterday" means on a list glanced at.
+   */
+  sparklines(hosts: QueryHost[], timezone: string): WorkerResponse {
+    return this.answer(() => {
+      const total = parseStatsQuery({
+        date_range: "24h",
+        metrics: ["visitors"],
+        include: { compare: "previous_period", compare_match_day_of_week: false },
+      });
+      const series = parseStatsQuery({
+        date_range: "24h",
+        metrics: ["visitors"],
+        dimensions: ["time:hour"],
+        include: { time_labels: true },
+      });
+
+      const sparklines: Record<string, Sparkline> = {};
+      for (const host of hosts) {
+        const [row] = (this.engine.query(host, total, timezone) as unknown as TotalAnswer).results;
+        const hourly = this.engine.query(host, series, timezone) as unknown as SeriesAnswer;
+
+        sparklines[host.hostname] = {
+          visitors: Number(row?.metrics[0] ?? 0),
+          change: row?.comparison?.change?.[0] ?? null,
+          hours: hourly.meta.time_label_result_indices.map((index) =>
+            index === null ? 0 : Number(hourly.results[index].metrics[0] ?? 0),
+          ),
+        };
+      }
+
+      return { sparklines };
+    });
   }
 
   /**

@@ -46,6 +46,31 @@ export function statsRoutes(deps: ApiDeps): Hono<ApiEnv> {
   return app;
 }
 
+/**
+ * The last 24 hours of every site the user may manage, in one request, for
+ * the list of sites. Asking per site would queue a query per card on the
+ * analytics thread behind one another anyway; this asks once.
+ */
+export function sparklineRoutes(deps: ApiDeps): Hono<ApiEnv> {
+  const { db, analytics } = deps;
+  const app = new Hono<ApiEnv>();
+
+  app.get("/sparklines", async (c) => {
+    const user = c.get("user");
+
+    let query = db.selectFrom("hosts").select(["id", "hostname"]);
+    if (user.role !== "admin") {
+      query = query.where("id", "in", (eb) =>
+        eb.selectFrom("host_grants").select("host_id").where("user_pubkey", "=", user.pubkey),
+      );
+    }
+
+    return relay(await analytics.sparklines(await query.execute()));
+  });
+
+  return app;
+}
+
 function relay(response: WorkerResponse): Response {
   return new Response(response.body, { status: response.status, headers: response.headers });
 }
