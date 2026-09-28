@@ -5,7 +5,6 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
-import { ThemeToggle } from '@/components/ThemeToggle';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useMe } from '@/hooks/useNpanel';
@@ -55,7 +54,7 @@ export function DashboardLayout() {
       <Sidebar items={items} />
       <MobileBar />
 
-      <main className="md:pl-60">
+      <main className="md:pl-64">
         <div
           className={cn(
             'mx-auto max-w-5xl px-4 pt-4 pb-12 sm:px-6 md:px-10 md:pt-10',
@@ -78,42 +77,61 @@ function useActive() {
   return (to: string) => (to === '/' ? pathname === '/' || pathname.startsWith('/hosts/') : pathname.startsWith(to));
 }
 
+/**
+ * The sidebar, as macOS 26 draws one: a pane of glass floating inside the
+ * window's edge rather than a column bolted to it, with the admin places
+ * under a heading of their own and the account at the foot.
+ */
 function Sidebar({ items }: { items: NavItem[] }) {
-  const active = useActive();
+  const [main, ...admin] = items;
 
   return (
-    <aside className="material fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex">
+    <aside className="material fixed top-2 bottom-2 left-2 z-30 hidden w-60 flex-col rounded-2xl bg-sidebar text-sidebar-foreground shadow-[0_8px_32px_rgb(0_0_0/0.08),0_0_0_0.5px_rgb(0_0_0/0.08)] md:flex dark:shadow-[0_8px_32px_rgb(0_0_0/0.5),inset_0_0_0_0.5px_rgb(255_255_255/0.1)]">
       <Link
         to="/"
-        className="mx-3 mt-4 mb-3 flex items-center gap-2.5 rounded-lg px-2 py-1.5 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+        className="mx-2 mt-3 mb-4 flex items-center gap-2 self-start rounded-lg px-2 py-1 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
       >
-        <Logo className="size-7 drop-shadow-sm" />
+        <Logo className="size-6" />
         <span className="text-[15px] font-semibold tracking-tight">npanel</span>
       </Link>
 
-      <nav className="flex-1 space-y-0.5 px-3" aria-label="Main">
-        {items.map((item) => (
-          <Link
-            key={item.to}
-            to={item.to}
-            aria-current={active(item.to) ? 'page' : undefined}
-            className={cn(
-              'flex h-8 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors',
-              'focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden',
-              active(item.to) ? 'bg-sidebar-accent font-medium' : 'hover:bg-sidebar-accent/60',
-            )}
-          >
-            <item.icon className="size-4 shrink-0 text-primary" aria-hidden />
-            {item.label}
-          </Link>
-        ))}
+      <nav className="flex-1 space-y-4 overflow-y-auto px-2" aria-label="Main">
+        <NavGroup items={[main]} />
+        {admin.length > 0 && <NavGroup title="Admin" items={admin} />}
       </nav>
 
-      <div className="flex items-center gap-1 border-t border-sidebar-border p-3">
-        <LoginArea showName className="min-w-0 flex-1" />
-        <ThemeToggle />
+      <div className="p-2">
+        <LoginArea showName className="flex w-full" />
       </div>
     </aside>
+  );
+}
+
+function NavGroup({ title, items }: { title?: string; items: NavItem[] }) {
+  const active = useActive();
+
+  return (
+    <div>
+      {title && <h2 className="px-2.5 pb-1 text-[11px] font-semibold text-muted-foreground">{title}</h2>}
+      <ul className="space-y-px">
+        {items.map((item) => (
+          <li key={item.to}>
+            <Link
+              to={item.to}
+              aria-current={active(item.to) ? 'page' : undefined}
+              className={cn(
+                'flex h-7 items-center gap-2 rounded-md px-2.5 text-[13px] transition-colors',
+                'focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden',
+                active(item.to) ? 'bg-foreground/[0.08] font-medium' : 'hover:bg-foreground/[0.04]',
+              )}
+            >
+              <item.icon className="size-4 shrink-0 text-primary" aria-hidden />
+              {item.label}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -124,10 +142,7 @@ function MobileBar() {
         <Logo className="size-7" />
         <span className="text-[15px] font-semibold tracking-tight">npanel</span>
       </Link>
-      <div className="ml-auto flex items-center gap-1">
-        <ThemeToggle />
-        <LoginArea />
-      </div>
+      <LoginArea className="ml-auto" />
     </header>
   );
 }
@@ -170,10 +185,7 @@ function Centered({ children }: { children: ReactNode }) {
           <Logo className="size-7" />
           <span className="text-[15px] font-semibold tracking-tight">npanel</span>
         </Link>
-        <div className="flex items-center gap-1">
-          <ThemeToggle />
-          <LoginArea />
-        </div>
+        <LoginArea />
       </header>
       <main className="flex flex-1 items-center justify-center px-4 pb-24">
         <div className="w-full max-w-sm">{children}</div>

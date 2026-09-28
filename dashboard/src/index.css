@@ -109,8 +109,13 @@
 :root {
   --radius: 0.625rem;
 
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, "Segoe UI",
-    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  /*
+   * San Francisco where the system has it, and Inter — bundled, and the
+   * closest thing to it — everywhere else, rather than whatever a Linux or
+   * Windows box calls its UI font.
+   */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Inter Variable", system-ui,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-code: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono",
     monospace;
 
@@ -162,7 +167,7 @@
 
   --material: hsl(240 11% 96% / 0.72);
 
-  --sidebar: hsl(240 9% 93% / 0.8);
+  --sidebar: hsl(0 0% 100% / 0.65);
   --sidebar-foreground: hsl(240 3% 11%);
   --sidebar-primary: hsl(211 100% 45%);
   --sidebar-primary-foreground: hsl(0 0% 100%);
@@ -219,7 +224,7 @@
 
   --material: hsl(240 3% 9% / 0.72);
 
-  --sidebar: hsl(240 3% 11% / 0.8);
+  --sidebar: hsl(240 3% 14% / 0.7);
   --sidebar-foreground: hsl(0 0% 96%);
   --sidebar-primary: hsl(210 100% 52%);
   --sidebar-primary-foreground: hsl(0 0% 100%);

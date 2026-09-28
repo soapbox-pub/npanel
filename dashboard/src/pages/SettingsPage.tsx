@@ -312,7 +312,7 @@ export function SettingsPage() {
       </Section>
 
       {dirty && (
-        <div className="fixed inset-x-0 bottom-20 z-20 flex justify-center px-4 md:bottom-6 md:pl-60">
+        <div className="fixed inset-x-0 bottom-20 z-20 flex justify-center px-4 md:bottom-6 md:pl-64">
           <div className="material flex items-center gap-3 rounded-full bg-popover py-2 pr-2 pl-5 shadow-xl ring-1 ring-black/10 dark:ring-white/10">
             <span className="text-sm">Unsaved changes</span>
             <Button variant="outline" size="sm" className="rounded-full" onClick={() => setDraft({})}>

@@ -1,4 +1,7 @@
-import { ChevronDown, LogOut, UserIcon, UserPlus } from 'lucide-react';
+import { ChevronsUpDown, LogOut, UserPlus } from 'lucide-react';
+
+import { AppearanceSubmenu } from '@/components/ThemeToggle';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -6,9 +9,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu.tsx';
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import { Skeleton } from '@/components/ui/skeleton.tsx';
-import { useLoggedInAccounts, type Account } from '@/hooks/useLoggedInAccounts';
+import { type Account, useLoggedInAccounts } from '@/hooks/useLoggedInAccounts';
+import { cn } from '@/lib/utils';
 
 interface AccountSwitcherProps {
   onAddAccountClick: () => void;
@@ -16,14 +19,30 @@ interface AccountSwitcherProps {
   showName?: boolean;
 }
 
+function displayName(account: Account): string {
+  return account.metadata.name ?? 'Anonymous';
+}
+
+/**
+ * An account's picture, or its initial on grey the way Contacts draws someone
+ * without a photo. A skeleton while the profile is still loading, so no
+ * placeholder initial flashes up first.
+ */
+function AccountAvatar({ account, pending, className }: { account: Account; pending: boolean; className?: string }) {
+  return (
+    <Avatar className={cn('size-8', className)}>
+      <AvatarImage src={account.metadata.picture} alt="" />
+      <AvatarFallback className="bg-linear-to-b from-[#a8a8ad] to-[#86868b] text-[0.8em] font-semibold text-white">
+        {pending ? <Skeleton className="size-full rounded-full" /> : displayName(account).charAt(0).toUpperCase()}
+      </AvatarFallback>
+    </Avatar>
+  );
+}
+
 export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcherProps) {
   const { currentUser, otherUsers, isLoading, setLogin, removeLogin } = useLoggedInAccounts();
 
   if (!currentUser) return null;
-
-  const getDisplayName = (account: Account): string => {
-    return account.metadata.name ?? 'Anonymous';
-  }
 
   // While the metadata query is in-flight and we don't yet have a name,
   // we don't want to flash a generated animal name / its first letter.
@@ -32,96 +51,56 @@ export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcher
   return (
     <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
-        <button className='flex min-w-0 items-center gap-2 h-10 p-1 pr-2.5 rounded-full hover:bg-sidebar-accent transition-colors text-current focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden data-[name]:w-full data-[name]:rounded-lg' data-name={showName || undefined}>
-          <Avatar className='w-8 h-8'>
-            <AvatarImage
-              src={currentUser.metadata.picture}
-              alt={isCurrentUserPending ? '' : getDisplayName(currentUser)}
-            />
-            <AvatarFallback>
-              {isCurrentUserPending ? (
-                <Skeleton className='size-full rounded-full' />
-              ) : (
-                getDisplayName(currentUser).charAt(0)
-              )}
-            </AvatarFallback>
-          </Avatar>
-          {showName && (
-            <span className='min-w-0 flex-1 truncate text-left text-sm font-medium'>
-              {isCurrentUserPending ? <Skeleton className='h-4 w-20' /> : getDisplayName(currentUser)}
+        {showName ? (
+          <button
+            type="button"
+            className="group flex h-9 w-full min-w-0 items-center gap-2 rounded-lg px-1.5 text-left transition-colors hover:bg-foreground/[0.06] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden data-[state=open]:bg-foreground/[0.06]"
+          >
+            <AccountAvatar account={currentUser} pending={isCurrentUserPending} className="size-6 text-xs" />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+              {isCurrentUserPending ? <Skeleton className="h-3.5 w-20" /> : displayName(currentUser)}
             </span>
-          )}
-          <ChevronDown className='w-4 h-4 opacity-60' />
-        </button>
+            <ChevronsUpDown
+              className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 group-data-[state=open]:opacity-100"
+              aria-hidden
+            />
+          </button>
+        ) : (
+          <button
+            type="button"
+            aria-label="Account"
+            className="rounded-full focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+          >
+            <AccountAvatar account={currentUser} pending={isCurrentUserPending} className="text-sm" />
+          </button>
+        )}
       </DropdownMenuTrigger>
-      <DropdownMenuContent align='start' className='w-56'>
-        <div className='flex items-center gap-2 p-2'>
-            <Avatar className='w-8 h-8'>
-              <AvatarImage
-                src={currentUser.metadata.picture}
-                alt={isCurrentUserPending ? '' : getDisplayName(currentUser)}
-              />
-              <AvatarFallback>
-                {isCurrentUserPending ? (
-                  <Skeleton className='size-full rounded-full' />
-                ) : (
-                  getDisplayName(currentUser)?.charAt(0) || <UserIcon />
-                )}
-              </AvatarFallback>
-            </Avatar>
-            <div className='flex-1 truncate'>
-              {isCurrentUserPending ? (
-                <Skeleton className='h-4 w-24' />
-              ) : (
-                <p className='text-sm font-medium'>{getDisplayName(currentUser)}</p>
-              )}
-            </div>
+
+      <DropdownMenuContent align={showName ? 'start' : 'end'} side={showName ? 'top' : 'bottom'} className="w-60">
+        <div className="flex items-center gap-2.5 p-2">
+          <AccountAvatar account={currentUser} pending={isCurrentUserPending} className="text-sm" />
+          <p className="min-w-0 flex-1 truncate text-sm font-medium">
+            {isCurrentUserPending ? <Skeleton className="h-4 w-24" /> : displayName(currentUser)}
+          </p>
         </div>
-        {otherUsers.map((user) => {
-          const isPending = isLoading && !user.metadata.name;
-          return (
-            <DropdownMenuItem
-              key={user.id}
-              onClick={() => setLogin(user.id)}
-              className='flex items-center gap-2 cursor-pointer p-2 rounded-md'
-            >
-              <Avatar className='w-8 h-8'>
-                <AvatarImage
-                  src={user.metadata.picture}
-                  alt={isPending ? '' : getDisplayName(user)}
-                />
-                <AvatarFallback>
-                  {isPending ? (
-                    <Skeleton className='size-full rounded-full' />
-                  ) : (
-                    getDisplayName(user)?.charAt(0) || <UserIcon />
-                  )}
-                </AvatarFallback>
-              </Avatar>
-              <div className='flex-1 truncate'>
-                {isPending ? (
-                  <Skeleton className='h-4 w-24' />
-                ) : (
-                  <p className='text-sm font-medium'>{getDisplayName(user)}</p>
-                )}
-              </div>
-            </DropdownMenuItem>
-          );
-        })}
+
+        {otherUsers.map((user) => (
+          <DropdownMenuItem key={user.id} onClick={() => setLogin(user.id)} className="cursor-pointer gap-2.5 p-2">
+            <AccountAvatar account={user} pending={isLoading && !user.metadata.name} className="size-6 text-xs" />
+            <span className="min-w-0 flex-1 truncate">{displayName(user)}</span>
+          </DropdownMenuItem>
+        ))}
+
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onClick={onAddAccountClick}
-          className='flex items-center gap-2 cursor-pointer p-2 rounded-md'
-        >
-          <UserPlus className='w-4 h-4' />
-          <span>Add account</span>
+        <AppearanceSubmenu />
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={onAddAccountClick} className="cursor-pointer gap-2 p-2">
+          <UserPlus className="size-4" />
+          Add Account…
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => removeLogin(currentUser.id)}
-          className='flex items-center gap-2 cursor-pointer p-2 rounded-md text-destructive'
-        >
-          <LogOut className='w-4 h-4' />
-          <span>Sign out</span>
+        <DropdownMenuItem onClick={() => removeLogin(currentUser.id)} className="cursor-pointer gap-2 p-2">
+          <LogOut className="size-4" />
+          Sign Out
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

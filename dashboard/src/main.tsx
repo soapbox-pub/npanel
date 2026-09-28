@@ -5,6 +5,7 @@ import './lib/polyfills.ts';
 
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import App from './App.tsx';
+import '@fontsource-variable/inter';
 import './index.css';
 
 
