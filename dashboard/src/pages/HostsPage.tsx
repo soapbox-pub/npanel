@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 
 import { AddHostDialog } from '@/components/AddHostDialog';
 import { PageHeader } from '@/components/PageHeader';
+import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { SiteStatus } from '@/components/SiteStatus';
 import { Sparkline } from '@/components/Sparkline';
@@ -55,7 +56,7 @@ export function HostsPage() {
       {hosts.isLoading ? (
         <Grid>
           {[0, 1, 2].map((index) => (
-            <Skeleton key={index} className="h-52 rounded-2xl" />
+            <Skeleton key={index} className="h-96 rounded-2xl" />
           ))}
         </Grid>
       ) : hosts.isError ? (
@@ -92,44 +93,57 @@ function Grid({ children }: { children: ReactNode }) {
 function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: SparklineData; loading: boolean }) {
   const status = siteStatus(host);
 
+  const { preview } = host;
+
   return (
     <Link
       to={`/hosts/${host.hostname}`}
-      className="group flex h-full flex-col gap-5 rounded-2xl bg-card p-5 shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-[box-shadow,transform] duration-200 hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] dark:hover:bg-secondary/40"
+      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-[box-shadow,transform] duration-200 hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] dark:hover:bg-secondary/40"
     >
-      <div className="flex items-center gap-3">
-        <SiteIcon hostname={host.hostname} className="size-7" />
-        <span className="min-w-0 flex-1 truncate font-semibold">{host.hostname}</span>
-      </div>
+      <SiteCover hostname={host.hostname} preview={preview} />
 
-      {host.analytics &&
-        (loading ? (
-          <div className="space-y-3" aria-hidden>
-            <Skeleton className="h-12" />
-            <Skeleton className="h-10 w-1/2" />
+      <div className="flex flex-1 flex-col gap-4 p-5">
+        <div className="flex items-center gap-3">
+          <SiteIcon hostname={host.hostname} src={preview.icon} className="size-9" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-semibold">{preview.title ?? host.hostname}</p>
+            {preview.title && <p className="truncate text-xs text-muted-foreground">{host.hostname}</p>}
           </div>
-        ) : (
-          <>
-            <Sparkline values={sparkline?.hours ?? []} className="h-12 text-primary" />
-            <div className="mt-auto flex items-end justify-between gap-3">
-              <div>
-                <p className="text-xl font-bold tabular-nums">{compactNumber(sparkline?.visitors ?? 0)}</p>
-                <p className="text-sm text-muted-foreground">
-                  {sparkline?.visitors === 1 ? 'visitor' : 'visitors'} in last 24h
-                </p>
-              </div>
-              {status.tone === 'green' ? (
-                <Change value={sparkline?.change ?? null} />
-              ) : (
-                <SiteStatus host={host} className="text-xs" />
-              )}
-            </div>
-          </>
-        ))}
+        </div>
 
-      {/* Without analytics there are no numbers to sit beside, so a site that
-          needs attention says so on its own line. */}
-      {!host.analytics && status.tone !== 'green' && <SiteStatus host={host} className="mt-auto text-xs" />}
+        {preview.description && (
+          <p className="line-clamp-2 text-sm text-muted-foreground">{preview.description}</p>
+        )}
+
+        {host.analytics &&
+          (loading ? (
+            <div className="mt-auto space-y-3" aria-hidden>
+              <Skeleton className="h-10" />
+              <Skeleton className="h-10 w-1/2" />
+            </div>
+          ) : (
+            <div className="mt-auto space-y-3">
+              <Sparkline values={sparkline?.hours ?? []} className="h-10 text-primary" />
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-xl font-bold tabular-nums">{compactNumber(sparkline?.visitors ?? 0)}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {sparkline?.visitors === 1 ? 'visitor' : 'visitors'} in last 24h
+                  </p>
+                </div>
+                {status.tone === 'green' ? (
+                  <Change value={sparkline?.change ?? null} />
+                ) : (
+                  <SiteStatus host={host} className="text-xs" />
+                )}
+              </div>
+            </div>
+          ))}
+
+        {/* Without analytics there are no numbers to sit beside, so a site that
+            needs attention says so on its own line. */}
+        {!host.analytics && status.tone !== 'green' && <SiteStatus host={host} className="mt-auto text-xs" />}
+      </div>
     </Link>
   );
 }

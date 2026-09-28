@@ -26,6 +26,7 @@ import { Nip05Editor } from '@/components/host/Nip05Editor';
 import { VersionList } from '@/components/host/VersionList';
 import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
+import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { SiteStatus } from '@/components/SiteStatus';
 import { Sparkline } from '@/components/Sparkline';
@@ -112,7 +113,7 @@ export function HostDetailPage() {
     <div className="space-y-8">
       <PageHeader
         back={BACK}
-        icon={<SiteIcon hostname={data.hostname} className="size-14" />}
+        icon={<SiteIcon hostname={data.hostname} src={data.preview.icon} className="size-14" />}
         title={data.hostname}
         subtitle={
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -155,6 +156,8 @@ export function HostDetailPage() {
           <span className="font-semibold text-destructive">The latest deploy failed.</span> {data.latest.error}
         </p>
       )}
+
+      <LinkPreview host={data} />
 
       <Visitors host={data} />
 
@@ -200,6 +203,35 @@ export function HostDetailPage() {
         )}
       </Tabs>
     </div>
+  );
+}
+
+/**
+ * The site as it looks when someone shares a link to it: its share image,
+ * title and blurb, all its own. Nothing at all for a site that says nothing
+ * about itself, since a card of blanks would only be a bigger hostname.
+ */
+function LinkPreview({ host }: { host: Host }) {
+  const { preview } = host;
+  if (!preview.image && !preview.title && !preview.description) return null;
+
+  return (
+    <a
+      href={`https://${host.hostname}`}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="group flex flex-col overflow-hidden rounded-2xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-shadow hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden sm:flex-row dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+    >
+      <SiteCover hostname={host.hostname} preview={preview} className="sm:w-80 sm:shrink-0" />
+      <div className="flex min-w-0 flex-col justify-center gap-1.5 p-5">
+        <p className="text-lg leading-snug font-semibold">{preview.title ?? host.hostname}</p>
+        {preview.description && <p className="line-clamp-3 text-sm text-muted-foreground">{preview.description}</p>}
+        <p className="flex items-center gap-1 pt-1 text-xs text-primary">
+          <span className="truncate">{host.hostname}</span>
+          <ArrowUpRight className="size-3 shrink-0" aria-hidden />
+        </p>
+      </div>
+    </a>
   );
 }
 

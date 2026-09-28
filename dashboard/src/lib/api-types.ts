@@ -63,6 +63,8 @@ export interface Host {
   active: HostVersion | null;
   /** The newest known version, which may still be deploying. */
   latest: HostVersion | null;
+  /** How the site presents itself, read from its own build. */
+  preview: SitePreview;
 }
 
 /** Everything about a host that can be changed after it exists. */
@@ -168,13 +170,18 @@ export interface PublicSite {
   hostname: string;
 }
 
-/** A public site with the preview its own landing page asks readers to show. */
-export interface SiteCard extends PublicSite {
+/** What a site's own build says about it: its landing page's metadata, and its icon. */
+export interface SitePreview {
   title: string | null;
   description: string | null;
-  /** Absolute https URL, or null. */
+  /** The share image, as an absolute https URL, or null. */
   image: string | null;
+  /** The site's icon, as an absolute https URL, or null. */
+  icon: string | null;
 }
+
+/** A public site with the preview its own landing page asks readers to show. */
+export interface SiteCard extends PublicSite, SitePreview {}
 
 /** What the logged-out homepage knows about the server it's running on. */
 export interface Instance {

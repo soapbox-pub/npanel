@@ -1,9 +1,11 @@
 import { useSeoMeta } from '@unhead/react';
 import { ArrowUpRight, ChevronRight, Globe, Signpost, Upload } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Logo } from '@/components/Logo';
+import { SiteCover } from '@/components/SiteCover';
+import { SiteIcon } from '@/components/SiteIcon';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { buttonVariants } from '@/components/ui/button-variants';
@@ -148,39 +150,29 @@ function ServedSites() {
   );
 }
 
-/** One site as a link preview, from the Open Graph tags of its own landing page. */
+/** One site as a link preview, from the metadata and icon of its own landing page. */
 function SiteCardLink({ site }: { site: SiteCard }) {
-  const [broken, setBroken] = useState(false);
-  const image = broken ? null : site.image;
-
   return (
     <a
       href={`https://${site.hostname}`}
       target="_blank"
       rel="noreferrer noopener"
-      className="group block h-full overflow-hidden rounded-2xl bg-card shadow-sm transition-shadow hover:shadow-lg focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card shadow-sm transition-shadow hover:shadow-lg focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
     >
-      {image ? (
-        <img
-          src={image}
-          alt=""
-          loading="lazy"
-          onError={() => setBroken(true)}
-          className="aspect-video w-full bg-muted object-cover"
-        />
-      ) : (
-        <div className="flex aspect-video w-full items-center justify-center bg-muted" aria-hidden>
-          <Globe className="size-8 text-muted-foreground/40" />
-        </div>
-      )}
+      <SiteCover hostname={site.hostname} preview={site} />
 
-      <div className="space-y-1 p-4">
-        <p className="truncate font-semibold">{site.title ?? site.hostname}</p>
+      <div className="space-y-3 p-4">
+        <div className="flex items-center gap-3">
+          <SiteIcon hostname={site.hostname} src={site.icon} className="size-9" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-semibold">{site.title ?? site.hostname}</p>
+            <p className="flex items-center gap-1 text-xs text-primary">
+              <span className="truncate">{site.hostname}</span>
+              <ArrowUpRight className="size-3 shrink-0" aria-hidden />
+            </p>
+          </div>
+        </div>
         {site.description && <p className="line-clamp-2 text-sm text-muted-foreground">{site.description}</p>}
-        <p className="flex items-center gap-1 pt-1 text-xs text-primary">
-          <span className="truncate">{site.hostname}</span>
-          <ArrowUpRight className="size-3 shrink-0" aria-hidden />
-        </p>
       </div>
     </a>
   );

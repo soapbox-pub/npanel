@@ -64,7 +64,7 @@ export function AnalyticsPage() {
     <div className="space-y-6">
       <PageHeader
         back={back}
-        icon={<SiteIcon hostname={hostname} className="size-10" />}
+        icon={<SiteIcon hostname={hostname} src={host.data.preview.icon} className="size-10" />}
         title="Analytics"
         actions={<CurrentVisitors hostname={hostname} state={state} onChange={setState} />}
       />
