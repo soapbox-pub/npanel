@@ -87,7 +87,8 @@ logged-out homepage.
       "hostname": "example.org",
       "title": "The Docs",
       "description": "Everything about the thing.",
-      "image": "https://example.org/cover.png"
+      "image": "https://example.org/cover.png",
+      "icon": "https://example.org/apple-touch-icon.png"
     }
   ]
 }
@@ -104,6 +105,13 @@ serves — no crawling, and no request leaves the box. Each is `null` when the
 page doesn't say: a site with nothing deployed yet is still listed, as a bare
 hostname. `image` is always an absolute `https` URL, resolved against the site's
 own hostname, since a relative `og:image` belongs to the site npanel serves.
+
+`icon` is the site's own icon, taken the way a home screen would take it: an
+`apple-touch-icon`, then the largest ordinary icon in the web app manifest the
+page links, then its `<link rel="icon">` — a vector before any bitmap — and
+last a `/favicon.ico` the build simply has. An icon on the site's own domain
+counts only if the build really contains the file, so a stale link is skipped
+rather than shown broken. `null` when there is none.
 
 ## Session
 
@@ -205,7 +213,9 @@ or after either fails. A failed build says why in the version's deploy log.
 { "hosts": [...], "other_sites": [{ "hostname": "example.org" }] }
 ```
 
-`hosts` is ordered by hostname; staff see only the hosts granted to them.
+`hosts` is ordered by hostname; staff see only the hosts granted to them. Each
+host carries a `preview` — `title`, `description`, `image` and `icon`, exactly
+as [`/api/sites`](#get-apisites) describes them — whether or not it is listed.
 `other_sites` names what else the gateway serves, on exactly the terms
 `/api/sites` does — so it is empty when `public_site_list` is off, and always
 empty for an admin, whose `hosts` already holds everything.

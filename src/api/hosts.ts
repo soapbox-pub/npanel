@@ -83,7 +83,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       user.role === "admin" ? [] : (await listedSites(db, settings)).filter((site) => !mine.has(site.hostname));
 
     return c.json({
-      hosts: await Promise.all(hosts.map((host) => serializeHost(db, host, deps.siteCsp))),
+      hosts: await Promise.all(hosts.map((host) => serializeHost(deps, host))),
       other_sites: others,
     });
   });
@@ -163,7 +163,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     const host = await db.selectFrom("hosts").selectAll().where("id", "=", inserted.id).executeTakeFirstOrThrow();
 
-    return c.json({ host: await serializeHost(db, host, deps.siteCsp) }, 201);
+    return c.json({ host: await serializeHost(deps, host) }, 201);
   });
 
   app.get("/:hostname", async (c) => {
@@ -173,7 +173,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       return c.json({ error: "You don't have access to this host." }, 403);
     }
 
-    return c.json({ host: await serializeHost(db, host, deps.siteCsp) });
+    return c.json({ host: await serializeHost(deps, host) });
   });
 
   app.patch("/:hostname", async (c) => {
@@ -279,7 +279,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
 
     if (!Object.keys(patch).length) {
-      return c.json({ host: await serializeHost(db, host, deps.siteCsp) });
+      return c.json({ host: await serializeHost(deps, host) });
     }
 
     await db
@@ -314,7 +314,7 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
 
     const updated = await db.selectFrom("hosts").selectAll().where("id", "=", host.id).executeTakeFirstOrThrow();
 
-    return c.json({ host: await serializeHost(db, updated, deps.siteCsp) });
+    return c.json({ host: await serializeHost(deps, updated) });
   });
 
   app.delete("/:hostname", async (c) => {

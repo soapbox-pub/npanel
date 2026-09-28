@@ -629,12 +629,14 @@ test("a listed site describes itself with its own page metadata", async () => {
       title: "The Docs",
       description: "Everything about the thing.",
       image: "https://bare.example.com/cover.png",
+      icon: null,
     },
     {
       hostname: "docs.example.com",
       title: "The Docs",
       description: "Everything about the thing.",
       image: "https://docs.example.com/cover.png",
+      icon: null,
     },
   ]);
 });
@@ -647,7 +649,7 @@ test("a site with nothing deployed is still listed", async () => {
 
   const { sites } = await (await harness.request(undefined, "GET", "/api/sites")).json();
 
-  assert.deepEqual(sites, [{ hostname: "soon.example.com", title: null, description: null, image: null }]);
+  assert.deepEqual(sites, [{ hostname: "soon.example.com", title: null, description: null, image: null, icon: null }]);
 });
 
 test("staff are told what else the gateway serves, once the list is public", async () => {

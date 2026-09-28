@@ -20,6 +20,7 @@ import { ServeCache } from "../serve-cache.ts";
 import { createSiteServer } from "../serve-site.ts";
 import { SettingsService } from "../settings.ts";
 import { SiteCsp } from "../site-csp.ts";
+import { SitePreviews } from "../site-preview.ts";
 import { SyncWorker } from "../sync.ts";
 import { TorService } from "../tor.ts";
 
@@ -203,6 +204,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   });
 
   const siteCsp = new SiteCsp(db, blobs, log);
+  const previews = new SitePreviews(blobs);
   // Not started: no test here needs the thread, and an analytics service that
   // isn't running answers the event path with a 503 and ignores host changes.
   const analytics = new AnalyticsService({
@@ -227,6 +229,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     log,
     tor,
     siteCsp,
+    previews,
     serveCache,
     serveSite,
     dashboardHost: DASHBOARD_HOST,

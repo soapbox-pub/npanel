@@ -14,6 +14,7 @@ import { ServeCache } from "./serve-cache.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SiteCsp } from "./site-csp.ts";
+import { SitePreviews } from "./site-preview.ts";
 import { SyncWorker } from "./sync.ts";
 import { startTlsCheckServer } from "./tls-check.ts";
 import { TorService } from "./tor.ts";
@@ -38,6 +39,7 @@ const sync = new SyncWorker({ db, blobs, nostr, settings, builder, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 // One instance, so the serving path and the dashboard share its cache.
 const siteCsp = new SiteCsp(db, blobs, log);
+const previews = new SitePreviews(blobs);
 // npanel's Plausible server, on a thread and a port of its own so that nothing
 // it does competes with serving sites.
 const analytics = new AnalyticsService({
@@ -89,6 +91,7 @@ const app = createApp({
   log,
   tor,
   siteCsp,
+  previews,
   serveCache,
   serveSite,
   dashboardHost: config.dashboardHost,

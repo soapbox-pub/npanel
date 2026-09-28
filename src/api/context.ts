@@ -4,7 +4,7 @@ import type { AnalyticsService } from "../analytics/service.ts";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
 import { type HostBuilder, currentBuild } from "../builds.ts";
-import type { Database, Host, SiteEvent } from "../db/schema.ts";
+import type { Database, Host, HostBuild, SiteEvent } from "../db/schema.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
@@ -31,6 +31,8 @@ export interface ApiDeps {
   tor: TorService;
   /** Shared with the serving path, so both answer with the same policy. */
   siteCsp: SiteCsp;
+  /** Every site's title, blurb, share image and icon, parsed once per document. */
+  previews: SitePreviews;
   /** Serving's per-hostname cache. Every host write here must clear it. */
   serveCache: ServeCache;
   dashboardHost: string;
@@ -115,29 +117,49 @@ export async function listedSites(db: Kysely<Database>, settings: SettingsServic
 }
 
 /**
- * A listed host with its preview, read from the copy of `index.html` npanel
- * already has on disk.
+ * A host's preview: what its landing page says about itself, and its icon,
+ * read from the build npanel already has on disk.
  *
- * Nothing is fetched: the document being described is one this server serves,
- * so the metadata is right there in the blob store. A site with no build yet,
- * or one whose landing page carries no metadata, is still listed — just as a
- * bare name.
+ * Nothing is fetched: every file being described is one this server serves.
+ * A host with no build yet, or a landing page that carries no metadata, has a
+ * preview of nulls.
  */
-export async function siteCard(db: Kysely<Database>, previews: SitePreviews, host: Host): Promise<SiteCard> {
-  const empty = { hostname: host.hostname, title: null, description: null, image: null };
+export async function sitePreview(
+  db: Kysely<Database>,
+  previews: SitePreviews,
+  host: Host,
+  build: HostBuild | undefined,
+): Promise<SitePreview> {
+  if (!build) return { title: null, description: null, image: null, icon: null };
 
-  const build = await currentBuild(db, host.id, "clearnet");
-  if (!build) return empty;
-
+  const origin = new URL(`https://${host.hostname}/`);
   // With the SPA flag on, the shell the site would serve for `/` is the page
   // being described, wherever it is published.
   const index = await resolveSitePath(db, build.id, "/", { spa: host.spa === 1 });
-  if (!index || index.status !== 200) return empty;
+  const page = index?.status === 200 ? index.sha256 : undefined;
 
-  return {
-    hostname: host.hostname,
-    ...(await previews.get(index.sha256, new URL(`https://${host.hostname}/`))),
-  };
+  const lookup = async (path: string) =>
+    (
+      await db
+        .selectFrom("host_build_files")
+        .select("sha256")
+        .where("build_id", "=", build.id)
+        .where("path", "=", path)
+        .executeTakeFirst()
+    )?.sha256;
+
+  const [document, icon] = await Promise.all([
+    page ? previews.get(page, origin) : { title: null, description: null, image: null },
+    previews.icon(page, origin, lookup),
+  ]);
+
+  return { ...document, icon };
+}
+
+/** A listed host as the homepage shows it: its name and its preview. */
+export async function siteCard(db: Kysely<Database>, previews: SitePreviews, host: Host): Promise<SiteCard> {
+  const build = await currentBuild(db, host.id, "clearnet");
+  return { hostname: host.hostname, ...(await sitePreview(db, previews, host, build)) };
 }
 
 /** Record an administrative change. */
@@ -211,6 +233,8 @@ export interface HostView {
   active: VersionView | null;
   /** The newest known version, which may still be deploying or failed. */
   latest: VersionView | null;
+  /** How the site presents itself: its title, blurb, share image and icon. */
+  preview: SitePreview;
 }
 
 export interface VersionView {
@@ -225,7 +249,10 @@ export interface VersionView {
 }
 
 /** Shape a host row for the API, including its deploy state. */
-export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: SiteCsp): Promise<HostView> {
+export async function serializeHost(
+  { db, siteCsp, previews }: Pick<ApiDeps, "db" | "siteCsp" | "previews">,
+  host: Host,
+): Promise<HostView> {
   const address = { pubkey: host.pubkey, kind: host.kind, identifier: host.identifier };
   const [build, latest, onion] = await Promise.all([
     currentBuild(db, host.id, "clearnet"),
@@ -237,7 +264,10 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
 
   // The same question the serving path asks, answered the same way, so what
   // the dashboard shows is what a visitor is actually served under.
-  const declared = build && host.csp === 1 ? await siteCsp.policy(build.id) : null;
+  const [declared, preview] = await Promise.all([
+    build && host.csp === 1 ? siteCsp.policy(build.id) : null,
+    sitePreview(db, previews, host, build),
+  ]);
 
   return {
     hostname: host.hostname,
@@ -263,6 +293,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
     updated_at: host.updated_at,
     active: active ? serializeVersion(active) : null,
     latest: latest ? serializeVersion(latest) : null,
+    preview,
   };
 }
 

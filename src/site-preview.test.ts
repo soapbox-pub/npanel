@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BlobStore } from "./blobs.ts";
-import { SitePreviews, extractMeta, resolveImage } from "./site-preview.ts";
+import { SitePreviews, extractManifestIcon, extractMeta, resolveImage } from "./site-preview.ts";
 
 const dirs: string[] = [];
 
@@ -163,4 +163,90 @@ test("stops reading a document that never gets to the point", async () => {
 
   const preview = await previews.get(sha256, ORIGIN);
   assert.equal(preview.title, "Big");
+});
+
+/** A build holding exactly these files, as the lookup the icon search is given. */
+function build(files: Record<string, string>) {
+  return async (path: string) => files[path];
+}
+
+test("reads the icons and manifest a document links", () => {
+  const meta = extractMeta(`
+    <html><head>
+      <link rel="icon" href="/favicon-32.png" sizes="32x32">
+      <link rel="apple-touch-icon" href="/touch.png">
+      <link rel="manifest" href="/app.webmanifest">
+      <link rel="mask-icon" href="/pinned.svg">
+    </head></html>
+  `);
+
+  assert.deepEqual(meta, {
+    icons: [
+      { href: "/favicon-32.png", apple: false, size: 32 },
+      { href: "/touch.png", apple: true, size: 180 },
+    ],
+    manifest: "/app.webmanifest",
+  });
+});
+
+test("a manifest offers its largest icon meant for ordinary display", () => {
+  const manifest = JSON.stringify({
+    icons: [
+      { src: "icon-192.png", sizes: "192x192" },
+      { src: "icon-512.png", sizes: "512x512" },
+      { src: "maskable-1024.png", sizes: "1024x1024", purpose: "maskable" },
+    ],
+  });
+
+  assert.equal(extractManifestIcon(manifest), "icon-512.png");
+  assert.equal(
+    extractManifestIcon(JSON.stringify({ icons: [{ src: "m.png", sizes: "512x512", purpose: "maskable" }] })),
+    "m.png",
+  );
+  assert.equal(extractManifestIcon("{ not json"), null);
+  assert.equal(extractManifestIcon(JSON.stringify({ name: "No icons" })), null);
+});
+
+test("finds a site's icon the way a home screen would", async () => {
+  const blobs = await store();
+  const previews = new SitePreviews(blobs);
+
+  const page = await put(
+    blobs,
+    `<html><head>
+      <link rel="icon" href="/favicon.svg">
+      <link rel="apple-touch-icon" href="/touch.png">
+      <link rel="manifest" href="/assets/app.webmanifest">
+    </head></html>`,
+  );
+  const manifest = await put(blobs, JSON.stringify({ icons: [{ src: "icon-512.png", sizes: "512x512" }] }));
+
+  // An apple-touch-icon first, since it's drawn the way npanel draws icons.
+  assert.equal(
+    await previews.icon(page, ORIGIN, build({ "/touch.png": "t", "/favicon.svg": "s" })),
+    "https://docs.example.com/touch.png",
+  );
+
+  // Then the manifest's, resolved against the manifest rather than the page.
+  assert.equal(
+    await previews.icon(
+      page,
+      ORIGIN,
+      build({ "/assets/app.webmanifest": manifest, "/assets/icon-512.png": "i", "/favicon.svg": "s" }),
+    ),
+    "https://docs.example.com/assets/icon-512.png",
+  );
+
+  // A link to a file the build doesn't have is passed over, not shown broken.
+  assert.equal(
+    await previews.icon(page, ORIGIN, build({ "/favicon.svg": "s" })),
+    "https://docs.example.com/favicon.svg",
+  );
+
+  // And a favicon.ico that is simply there, for a page that names nothing.
+  assert.equal(
+    await previews.icon(undefined, ORIGIN, build({ "/favicon.ico": "f" })),
+    "https://docs.example.com/favicon.ico",
+  );
+  assert.equal(await previews.icon(undefined, ORIGIN, build({})), null);
 });

@@ -4,7 +4,6 @@ import { cors } from "hono/cors";
 import { nip19 } from "nostr-tools";
 import { type AuthUser, nip98Auth, requireAdmin } from "../auth.ts";
 import { DEFAULT_SETTINGS, SETTING_KEYS, type SettingKey } from "../settings.ts";
-import { SitePreviews } from "../site-preview.ts";
 import { type ApiDeps, type ApiEnv, audit, listedHosts, siteCard } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
 import { nip05Routes } from "./nip05.ts";
@@ -27,8 +26,6 @@ const MAX_BODY_SIZE = 1024 * 1024;
 export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   const { db, settings } = deps;
   const app = new Hono<ApiEnv>();
-
-  const previews = new SitePreviews(deps.blobs);
 
   app.use("*", cors());
 
@@ -76,7 +73,7 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
    */
   app.get("/sites", async (c) => {
     const hosts = await listedHosts(db, settings);
-    const sites = await Promise.all(hosts.map((host) => siteCard(db, previews, host)));
+    const sites = await Promise.all(hosts.map((host) => siteCard(db, deps.previews, host)));
 
     return c.json({ sites });
   });
