@@ -221,20 +221,20 @@ test("finds a site's icon the way a home screen would", async () => {
   );
   const manifest = await put(blobs, JSON.stringify({ icons: [{ src: "icon-512.png", sizes: "512x512" }] }));
 
-  // An apple-touch-icon first, since it's drawn the way npanel draws icons.
-  assert.equal(
-    await previews.icon(page, ORIGIN, build({ "/touch.png": "t", "/favicon.svg": "s" })),
-    "https://docs.example.com/touch.png",
-  );
-
-  // Then the manifest's, resolved against the manifest rather than the page.
+  // The manifest's first, resolved against the manifest rather than the page.
   assert.equal(
     await previews.icon(
       page,
       ORIGIN,
-      build({ "/assets/app.webmanifest": manifest, "/assets/icon-512.png": "i", "/favicon.svg": "s" }),
+      build({ "/assets/app.webmanifest": manifest, "/assets/icon-512.png": "i", "/touch.png": "t" }),
     ),
     "https://docs.example.com/assets/icon-512.png",
+  );
+
+  // Then an apple-touch-icon, when the manifest isn't in the build.
+  assert.equal(
+    await previews.icon(page, ORIGIN, build({ "/touch.png": "t", "/favicon.svg": "s" })),
+    "https://docs.example.com/touch.png",
   );
 
   // A link to a file the build doesn't have is passed over, not shown broken.

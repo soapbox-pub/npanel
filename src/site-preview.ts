@@ -88,10 +88,12 @@ export class SitePreviews {
   }
 
   /**
-   * The site's icon, the best one it offers, in the order a home screen would
-   * take them: an `apple-touch-icon`, then the largest icon in its web app
-   * manifest, then whatever `<link rel="icon">` it has — a vector first — and
-   * finally a `/favicon.ico` that is simply there.
+   * The site's icon, taken first from its web app manifest — the largest icon
+   * meant for ordinary display — the way its title and share image are taken
+   * from its landing page. A site with no manifest, or one naming no usable
+   * icon, falls back to an `apple-touch-icon`, then whatever
+   * `<link rel="icon">` it has — a vector first — and finally a `/favicon.ico`
+   * that is simply there.
    *
    * `page` is the landing page's hash, when it has one. An icon on the site's
    * own domain counts only if the build really has the file, so a stale link
@@ -101,13 +103,13 @@ export class SitePreviews {
     const meta = page ? await this.meta(page) : {};
     const links = [...(meta.icons ?? [])].sort((a, b) => b.size - a.size);
 
-    for (const link of links.filter((link) => link.apple)) {
-      const url = await usable(link.href, origin, lookup);
+    if (meta.manifest) {
+      const url = await this.manifestIcon(meta.manifest, origin, lookup);
       if (url) return url;
     }
 
-    if (meta.manifest) {
-      const url = await this.manifestIcon(meta.manifest, origin, lookup);
+    for (const link of links.filter((link) => link.apple)) {
+      const url = await usable(link.href, origin, lookup);
       if (url) return url;
     }
 

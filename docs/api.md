@@ -106,9 +106,9 @@ page doesn't say: a site with nothing deployed yet is still listed, as a bare
 hostname. `image` is always an absolute `https` URL, resolved against the site's
 own hostname, since a relative `og:image` belongs to the site npanel serves.
 
-`icon` is the site's own icon, taken the way a home screen would take it: an
-`apple-touch-icon`, then the largest ordinary icon in the web app manifest the
-page links, then its `<link rel="icon">` — a vector before any bitmap — and
+`icon` is the site's own icon: the largest ordinary icon in the web app
+manifest the page links, then an `apple-touch-icon`, then its
+`<link rel="icon">` — a vector before any bitmap — and
 last a `/favicon.ico` the build simply has. An icon on the site's own domain
 counts only if the build really contains the file, so a stale link is skipped
 rather than shown broken. `null` when there is none.

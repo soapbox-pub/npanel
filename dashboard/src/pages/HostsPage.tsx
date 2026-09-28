@@ -5,7 +5,6 @@ import { Link } from 'react-router-dom';
 
 import { AddHostDialog } from '@/components/AddHostDialog';
 import { PageHeader } from '@/components/PageHeader';
-import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { SiteStatus } from '@/components/SiteStatus';
 import { Sparkline } from '@/components/Sparkline';
@@ -56,7 +55,7 @@ export function HostsPage() {
       {hosts.isLoading ? (
         <Grid>
           {[0, 1, 2].map((index) => (
-            <Skeleton key={index} className="h-96 rounded-2xl" />
+            <Skeleton key={index} className="h-52 rounded-2xl" />
           ))}
         </Grid>
       ) : hosts.isError ? (
@@ -100,8 +99,6 @@ function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: Sparkl
       to={`/hosts/${host.hostname}`}
       className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-[box-shadow,transform] duration-200 hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] dark:hover:bg-secondary/40"
     >
-      <SiteCover hostname={host.hostname} preview={preview} />
-
       <div className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex items-center gap-3">
           <SiteIcon hostname={host.hostname} src={preview.icon} className="size-9" />
