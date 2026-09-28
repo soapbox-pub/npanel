@@ -87,6 +87,13 @@
   }
 }
 
+/* A drive or network light: on, off, on — no fade, as an LED has none. */
+@keyframes rack-blink {
+  to {
+    opacity: 0.25;
+  }
+}
+
 /* Container utility replacement for v4 (previously configured in tailwind.config) */
 @utility container {
   margin-inline: auto;

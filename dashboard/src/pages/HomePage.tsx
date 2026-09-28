@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Logo } from '@/components/Logo';
+import { WebButtons } from '@/components/WebButtons';
 import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -49,8 +50,9 @@ export function HomePage() {
         <SelfHost />
       </main>
 
-      <footer className="mx-auto max-w-5xl border-t px-4 py-6 text-xs text-muted-foreground sm:px-6">
-        npanel is free software.
+      <footer className="mx-auto flex max-w-5xl flex-col-reverse gap-4 border-t px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <span>npanel is free software.</span>
+        <WebButtons />
       </footer>
     </div>
   );

@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
+import { ServerRack } from '@/components/ServerRack';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useMe } from '@/hooks/useNpanel';
@@ -100,7 +101,8 @@ function Sidebar({ items }: { items: NavItem[] }) {
         {admin.length > 0 && <NavGroup title="Admin" items={admin} />}
       </nav>
 
-      <div className="p-2">
+      <div className="space-y-2 p-2">
+        <ServerRack />
         <LoginArea showName className="flex w-full" />
       </div>
     </aside>
