@@ -343,6 +343,20 @@ cookie file, whose path Tor names itself when npanel asks how to authenticate.
 npanel only has to be able to read it — see
 [deployment](deployment.md#tor) for the group that grants.
 
+### `analytics_timezone`
+
+Default `UTC`. The IANA time zone every site's analytics are reported in, like
+`Europe/Berlin` — where one day's visitors end and the next day's begin, for
+the charts and every date range. Validated against the time zone data of the
+runtime npanel is on, which is what does the arithmetic, and stored in its
+canonical spelling.
+
+It is one clock for the whole instance rather than one per site: a gateway is
+usually run by one team, reading all of its sites' numbers together. Changing it
+re-draws everything on the new clock, past days included, because events are
+stored with their exact time and bucketed only when a chart asks. Whether a site
+is counted at all is its own [`analytics`](api.md#patch-apihostshostname) flag.
+
 ## Not a setting: the Content Security Policy
 
 Served sites carry a `Content-Security-Policy`, and there is no instance-wide

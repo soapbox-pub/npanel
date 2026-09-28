@@ -345,6 +345,13 @@ const MIGRATIONS: Migration[] = [
       "CREATE INDEX host_build_files_sha_idx ON host_build_files (sha256)",
     ],
   },
+  {
+    // Off for every existing host and every new one. Counting visitors puts a
+    // script on every page of someone's site and records what their visitors
+    // do, which is a decision for whoever runs the site to make, not a default.
+    name: "017_hosts_analytics",
+    statements: ["ALTER TABLE hosts ADD COLUMN analytics INTEGER NOT NULL DEFAULT 0"],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

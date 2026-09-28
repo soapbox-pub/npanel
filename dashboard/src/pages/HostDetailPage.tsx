@@ -331,6 +331,31 @@ export function HostDetailPage() {
 
           <Card>
             <CardHeader>
+              <CardTitle className="text-base">Analytics</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <label className="flex items-center gap-3 text-sm">
+                <Switch
+                  checked={data.analytics}
+                  onCheckedChange={(analytics) =>
+                    patch(
+                      { analytics },
+                      analytics ? 'Counting visits to this site' : 'No longer counting visits',
+                    )
+                  }
+                />
+                {data.analytics ? 'Counting visits' : 'Off'}
+              </label>
+              <p className="text-sm text-muted-foreground">
+                {data.analytics
+                  ? `npanel adds a small script to every page of ${data.hostname}, served from the site's own domain, and counts visits the way Plausible does: no cookies, and no IP address or browser fingerprint is ever stored. Visitors are told apart by a hash that changes every day, so nobody can be followed from one day to the next.`
+                  : 'Turn this on to see who visits this site: pages, sources, countries and devices, without cookies or storing anything that identifies a visitor. npanel adds a small script to every page, served from the site itself.'}
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle className="text-base">Search engines</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">

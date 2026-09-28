@@ -93,6 +93,13 @@ test("urls are normalized", () => {
   ]);
 });
 
+test("the analytics time zone must be one the runtime can do arithmetic in", () => {
+  assert.equal(parseSetting("analytics_timezone", "Europe/Berlin"), "Europe/Berlin");
+  // Spelled the way the time zone data spells it, whatever was typed.
+  assert.equal(parseSetting("analytics_timezone", " america/new_york "), "America/New_York");
+  assert.throws(() => parseSetting("analytics_timezone", "Mars/Olympus_Mons"), /Not a time zone/);
+});
+
 test("corrupt rows fall back to defaults instead of failing to boot", async () => {
   const db = await openDatabase(":memory:");
   await db.insertInto("settings").values({ key: "resync_interval", value: '"nonsense"', updated_at: 0 }).execute();

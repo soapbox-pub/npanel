@@ -48,6 +48,8 @@ export interface Host {
    * deploy that did.
    */
   merge_deployments: boolean;
+  /** Whether visits to the site are counted, and shown on the dashboard. */
+  analytics: boolean;
   /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.
@@ -74,6 +76,7 @@ export interface HostPatch {
   csp?: boolean;
   seo?: boolean;
   merge_deployments?: boolean;
+  analytics?: boolean;
   pinned_event_id?: string | null;
 }
 
@@ -147,6 +150,8 @@ export interface Settings {
   tor_enabled: boolean;
   tor_control_url: string;
   tor_control_password: string;
+  /** The IANA time zone every site's analytics are reported in. */
+  analytics_timezone: string;
 }
 
 /** Whether npanel is reaching Tor, and what it has published there. */

@@ -61,6 +61,8 @@ export interface HostsTable {
   seo: Generated<number>;
   /** 0/1. Resolve paths across every earlier version too, newest first. Off by default. */
   merge_deployments: Generated<number>;
+  /** 0/1. Count visits to this site, and show them on the dashboard. Off by default. */
+  analytics: Generated<number>;
   created_by: string;
   created_at: number;
   updated_at: number;

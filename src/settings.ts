@@ -92,6 +92,14 @@ export interface SettingsValues {
    * authenticate with a cookie file instead, which npanel finds on its own.
    */
   tor_control_password: string;
+  /**
+   * The IANA time zone analytics are reported in, eg `Europe/Berlin`.
+   *
+   * Decides where one day's visitors end and the next day's begin, for every
+   * site. One for the instance rather than one per site: a gateway is usually
+   * run by one team, reading its sites' numbers on one clock.
+   */
+  analytics_timezone: string;
 }
 
 export type SettingKey = keyof SettingsValues;
@@ -234,6 +242,25 @@ const torControlUrl = z
     return `tcp://${url.hostname}:${url.port}`;
   });
 
+/**
+ * An IANA time zone, in the spelling the runtime's own time zone data uses.
+ *
+ * Checked against that data rather than a list of our own, because the same
+ * data is what will do the arithmetic: a zone it doesn't know would pass a
+ * list and fail every query.
+ */
+const timeZone = z
+  .string()
+  .trim()
+  .transform((value, ctx) => {
+    try {
+      return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone;
+    } catch {
+      ctx.addIssue({ code: "custom", message: `Not a time zone: ${value}. Use an IANA name like Europe/Berlin.` });
+      return z.NEVER;
+    }
+  });
+
 /** Per-key validation. Values are stored as JSON in the `settings` table. */
 const SCHEMAS = {
   relays: z.array(relayUrl).min(1, "At least one relay is required."),
@@ -262,6 +289,7 @@ const SCHEMAS = {
   tor_enabled: z.boolean(),
   tor_control_url: torControlUrl,
   tor_control_password: z.string(),
+  analytics_timezone: timeZone,
 } satisfies { [K in SettingKey]: z.ZodType<SettingsValues[K]> };
 
 export const DEFAULT_SETTINGS: SettingsValues = {
@@ -286,6 +314,7 @@ export const DEFAULT_SETTINGS: SettingsValues = {
   // namespace precisely so that this address needs no changing.
   tor_control_url: "tcp://127.0.0.1:9051",
   tor_control_password: "",
+  analytics_timezone: "UTC",
 };
 
 export const SETTING_KEYS = Object.keys(DEFAULT_SETTINGS) as SettingKey[];

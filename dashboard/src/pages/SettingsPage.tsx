@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
@@ -29,6 +30,7 @@ interface Draft {
   torEnabled?: boolean;
   torControlUrl?: string;
   torControlPassword?: string;
+  analyticsTimezone?: string;
 }
 
 /**
@@ -67,6 +69,7 @@ export function SettingsPage() {
   const torEnabled = draft.torEnabled ?? current?.tor_enabled ?? false;
   const torControlUrl = draft.torControlUrl ?? current?.tor_control_url ?? '';
   const torControlPassword = draft.torControlPassword ?? current?.tor_control_password ?? '';
+  const analyticsTimezone = draft.analyticsTimezone ?? current?.analytics_timezone ?? 'UTC';
 
   const save = async () => {
     try {
@@ -85,6 +88,7 @@ export function SettingsPage() {
         tor_enabled: torEnabled,
         tor_control_url: torControlUrl.trim(),
         tor_control_password: torControlPassword,
+        analytics_timezone: analyticsTimezone,
       });
 
       setDraft({});
@@ -210,6 +214,34 @@ export function SettingsPage() {
               empty to authenticate with Tor's cookie file, which is what both usual setups do.
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Analytics</CardTitle>
+          <CardDescription>
+            The time zone every site's analytics are reported in: where one day's visitors end and
+            the next day's begin. Changing it re-draws every chart on the new clock, including past
+            days. Whether a site is counted at all is set on the site itself.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Select
+            value={analyticsTimezone}
+            onValueChange={(value) => setDraft({ ...draft, analyticsTimezone: value })}
+          >
+            <SelectTrigger className="w-72" aria-label="Time zone">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {timeZones(analyticsTimezone).map((zone) => (
+                <SelectItem key={zone} value={zone}>
+                  {zone.replaceAll('_', ' ')}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </CardContent>
       </Card>
 
@@ -435,6 +467,19 @@ function ContactPreview({ value }: { value: string }) {
       Shown as <PubkeyLabel pubkey={pubkey} className="text-foreground" />
     </p>
   );
+}
+
+/**
+ * Every time zone the browser knows, UTC first.
+ *
+ * The browser's list rather than one of our own, since it is the same IANA
+ * data the server checks against. UTC is added because some browsers leave it
+ * out of the list, and the current value in case this browser is older than
+ * the zone it names.
+ */
+function timeZones(current: string): string[] {
+  const zones = new Set(['UTC', current, ...Intl.supportedValuesOf('timeZone')]);
+  return [...zones];
 }
 
 function lines(value: string): string[] {

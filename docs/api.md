@@ -160,6 +160,7 @@ A host object:
   "csp_source": "gateway",
   "seo": true,
   "merge_deployments": false,
+  "analytics": false,
   "onion": "abc…xyz.onion",
   "pinned_event_id": null,
   "created_by": "<hex>",
@@ -212,7 +213,7 @@ empty for an admin, whose `hosts` already holds everything.
 ### `POST /api/hosts`
 
 ```json
-{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true, "merge_deployments": false }
+{ "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true, "merge_deployments": false, "analytics": false }
 ```
 
 `address` accepts an npub, nprofile, naddr, an `a` tag
@@ -244,6 +245,7 @@ Any subset of:
   "csp": false,
   "seo": true,
   "merge_deployments": true,
+  "analytics": true,
   "pinned_event_id": "<event id>"
 }
 ```

@@ -475,6 +475,23 @@ test("the seo flag is on unless turned off", async () => {
   assert.equal((await upfront.json()).host.seo, false);
 });
 
+test("analytics are off unless a host asks for them", async () => {
+  const { harness, admin } = await setup();
+
+  const created = await harness.request(admin, "POST", "/api/hosts", {
+    hostname: "docs.example.com",
+    address: NPUB,
+  });
+  assert.equal((await created.json()).host.analytics, false, "counting visitors is nobody's default");
+
+  const on = await harness.request(admin, "PATCH", "/api/hosts/docs.example.com", { analytics: true });
+  assert.equal((await on.json()).host.analytics, true);
+
+  const audit = await harness.request(admin, "GET", "/api/audit-log");
+  const entries = (await audit.json()).entries as { action: string; new_value: { analytics?: number } }[];
+  assert.ok(entries.some((entry) => entry.action === "host.update" && entry.new_value.analytics === 1));
+});
+
 test("merging deployments is off unless a host asks for it", async () => {
   const { harness, admin } = await setup();
 

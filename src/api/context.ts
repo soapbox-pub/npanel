@@ -186,6 +186,8 @@ export interface HostView {
    * deploy that did.
    */
   merge_deployments: boolean;
+  /** Whether visits to the site are counted, and shown on the dashboard. */
+  analytics: boolean;
   /**
    * The site's Tor address, or null when Tor is off or has not published it
    * yet. Assigned by npanel, not by staff, and stable once it exists.
@@ -243,6 +245,7 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
     csp_source: host.csp !== 1 ? "off" : declared ? "site" : "gateway",
     seo: host.seo === 1,
     merge_deployments: host.merge_deployments === 1,
+    analytics: host.analytics === 1,
     onion: onion?.address ?? null,
     pinned_event_id: host.pinned_event_id,
     created_by: host.created_by,
