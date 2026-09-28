@@ -533,18 +533,23 @@ test("a merged host's file list is what it serves, not one manifest", async () =
       await harness.db.insertInto("site_files").values({ event_id: eventId, path, sha256 }).execute();
     }
   }
+  await harness.builder.hostsChanged();
 
   const merged = await (await harness.request(admin, "GET", "/api/hosts/docs.example.com/files")).json();
   assert.equal(merged.event_id, "b".repeat(64));
   assert.deepEqual(
-    merged.files.map((file: { path: string; sha256: string; inherited: boolean }) => [
+    merged.files.map((file: { path: string; sha256: string; inherited: boolean; source: string }) => [
       file.path,
-      file.sha256,
+      file.path.endsWith(".js") || file.path.endsWith(".html") ? file.sha256 : "",
       file.inherited,
+      file.source,
     ]),
     [
-      ["/index.html", "3".repeat(64), false],
-      ["/old.js", "2".repeat(64), true],
+      ["/index.html", "3".repeat(64), false, "site"],
+      ["/old.js", "2".repeat(64), true, "site"],
+      // What npanel made for it is part of what it serves, and says so.
+      ["/robots.txt", "", false, "generated"],
+      ["/sitemap.xml", "", false, "generated"],
     ],
   );
 
@@ -595,6 +600,7 @@ test("a listed site describes itself with its own page metadata", async () => {
     .values({ event_id: "c".repeat(64), path: "/index.html", sha256 })
     .execute();
   await harness.blobs.put(sha256, new TextEncoder().encode(index));
+  await harness.builder.hostsChanged();
 
   const { sites } = await (await harness.request(undefined, "GET", "/api/sites")).json();
 
@@ -854,6 +860,7 @@ test("a host reports which policy it is actually served under", async () => {
     .execute();
   await harness.db.insertInto("site_files").values({ event_id: eventId, path: "/index.html", sha256 }).execute();
   await harness.blobs.put(sha256, new TextEncoder().encode(index));
+  await harness.builder.hostsChanged();
 
   const declared = await detail();
   assert.equal(declared.csp_source, "site");

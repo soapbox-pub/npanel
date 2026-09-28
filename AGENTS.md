@@ -24,6 +24,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   manifest.ts           manifest event parsing
   nostr.ts              relay pool, relay/server list caches
   sync.ts               the sync worker: subscribe, resync, deploy
+  builds.ts             host builds: the frozen bundle each host serves
   tls-check.ts          certificate authorization, on its own port
   blobs.ts              content-addressed filesystem store
   sites.ts              queries over stored versions

@@ -1,7 +1,8 @@
 import type { Kysely } from "kysely";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
-import type { Database, Host } from "../db/schema.ts";
+import { type HostBuilder, currentBuild } from "../builds.ts";
+import type { Database, Host, SiteEvent } from "../db/schema.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
@@ -10,7 +11,7 @@ import { CSP } from "../serve-site.ts";
 import type { SettingsService } from "../settings.ts";
 import type { SiteCsp } from "../site-csp.ts";
 import type { SitePreview, SitePreviews } from "../site-preview.ts";
-import { activeEvent, newestEvent, resolveSitePath, versionFiles } from "../sites.ts";
+import { newestEvent, resolveSitePath } from "../sites.ts";
 import type { SyncWorker } from "../sync.ts";
 import type { TorService } from "../tor.ts";
 
@@ -18,6 +19,8 @@ export interface ApiDeps {
   db: Kysely<Database>;
   settings: SettingsService;
   sync: SyncWorker;
+  /** Rebuilds a host whenever an edit changes what its build is made of. */
+  builder: HostBuilder;
   blobs: BlobStore;
   dns: DnsTargets;
   log: Logger;
@@ -106,21 +109,19 @@ export async function listedSites(db: Kysely<Database>, settings: SettingsServic
  * already has on disk.
  *
  * Nothing is fetched: the document being described is one this server serves,
- * so the metadata is right there in the blob store. A site with no ready
- * version, or one whose landing page carries no metadata, is still listed —
- * just as a bare name.
+ * so the metadata is right there in the blob store. A site with no build yet,
+ * or one whose landing page carries no metadata, is still listed — just as a
+ * bare name.
  */
 export async function siteCard(db: Kysely<Database>, previews: SitePreviews, host: Host): Promise<SiteCard> {
   const empty = { hostname: host.hostname, title: null, description: null, image: null };
 
-  const version = await activeEvent(db, host);
-  if (!version) return empty;
+  const build = await currentBuild(db, host.id, "clearnet");
+  if (!build) return empty;
 
   // With the SPA flag on, the shell the site would serve for `/` is the page
   // being described, wherever it is published.
-  const index = await resolveSitePath(db, (await versionFiles(db, host, version)).eventIds, "/", {
-    spa: host.spa === 1,
-  });
+  const index = await resolveSitePath(db, build.id, "/", { spa: host.spa === 1 });
   if (!index || index.status !== 200) return empty;
 
   return {
@@ -194,7 +195,7 @@ export interface HostView {
   created_by: string;
   created_at: number;
   updated_at: number;
-  /** The version currently being served, if any. */
+  /** The version the host's build is serving, if it has one. */
   active: VersionView | null;
   /** The newest known version, which may still be deploying or failed. */
   latest: VersionView | null;
@@ -214,15 +215,17 @@ export interface VersionView {
 /** Shape a host row for the API, including its deploy state. */
 export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: SiteCsp): Promise<HostView> {
   const address = { pubkey: host.pubkey, kind: host.kind, identifier: host.identifier };
-  const [active, latest, onion] = await Promise.all([
-    activeEvent(db, host),
+  const [build, latest, onion] = await Promise.all([
+    currentBuild(db, host.id, "clearnet"),
     newestEvent(db, address),
     db.selectFrom("onion_services").select("address").where("host_id", "=", host.id).executeTakeFirst(),
   ]);
 
+  const active = build ? await servedEvent(db, build.event_id) : undefined;
+
   // The same question the serving path asks, answered the same way, so what
   // the dashboard shows is what a visitor is actually served under.
-  const declared = active && host.csp === 1 ? await siteCsp.policy(active.event_id) : null;
+  const declared = build && host.csp === 1 ? await siteCsp.policy(build.id) : null;
 
   return {
     hostname: host.hostname,
@@ -248,6 +251,17 @@ export async function serializeHost(db: Kysely<Database>, host: Host, siteCsp: S
     active: active ? serializeVersion(active) : null,
     latest: latest ? serializeVersion(latest) : null,
   };
+}
+
+/**
+ * The version a build serves, which is the one the dashboard calls active.
+ *
+ * Not the version the host *should* serve: between a deploy finishing and the
+ * host's build of it going live, visitors still get the previous one, and the
+ * dashboard says so.
+ */
+export async function servedEvent(db: Kysely<Database>, eventId: string): Promise<SiteEvent | undefined> {
+  return await db.selectFrom("site_events").selectAll().where("event_id", "=", eventId).executeTakeFirst();
 }
 
 export function serializeVersion(row: {

@@ -165,7 +165,7 @@ A host object:
   "created_by": "<hex>",
   "created_at": 1754000000,
   "updated_at": 1754000000,
-  "active": { "...": "the version being served, or null" },
+  "active": { "...": "the version the host's build serves, or null" },
   "latest": { "...": "the newest known version, or null" }
 }
 ```
@@ -194,8 +194,9 @@ A version object:
 ```
 
 `status` is one of `pending`, `fetching_blobs`, `ready`, `failed`. Only `ready`
-versions are ever served, so `active` and `latest` differ while a deploy is in
-flight or after one fails.
+versions are ever served, and only once the host has been built from one, so
+`active` and `latest` differ while a deploy or the build after it is in flight,
+or after either fails. A failed build says why in the version's deploy log.
 
 ### `GET /api/hosts`
 
@@ -337,9 +338,9 @@ reflowed or reordered. `Sitemap` is a non-group directive, so the addition
 grants no crawler anything and cannot change what an `Allow` or `Disallow`
 above it means. The file is left exactly as published when it already names a
 sitemap — including one of its own, like a `sitemap-index.xml` — when any
-group carries a blanket `Disallow: /`, or when it is larger than 64 KB. An
-appended response is derived rather than stored, so it carries a
-`"<sha256>-robots"` ETag, no `Content-Encoding`, and no range support.
+group carries a blanket `Disallow: /`, or when it is larger than 64 KB. The
+appended file is made when the host is built and stored like any other, so it
+is served compressed, with an ETag of its own hash and range support.
 
 `merge_deployments` stacks the site's earlier deploys underneath the one being
 served, oldest first, and defaults to `false`. A path is then answered from the
@@ -357,6 +358,11 @@ it.
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
+
+A change to `hostname`, `address`, `pinned_event_id`, `seo`, or
+`merge_deployments` rebuilds the host in the background, since each changes
+the files it serves. The response doesn't wait: the previous build goes on
+serving until the new one is complete, which is usually a moment.
 
 ### `DELETE /api/hosts/:hostname`
 
@@ -401,23 +407,34 @@ Oldest first, capped at the 500 most recent entries per version.
 Files in a version, defaulting to the active one (or the newest if none is
 ready).
 
-Without `event_id` this is what the site actually serves, so on a host with
-`merge_deployments` it also carries the paths held over from earlier deploys,
-each marked `inherited`. Naming a version with `event_id` lists that version's
-own manifest and nothing else.
+Without `event_id` this is the host's build — what the site actually serves.
+On a host with `merge_deployments` it carries the paths held over from earlier
+deploys, each marked `inherited`, and it carries the files npanel generated or
+rewrote, marked by `source`. Naming a version with `event_id` lists that
+version's own manifest and nothing else.
 
 ```json
 {
   "event_id": "<hex>",
   "files": [
-    { "path": "/index.html", "sha256": "<hex>", "size": 1024, "stored": true, "inherited": false }
+    {
+      "path": "/index.html",
+      "sha256": "<hex>",
+      "size": 1024,
+      "stored": true,
+      "inherited": false,
+      "source": "site"
+    }
   ]
 }
 ```
 
 `stored` is false for a blob that hasn't been downloaded yet — which is how you
 spot exactly what a stalled deploy is missing. `inherited` is true for a path
-the named version doesn't publish and a merged earlier one does.
+the named version doesn't publish and a merged earlier one does. `source` is
+`site` for a file as published, `generated` for one npanel made outright — a
+sitemap — and `modified` for one it rewrote, like a `robots.txt` with a line
+appended.
 
 ### `POST /api/hosts/:hostname/sync`
 

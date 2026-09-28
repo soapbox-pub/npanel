@@ -176,6 +176,46 @@ Every step also writes to `deploy_log`, which the dashboard shows per version:
 which servers were tried, which blob failed and why, and the final verdict. A
 failed deploy explains itself without anyone SSHing into the box.
 
+## Builds
+
+A ready version is not yet something a host serves. What a host serves is its
+**build**: the finished bundle for that host, made once and then frozen
+(`HostBuilder`, `src/builds.ts`). A build is a path map — the host's version
+chain flattened into one, plus every file npanel generates or rewrites for that
+host — and everything in it is an ordinary stored blob with its compressed
+copies. So every body a site sends goes out through `sendfile`, including the
+ones npanel wrote, and all the work of making them happens once, when the host
+is built, rather than on a request. Only headers are decided per request.
+
+The invariant goes up a level with it: **a host serves only its newest ready
+build**. A version that finishes deploying goes live on a host once that
+host's build of it is ready, and a build that fails leaves the previous one
+serving and says why in the version's deploy log. A host that has never been
+built answers 503, exactly as one whose site has never deployed.
+
+Builds are keyed by host rather than by version, because the output depends on
+the host: its hostname is named in the sitemap, and its settings decide what is
+generated at all. An onion gets a build of its own for the same reason — a
+sitemap fetched over Tor lists onion URLs. What the two share is stored once,
+being content-addressed; only the rows are doubled.
+
+Hosts are reconciled, not tracked, the way Tor's onions are. A deploy
+finishing, a host being edited, an onion being minted, and startup all ask the
+same question: what should each host's build be made of? The answer — the
+builder's version, the origin, the version chain, and the flags that shape the
+output — is hashed into a fingerprint, and a host is rebuilt only where that
+differs from the build it is serving. Flipping a switch that only changes
+headers (`csp`, `spa`) therefore rebuilds nothing, and a new npanel whose
+builds would come out differently bumps `BUILDER_VERSION` and rebuilds
+everything at startup. A rename keeps the old build serving until the new one
+names the new hostname.
+
+A build carries every file row it serves and references its versions by id
+only, so pruning the versions it was made from cannot take a working site down.
+Each host keeps its current build and the one before it — a request that
+looked up the old one a moment before the switch may still be resolving a path
+in it — and older ones are deleted as the new one goes live.
+
 ## Storage
 
 **SQLite** via Kysely, at `DATA_DIR/npanel.sqlite3`. Migrations run at startup.
@@ -194,6 +234,8 @@ The tables:
 | `host_grants` | Which staff may manage which host                           |
 | `site_events` | Every manifest seen, verbatim, with deploy status           |
 | `site_files`  | Path → sha256, per version                                  |
+| `host_builds` | What each host serves: a frozen bundle, per host and name kind |
+| `host_build_files` | Path → sha256, per build, and where each file came from |
 | `blobs`       | Size, sidecar sizes, and last-seen time per stored blob     |
 | `settings`    | Runtime configuration, JSON-encoded                         |
 | `audit_log`   | Every change to a host, user, or setting                    |
@@ -242,24 +284,20 @@ the blob — or one run of `bun run compress-blobs` — fills it in.
 ## Serving a site
 
 `src/serve-site.ts` handles a request in a few steps: find the host, find its
-active version, resolve the path, stream the blob.
+build, resolve the path, stream the blob.
 
 Path resolution mirrors what static hosts do: exact match, then `index.html` for
 extensionless paths, then the site's own `/404.html`. Resolution reads
-`site_files`, never a manifest event — serving a file never parses Nostr.
+`host_build_files`, never a manifest event — serving a file never parses Nostr.
 
-The answer is then held in memory, keyed by version and path, which is what
+The answer is then held in memory, keyed by build and path, which is what
 takes the last database query off a warm request. Nothing invalidates it and
-nothing has to: a version's file list is written once and never edited, and an
-event id is a hash, so a redeploy asks a different question rather than
+nothing has to: a build's files are written once and never edited, and a
+build id is never reused, so a rebuild asks a different question rather than
 changing the answer to this one. The blob sizes that ride along are the
 exception, since `compress-blobs` can record them long after a deploy, so a
 row that hasn't got them yet is left uncached rather than pinned to the `stat`
-it falls back to. On a merged host the key names the whole chain rather than
-one version — a hash of it, so the key stays one identifier long however deep
-the chain runs — and the argument is unchanged: every file list in the chain is
-immutable, so a chain that gains a version is a different key rather than a
-changed one.
+it falls back to.
 
 That last step is where a single-page app parts ways with a static site, so it
 is a per-host flag rather than a guess. By default a path the site has no file
@@ -276,15 +314,15 @@ else. The flag is off for every existing host and every new one: folding `www`
 into a domain preserves what a response means and can default on, while turning
 a `404` into a `200` does not.
 
-The `merge_deployments` flag, also off by default, changes what resolution
-searches rather than what it does. A merged host resolves against a *chain* of
-versions — the one it serves, and every earlier ready version of the same site
-underneath it, newest first — and takes each path from the newest version that
-has it (`versionFiles`, `src/sites.ts`). The served version therefore wins
-everywhere it published a file, and a path it dropped goes on being answered by
-the deploy that last published it. Each step of resolution searches the whole
-chain, so an exact match in a superseded version still beats an `index.html` in
-the served one, exactly as it would within a single version.
+The `merge_deployments` flag, also off by default, changes what a build is
+made of rather than what resolution does. A merged host's build flattens a
+*chain* of versions — the one it serves, and every earlier ready version of the
+same site underneath it, newest first — taking each path from the newest
+version that has it (`versionChain`, `src/sites.ts`). The served version
+therefore wins everywhere it published a file, and a path it dropped goes on
+being answered by the deploy that last published it. Since resolution sees the
+flattened map, an exact match in a superseded version still beats an
+`index.html` in the served one, exactly as it would within a single version.
 
 This is for builds that load modules by name at runtime. A Vite site names its
 chunks by content hash, and a page a visitor already has open goes on asking
@@ -294,12 +332,12 @@ deploy removes. Without merging, a deploy mid-session breaks every open page.
 Nothing newer than the served version is in the chain, so a pinned host merges
 up to its pin rather than past it, and only `ready` versions are in it: an
 unfinished deploy's blobs may not be on disk, and merging must not undo the
-invariant that serving never reaches one. The chain is capped, because every
-uncached lookup asks for its candidates in each version of it. Pruning is what
-bounds it in practice, and the two compose: `prune-blobs --keep N` forgets old
-versions first, so a chain reaches exactly as far back as the versions still in
-the database — and it deletes only blobs no remaining version references, so
-merging can never resolve a path to a blob pruning took away.
+invariant that serving never reaches one. The chain is capped, because a build
+writes a row for every path anywhere in it. Pruning is what bounds it in
+practice: `prune-blobs --keep N` forgets old versions first, so the next build
+reaches exactly as far back as the versions still in the database — and it
+deletes only blobs no remaining version or build references, so a build can
+never resolve a path to a blob pruning took away.
 
 What merging deliberately doesn't touch is the generated `sitemap.xml`, which
 lists the served version's own pages. Keeping a withdrawn URL *answering*, for
@@ -347,9 +385,10 @@ because a meta tag is only read once the parser reaches it and doesn't apply to
 responses that aren't HTML. A declared policy replaces the gateway's rather than
 joining it, which means a site can widen its own — that is the author's call
 about their own hostname, and it reaches no other host. The policy is read from
-`/index.html` on the first request for a version and cached against its
-`event_id`, which is safe because a version's file list is written once and
-never edited.
+the build's `/index.html` on the first request for it and cached against the
+build, which is safe because a build is written once and never edited — and
+reading the build rather than the manifest means a document npanel rewrote and
+the header it goes out under can't disagree.
 
 The `csp` flag, which defaults on, turns the header off entirely for one host —
 for a site that needs something neither policy allows. It is per host and there
@@ -357,10 +396,10 @@ is no instance-wide equivalent, on purpose: a global off switch makes disarming
 every site at once easier than fixing the one site that needed it.
 
 Sites also get their standing with search engines looked after, from data
-npanel already holds. A site that published no `/sitemap.xml` gets one
-generated from the version's file list — its HTML paths in canonical form,
-dated by the version, carrying an `ETag` of the version's event id — and a site
-without `/robots.txt` gets one that points at the sitemap, which is how
+npanel already holds, and all of it made when the host is built. A site that
+published no `/sitemap.xml` gets one generated from the version's file list —
+its HTML paths in canonical form, dated by the version — and a site without
+`/robots.txt` gets one that points at the sitemap, which is how
 crawlers find it without anyone registering anything. The rule is the NIP-05
 one in reverse: only where the site published no file at that exact path, and a
 site's own `/404.html` standing in for the missing path doesn't count as
@@ -379,14 +418,12 @@ would be npanel arguing with it — as is one where any group carries a blanket
 `Disallow: /`, where an invitation to index would be a strange thing to add on
 the site's behalf.
 
-Appending makes the body derived rather than stored, which costs it everything
-the blob's identity bought: the compressed sidecars are copies of the shorter
-file and would be wrong, a `Range` would count against bytes nobody is sending,
-and the `ETag` becomes `"<sha256>-robots"` so a cache can't confuse the two.
-The file is read at most 64 KB and held by hash, like the CSP policy and the
-link preview. What is cached is the *file*, never the finished body — the
-`Sitemap:` line names the host being served, and six sites sharing one
-boilerplate blob must each get their own.
+Both kinds of file go into the host's build as blobs of their own, so they are
+served like any other file: compressed, with an `ETag` of their own hash, and
+with ranges counted against the bytes actually sent. A published file is read
+at most 64 KB; anything larger is served as published. The `Sitemap:` line
+names the host being served, which is part of why builds are per host — six
+sites sharing one boilerplate blob each get their own appended copy.
 
 Page responses carry a `Link: rel="canonical"` header naming the one spelling
 of the page, so `/foo`, `/foo/`, `/foo.html` and `/foo/index.html` are indexed

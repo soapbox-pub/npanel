@@ -92,6 +92,11 @@ export interface SiteFile {
   stored: boolean;
   /** Served from an earlier deploy, because the current one dropped the path. */
   inherited: boolean;
+  /**
+   * Who wrote it: the site, or npanel — outright (`generated`), or by
+   * rewriting a file the site published (`modified`).
+   */
+  source: 'site' | 'generated' | 'modified';
 }
 
 /** One NIP-05 name a site answers for at `/.well-known/nostr.json`. */

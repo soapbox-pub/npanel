@@ -9,6 +9,7 @@ import type { NostrEvent } from "@nostrify/nostrify";
 import type { Kysely } from "kysely";
 import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
 import { BlobStore } from "./blobs.ts";
+import { HostBuilder, currentBuild } from "./builds.ts";
 import { openDatabase } from "./db/index.ts";
 import type { Database } from "./db/schema.ts";
 import { Logger } from "./log.ts";
@@ -112,19 +113,21 @@ async function harness(opts: { retryBackoff?: number } = {}) {
   await settings.update({ blossom_fallback_servers: [] }, PUBKEY);
   const log = new Logger("error");
   const serveCache = new ServeCache(db);
+  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
   // Retries are instant unless a test is about the backoff itself.
   const worker = new SyncWorker({
     db,
     blobs,
     nostr: fakeNostr(),
     settings,
-    serveCache,
+    builder,
     log,
     retryBackoff: opts.retryBackoff ?? 0,
   });
 
   cleanups.push(async () => {
     await worker.stop();
+    await builder.stop();
     await db.destroy();
     await rm(dir, { recursive: true, force: true });
   });
@@ -133,7 +136,7 @@ async function harness(opts: { retryBackoff?: number } = {}) {
 
   await worker.start();
 
-  return { db, blobs, settings, worker, serveCache };
+  return { db, blobs, settings, worker, builder, serveCache };
 }
 
 /** Point a hostname at one of PUBKEY's sites. */
@@ -166,10 +169,10 @@ async function eventually(check: () => Promise<boolean>, message: string): Promi
   assert.fail(message);
 }
 
-test("a finished deploy is served without waiting out the cache", async () => {
+test("a finished deploy is built and served without waiting out the cache", async () => {
   const files = { "/index.html": "<h1>fresh</h1>" };
   const server = blossom({ [sha256(files["/index.html"])]: files["/index.html"] });
-  const { worker, serveCache } = await harness();
+  const { worker, builder, serveCache } = await harness();
 
   // Prime the cache while the host has nothing to serve.
   const before = await serveCache.lookup("docs.example.com");
@@ -179,10 +182,11 @@ test("a finished deploy is served without waiting out the cache", async () => {
   const event = manifest(files, { servers: [server.url] });
   await worker.ingest(event);
   await worker.whenIdle();
+  await builder.whenIdle();
 
-  // No TTL to wait out: completing the deploy cleared the cache.
+  // No TTL to wait out: the build going live cleared the cache.
   const after = await serveCache.lookup("docs.example.com");
-  assert.equal(after?.version?.event.event_id, event.id);
+  assert.equal(after?.version?.eventId, event.id);
 });
 
 test("downloads every blob before a version becomes servable", async () => {
@@ -192,11 +196,12 @@ test("downloads every blob before a version becomes servable", async () => {
     [sha256(files["/style.css"])]: files["/style.css"],
   });
 
-  const { db, blobs, worker } = await harness();
+  const { db, blobs, worker, builder } = await harness();
   const event = manifest(files, { servers: [server.url] });
 
   await worker.ingest(event);
   await worker.whenIdle();
+  await builder.whenIdle();
 
   const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
   assert.equal(row.status, "ready");
@@ -212,7 +217,10 @@ test("downloads every blob before a version becomes servable", async () => {
   const active = await activeEvent(db, host);
   assert.equal(active?.event_id, event.id);
 
-  const resolved = await resolveSitePath(db, [event.id], "/");
+  const build = await currentBuild(db, host.id, "clearnet");
+  assert.ok(build);
+  assert.equal(build.event_id, event.id);
+  const resolved = await resolveSitePath(db, build.id, "/");
   assert.equal(resolved?.path, "/index.html");
   // Too small to compress, so the deploy recorded the absence: sizes come
   // with the lookup, and serving needs no stat.
@@ -222,7 +230,11 @@ test("downloads every blob before a version becomes servable", async () => {
     gzip: undefined,
   });
 
-  const recorded = await db.selectFrom("blobs").selectAll().execute();
+  const recorded = await db
+    .selectFrom("blobs")
+    .selectAll()
+    .where("sha256", "in", Object.values(files).map(sha256))
+    .execute();
   assert.equal(recorded.length, 2);
 });
 

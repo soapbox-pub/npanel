@@ -306,6 +306,45 @@ const MIGRATIONS: Migration[] = [
     name: "015_hosts_merge_deployments",
     statements: ["ALTER TABLE hosts ADD COLUMN merge_deployments INTEGER NOT NULL DEFAULT 0"],
   },
+  {
+    // What a host serves, frozen: its version chain merged into one path map,
+    // plus whatever npanel generated or rewrote for it. Serving reads nothing
+    // else, so every host answers 503 from this migration until its first
+    // build lands — which startup queues for all of them at once.
+    //
+    // Keyed by host rather than by version because the output depends on the
+    // host: its hostname is in the sitemap, and its settings decide what is
+    // generated at all. CASCADE takes a deleted host's builds with it. The
+    // version is deliberately not a foreign key: a build carries every file
+    // row it serves, so pruning the versions it was made from must not take
+    // a working site down with them.
+    name: "016_host_builds",
+    statements: [
+      `CREATE TABLE host_builds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        host_id INTEGER NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('clearnet', 'onion')),
+        origin TEXT NOT NULL,
+        event_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('building', 'ready', 'failed')),
+        error TEXT,
+        last_modified INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        built_at INTEGER
+      )`,
+      "CREATE INDEX host_builds_host_idx ON host_builds (host_id, kind, id DESC)",
+      `CREATE TABLE host_build_files (
+        build_id INTEGER NOT NULL REFERENCES host_builds (id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        event_id TEXT,
+        source_sha256 TEXT,
+        PRIMARY KEY (build_id, path)
+      )`,
+      "CREATE INDEX host_build_files_sha_idx ON host_build_files (sha256)",
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

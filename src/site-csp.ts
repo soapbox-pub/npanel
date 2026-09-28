@@ -27,20 +27,21 @@ const MAX_POLICY_LENGTH = 8 * 1024;
  */
 const INVALID_HEADER_CHARS = /[^\t\x20-\x7e]/;
 
-/** Parsed policies to keep. Each entry is a version id and a short string. */
+/** Parsed policies to keep. Each entry is a build id and a short string. */
 const MAX_CACHED = 500;
 
 /**
  * The Content Security Policy a site declares for itself, read from the
  * `<meta>` tags of its own `index.html`.
  *
- * Cached by version rather than by content hash, because that is the lookup
- * being avoided: a version's file list is written once by `storeManifest` and
- * never edited, so the policy for an `event_id` cannot change, and holding it
- * keeps the `site_files` query off the serving path entirely.
+ * Cached by build rather than by content hash, because that is the lookup
+ * being avoided: a build's files are written once and never edited, so the
+ * policy for a build cannot change, and holding it keeps the file query off
+ * the serving path entirely. Read from the build rather than the manifest, so
+ * a document npanel rewrote and the header it is sent under always agree.
  */
 export class SiteCsp {
-  private cache = new Map<string, string | null>();
+  private cache = new Map<number, string | null>();
 
   constructor(
     private readonly db: Kysely<Database>,
@@ -48,36 +49,36 @@ export class SiteCsp {
     private readonly log: Logger,
   ) {}
 
-  /** The policy this version declares, or null if it declares none. */
-  async policy(eventId: string): Promise<string | null> {
-    const cached = this.cache.get(eventId);
+  /** The policy this build declares, or null if it declares none. */
+  async policy(buildId: number): Promise<string | null> {
+    const cached = this.cache.get(buildId);
     if (cached !== undefined) return cached;
 
-    const policy = await this.read(eventId);
+    const policy = await this.read(buildId);
 
     // Oldest first, so this drops the least recently added entry.
     if (this.cache.size >= MAX_CACHED) {
       const oldest = this.cache.keys().next().value;
       if (oldest !== undefined) this.cache.delete(oldest);
     }
-    this.cache.set(eventId, policy);
+    this.cache.set(buildId, policy);
 
     return policy;
   }
 
   /**
-   * Read `/index.html` for this version and scrape its policy.
+   * Read `/index.html` for this build and scrape its policy.
    *
-   * Always the landing page, whatever was requested: one policy per version,
+   * Always the landing page, whatever was requested: one policy per build,
    * so a site's stylesheets and images are served under the same rules as the
    * document that named them. A site that publishes no `/index.html` — one
    * that is a single feed, say — declares nothing.
    */
-  private async read(eventId: string): Promise<string | null> {
+  private async read(buildId: number): Promise<string | null> {
     const index = await this.db
-      .selectFrom("site_files")
+      .selectFrom("host_build_files")
       .select("sha256")
-      .where("event_id", "=", eventId)
+      .where("build_id", "=", buildId)
       .where("path", "=", "/index.html")
       .executeTakeFirst();
 
@@ -85,7 +86,7 @@ export class SiteCsp {
 
     const policy = extractCsp(await readHtmlHead(this.blobs, index.sha256));
     if (policy) {
-      this.log.debug("site_csp_adopted", { event_id: eventId, policy });
+      this.log.debug("site_csp_adopted", { build_id: buildId, policy });
     }
 
     return policy;

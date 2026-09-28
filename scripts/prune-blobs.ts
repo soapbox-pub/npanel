@@ -10,7 +10,7 @@ import { activeEvent } from "../src/sites.ts";
  *
  * With `--keep N`, old versions of each site are forgotten first (never the
  * version a host is currently serving, and never a pinned one). Then every
- * blob no remaining version references is deleted.
+ * blob no remaining version or host build references is deleted.
  *
  *   bun run prune-blobs --keep 10
  *   bun run prune-blobs --dry-run
@@ -48,6 +48,11 @@ async function pruneVersions(keep: number): Promise<void> {
     if (active) protectedIds.add(active.event_id);
   }
 
+  // A build serves on without the versions it was made from, but the
+  // dashboard describes the site by the version it serves.
+  const served = await db.selectFrom("host_builds").select("event_id").distinct().execute();
+  for (const build of served) protectedIds.add(build.event_id);
+
   const sites = await db.selectFrom("site_events").select(["pubkey", "kind", "identifier"]).distinct().execute();
 
   let removed = 0;
@@ -77,10 +82,27 @@ async function pruneVersions(keep: number): Promise<void> {
   console.log(`${dryRun ? "Would remove" : "Removed"} ${removed} old version(s), keeping ${keep} per site.`);
 }
 
-/** Delete blobs no stored version references. */
+/**
+ * How long a blob nothing references yet is left alone, in seconds.
+ *
+ * A build stores the files it generates before it writes the rows naming
+ * them, so a blob a running npanel recorded a moment ago may be one a build
+ * is about to reference. An hour is far longer than any build takes.
+ */
+const GRACE_SECONDS = 60 * 60;
+
+/** Delete blobs no stored version or host build references. */
 async function pruneBlobs(): Promise<void> {
-  const rows = await db.selectFrom("site_files").select("sha256").distinct().execute();
-  const referenced = new Set(rows.map((row) => row.sha256));
+  const [versions, builds, recent] = await Promise.all([
+    db.selectFrom("site_files").select("sha256").distinct().execute(),
+    db.selectFrom("host_build_files").select("sha256").distinct().execute(),
+    db
+      .selectFrom("blobs")
+      .select("sha256")
+      .where("seen_at", ">", Math.floor(Date.now() / 1000) - GRACE_SECONDS)
+      .execute(),
+  ]);
+  const referenced = new Set([...versions, ...builds, ...recent].map((row) => row.sha256));
 
   let deleted = 0;
   let bytes = 0;

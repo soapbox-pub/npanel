@@ -94,6 +94,8 @@ async function setup(
     }
   }
 
+  await harness.builder.hostsChanged();
+
   return { harness, hostId: host.id };
 }
 
@@ -993,6 +995,10 @@ async function withOnion(hostId: number, harness: Harness): Promise<void> {
     .insertInto("onion_services")
     .values({ host_id: hostId, address: ONION, secret_key: "ED25519-V3:secret", created_at: 1 })
     .execute();
+
+  // The onion is served from a build of its own, as Tor's minting it asks for.
+  await harness.builder.hostsChanged([hostId]);
+  harness.serveCache.clear();
 }
 
 test("requestScheme takes the proxy's word, and assumes TLS without one", () => {
@@ -1275,12 +1281,13 @@ test("a site that ships no sitemap gets one generated from its file list", async
   const { harness } = await seoSite();
 
   const response = await harness.site("docs.example.com", "/sitemap.xml");
+  const body = await response.text();
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "application/xml; charset=utf-8");
-  assert.equal(response.headers.get("etag"), `"${"a".repeat(64)}-sitemap"`);
+  // Generated when the host was built, and served as the blob it was stored as.
+  assert.equal(response.headers.get("etag"), `"${sha256(body)}"`);
 
-  const body = await response.text();
   assert.match(body, /<loc>https:\/\/docs\.example\.com\/<\/loc>/);
   assert.match(body, /<loc>https:\/\/docs\.example\.com\/blog\/<\/loc>/);
   // The clean URL the site links to, not the file it published.
@@ -1291,11 +1298,12 @@ test("a site that ships no sitemap gets one generated from its file list", async
   assert.doesNotMatch(body, /404\.html/);
 });
 
-test("the generated sitemap revalidates against its version", async () => {
+test("the generated sitemap revalidates like any other file", async () => {
   const { harness } = await seoSite();
+  const etag = (await harness.site("docs.example.com", "/sitemap.xml")).headers.get("etag") ?? "";
 
   const response = await harness.site("docs.example.com", "/sitemap.xml", {
-    headers: { "if-none-match": `"${"a".repeat(64)}-sitemap"` },
+    headers: { "if-none-match": etag },
   });
 
   assert.equal(response.status, 304);
@@ -1371,6 +1379,7 @@ test("the seo flag turns all of it off for one host", async () => {
   const { harness, hostId } = await seoSite();
 
   await harness.db.updateTable("hosts").set({ seo: 0 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged([hostId]);
   harness.serveCache.clear();
 
   // The paths fall back to resolving like any other, which here means the
@@ -1411,12 +1420,12 @@ test("a published robots.txt that names no sitemap gets one appended", async () 
   assert.equal(response.status, 200);
   assert.equal(body, "User-agent: *\nAllow: /\n\nSitemap: https://docs.example.com/sitemap.xml\n");
 
-  // Derived from the blob rather than being it, so it says which of the two
-  // this is — and drops the range support that counts against the stored bytes.
-  assert.equal(response.headers.get("etag"), `"${sha256(BARE_ROBOTS)}-robots"`);
+  // A file of its own, made when the host was built: its own tag, and ranges
+  // counted against the bytes actually being sent.
+  assert.equal(response.headers.get("etag"), `"${sha256(body)}"`);
   assert.equal(response.headers.get("content-type"), "text/plain; charset=utf-8");
   assert.equal(response.headers.get("cache-control"), "public, no-cache");
-  assert.equal(response.headers.get("accept-ranges"), null);
+  assert.equal(response.headers.get("accept-ranges"), "bytes");
   assert.equal(response.headers.get("content-length"), String(Buffer.byteLength(body)));
 });
 
@@ -1457,6 +1466,7 @@ test("hosts sharing one robots.txt each advertise their own sitemap", async () =
       updated_at: 1,
     })
     .execute();
+  await harness.builder.hostsChanged();
 
   const first = await (await harness.site("docs.example.com", "/robots.txt")).text();
   const second = await (await harness.site("other.example.com", "/robots.txt")).text();
@@ -1493,18 +1503,19 @@ test("the appended robots.txt revalidates and answers HEAD", async () => {
 /** Long enough to be worth compressing, without a blanket `Disallow`. */
 const LONG_ROBOTS = `User-agent: *\n${"Disallow: /generated/page/\n".repeat(40)}`;
 
-test("an appended robots.txt is never sent as a stored compressed copy", async () => {
+test("an appended robots.txt is compressed like any other file", async () => {
   const { harness } = await withRobots(LONG_ROBOTS);
   await harness.blobs.ensureVariants(sha256(LONG_ROBOTS));
 
   const response = await harness.site("docs.example.com", "/robots.txt", {
-    headers: { "accept-encoding": "br, gzip" },
+    headers: { "accept-encoding": "br" },
   });
 
-  // The sidecars are copies of the shorter file, so serving one would hand
+  // Its own compressed copy, not the published file's: that one would hand
   // back a body without the line this whole path exists to add.
-  assert.equal(response.headers.get("content-encoding"), null);
-  assert.match(await response.text(), /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml\n$/);
+  assert.equal(response.headers.get("content-encoding"), "br");
+  const body = brotliDecompressSync(await bytes(response)).toString();
+  assert.match(body, /Sitemap: https:\/\/docs\.example\.com\/sitemap\.xml\n$/);
 });
 
 test("a robots.txt too large to read is served as published", async () => {
@@ -1522,6 +1533,7 @@ test("the seo flag also turns off appending to a published robots.txt", async ()
   const { harness, hostId } = await withRobots(BARE_ROBOTS);
 
   await harness.db.updateTable("hosts").set({ seo: 0 }).where("id", "=", hostId).execute();
+  await harness.builder.hostsChanged([hostId]);
   harness.serveCache.clear();
 
   const response = await harness.site("docs.example.com", "/robots.txt");

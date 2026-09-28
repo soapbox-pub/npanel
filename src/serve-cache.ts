@@ -1,29 +1,28 @@
 import type { Kysely } from "kysely";
-import type { Database, SiteEvent } from "./db/schema.ts";
+import { currentBuild } from "./builds.ts";
+import type { Database } from "./db/schema.ts";
+import { isOnionAddress } from "./hostname.ts";
 import { encodeNaddr } from "./nsite-address.ts";
-import { type ServedHost, type VersionFiles, activeEvent, findHost, versionFiles } from "./sites.ts";
+import { type ServedHost, findHost } from "./sites.ts";
 
 /**
  * How long an entry may be believed, in milliseconds.
  *
  * A backstop rather than the invalidation mechanism: every writer inside the
- * process — the hosts API, the sync worker marking a version ready, Tor
- * minting an onion — calls {@link ServeCache.clear} the moment serving's
- * answer changes. The TTL is for the writers the process can't see, like
- * `prune-blobs` running against the same database, and bounds how long their
- * work goes unnoticed.
+ * process — the hosts API, the builder putting a build live, Tor minting an
+ * onion — calls {@link ServeCache.clear} the moment serving's answer changes.
+ * The TTL is for the writers the process can't see, like `prune-blobs` running
+ * against the same database, and bounds how long their work goes unnoticed.
  */
 const TTL_MS = 60_000;
 
-/** The version a host serves, with the response fields derived from it. */
-export interface CachedVersion extends VersionFiles {
-  event: SiteEvent;
-  /**
-   * The version's `Last-Modified`, formatted once instead of per response.
-   *
-   * Kept beside the event rather than on {@link CachedSite}, so that a host
-   * with nothing to serve has neither and the two can't be read apart.
-   */
+/** The build a hostname serves, with the response fields derived from it. */
+export interface CachedVersion {
+  /** The build every path is resolved in. Immutable, so safe to key caches on. */
+  buildId: number;
+  /** The version the build serves. */
+  eventId: string;
+  /** The build's `Last-Modified`, formatted once instead of per response. */
   lastModified: string;
 }
 
@@ -31,8 +30,8 @@ export interface CachedVersion extends VersionFiles {
 export interface CachedSite {
   host: ServedHost;
   /**
-   * The version the host serves: undefined while the host is disabled or
-   * nothing has finished deploying, exactly as {@link activeEvent} answers.
+   * What the host serves under this name: undefined while the host is
+   * disabled or nothing has finished building for it.
    */
   version: CachedVersion | undefined;
   /**
@@ -43,11 +42,11 @@ export interface CachedSite {
 }
 
 /**
- * The hostname → site lookups behind every request, cached.
+ * The hostname → build lookups behind every request, cached.
  *
  * Two queries open every site request — which host a hostname names, and
- * which version that host serves — and their answers change only when staff
- * edit a host or a deploy completes. Holding them keeps the serving path off
+ * which build that host serves — and their answers change only when staff
+ * edit a host or a build goes live. Holding them keeps the serving path off
  * the database entirely for the requests in between.
  *
  * Only hostnames that resolve to a host are kept. A miss is asked again every
@@ -60,7 +59,7 @@ export class ServeCache {
 
   constructor(private readonly db: Kysely<Database>) {}
 
-  /** The host this hostname names and the version it serves, if either exists. */
+  /** The host this hostname names and the build it serves, if either exists. */
   async lookup(hostname: string): Promise<CachedSite | undefined> {
     const cached = this.entries.get(hostname);
     if (cached && cached.expires > Date.now()) return cached.site;
@@ -72,16 +71,16 @@ export class ServeCache {
       return undefined;
     }
 
-    const event = host.enabled === 1 ? await activeEvent(this.db, host) : undefined;
-    // Which versions a path is looked for in is settled here, with the rest of
-    // what a hostname resolves to, rather than per request: a merged host's
-    // chain costs a query, and it changes only when a deploy or an edit has
-    // already emptied this cache.
-    const version: CachedVersion | undefined = event
+    // An onion has a build of its own, because the files npanel generates for
+    // it name the onion rather than the clearnet hostname.
+    const kind = isOnionAddress(hostname) ? "onion" : "clearnet";
+    const build = host.enabled === 1 ? await currentBuild(this.db, host.id, kind) : undefined;
+
+    const version: CachedVersion | undefined = build
       ? {
-          event,
-          ...(await versionFiles(this.db, host, event)),
-          lastModified: lastModified(event.created_at, event.fetched_at),
+          buildId: build.id,
+          eventId: build.event_id,
+          lastModified: new Date(build.last_modified * 1000).toUTCString(),
         }
       : undefined;
 
@@ -98,16 +97,4 @@ export class ServeCache {
   clear(): void {
     this.entries.clear();
   }
-}
-
-/**
- * `Last-Modified` for a version.
- *
- * A manifest's `created_at` is whatever its author put there, including dates
- * in the future or beyond what `Date` can represent, so it is capped at the
- * moment npanel actually saw the event.
- */
-function lastModified(createdAt: number, fetchedAt: number): string {
-  const seconds = Number.isFinite(createdAt) ? Math.min(createdAt, fetchedAt) : fetchedAt;
-  return new Date(Math.max(seconds, 0) * 1000).toUTCString();
 }

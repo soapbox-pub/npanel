@@ -3,6 +3,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app.ts";
 import { BlobStore } from "./blobs.ts";
+import { HostBuilder } from "./builds.ts";
 import { Config } from "./config.ts";
 import { openDatabase } from "./db/index.ts";
 import { DnsTargets } from "./dns.ts";
@@ -29,15 +30,20 @@ const settings = await SettingsService.load(db, log);
 const blobs = new BlobStore(config.blobsDir);
 const nostr = new NostrService(settings, log);
 // One instance: serving reads it, and every writer that changes what serving
-// would answer — the hosts API, the sync worker, Tor — clears it.
+// would answer — the hosts API, the builder, Tor — clears it.
 const serveCache = new ServeCache(db);
-const sync = new SyncWorker({ db, blobs, nostr, settings, serveCache, log });
+const builder = new HostBuilder({ db, blobs, settings, serveCache, log });
+const sync = new SyncWorker({ db, blobs, nostr, settings, builder, log });
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 // One instance, so the serving path and the dashboard share its cache.
 const siteCsp = new SiteCsp(db, blobs, log);
 const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
-const tor = new TorService({ db, settings, log, serveSite, serveCache });
+const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
 
+// Ahead of sync, so a deploy that finishes early finds nothing stale left to
+// clear. Every host is reconciled in the background; one whose build is
+// current costs a hash.
+await builder.start();
 await sync.start();
 
 // Onion services, if an admin has turned them on. Everything here is driven by
@@ -57,6 +63,7 @@ const app = createApp({
   db,
   settings,
   sync,
+  builder,
   blobs,
   dns,
   log,
@@ -88,6 +95,7 @@ async function shutdown(): Promise<void> {
     await tlsCheck.stop();
     await tor.stop();
     await sync.stop();
+    await builder.stop();
     await db.destroy();
   } catch (error) {
     log.error("shutdown_failed", errFields(error));

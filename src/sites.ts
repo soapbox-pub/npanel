@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { extname, join } from "node:path/posix";
 import type { NostrEvent } from "@nostrify/nostrify";
 import { type Kysely, sql } from "kysely";
@@ -91,34 +90,18 @@ export async function newestReadyEvent(db: Kysely<Database>, address: NsiteAddre
 }
 
 /**
- * How many versions a merged host resolves across.
+ * How many versions a merged host's build reaches across.
  *
- * A bound rather than a policy: every uncached path lookup asks for its
- * candidates in each version, so the query grows with the chain, and the
+ * A bound rather than a policy: a build carries a row for every path anywhere
+ * in its chain, so the chain decides how much every rebuild writes, and the
  * versions past this point are the ones a `prune-blobs --keep` has most likely
  * taken away already. Deep enough that a site deploying daily keeps two months
  * of superseded asset URLs answering.
  */
 export const MAX_MERGED_VERSIONS = 60;
 
-/** The versions a host resolves paths across, and one name for that list. */
-export interface VersionFiles {
-  /** The versions a path is looked for in, newest first. */
-  eventIds: string[];
-  /**
-   * One name for that list, for the caches keyed on which files are in play.
-   *
-   * An event id where there is only one version, so an unmerged host's cache
-   * keys read exactly as they did before merging existed. Beyond that it is a
-   * hash, which keeps a key the size of one event id however deep the chain is
-   * — and is a name for an immutable thing, since every file list in the chain
-   * is one.
-   */
-  filesKey: string;
-}
-
 /**
- * The versions a host resolves paths across, newest first.
+ * The versions a host's build merges, newest first.
  *
  * One entry — the version being served — unless the host merges deployments,
  * which stacks every earlier ready version underneath it. The order is the
@@ -133,10 +116,8 @@ export interface VersionFiles {
  * — it heads the list outright rather than by a comparison two versions
  * sharing a `created_at` could get wrong.
  */
-export async function versionFiles(db: Kysely<Database>, host: Host, active: SiteEvent): Promise<VersionFiles> {
-  if (host.merge_deployments !== 1) {
-    return { eventIds: [active.event_id], filesKey: active.event_id };
-  }
+export async function versionChain(db: Kysely<Database>, host: Host, active: SiteEvent): Promise<string[]> {
+  if (host.merge_deployments !== 1) return [active.event_id];
 
   const older = await db
     .selectFrom("site_events")
@@ -156,9 +137,7 @@ export async function versionFiles(db: Kysely<Database>, host: Host, active: Sit
     .limit(MAX_MERGED_VERSIONS - 1)
     .execute();
 
-  const eventIds = [active.event_id, ...older.map((row) => row.event_id)];
-
-  return { eventIds, filesKey: createHash("sha256").update(eventIds.join("")).digest("hex") };
+  return [active.event_id, ...older.map((row) => row.event_id)];
 }
 
 /** The newest version of a site in any state. */
@@ -198,7 +177,7 @@ export interface ResolvedFile {
 const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
 
 /**
- * Resolve a request path within a stored version: exact match, then — for an
+ * Resolve a request path within a host's build: exact match, then — for an
  * extensionless path — a `.html` sibling and then `index.html` beneath it, and
  * finally the site's own `/404.html`.
  *
@@ -209,14 +188,11 @@ const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
  * `try_files {path} {path}.html {path}/index.html` established, and a site
  * carrying both spellings meant the first one.
  *
- * Reads the path map from the database, so serving a file never parses a
- * manifest event.
- *
- * `eventIds` is the chain {@link versionFiles} built: one version, or a merged
- * host's stack of them newest first. Every step above searches the whole chain
- * and takes the newest version that has the path, so the steps themselves are
- * unchanged — an exact match in a superseded version still beats an
- * `index.html` in the served one, exactly as it would within a single version.
+ * Reads the build's path map from the database, so serving a file never parses
+ * a manifest event. A merged host's chain was flattened into that map when the
+ * build was made, so every step above sees every version at once — an exact
+ * match in a superseded version still beats an `index.html` in the served one,
+ * exactly as it would within a single version.
  *
  * `spa` turns the last step into a client-side router's entry point rather
  * than a dead end. A single-page app owns paths that exist only in its own
@@ -229,7 +205,7 @@ const DOCUMENT_EXTENSIONS = new Set(["", ".html", ".htm"]);
  */
 export async function resolveSitePath(
   db: Kysely<Database>,
-  eventIds: string[],
+  buildId: number,
   requestPath: string,
   options: { spa?: boolean } = {},
 ): Promise<ResolvedFile | undefined> {
@@ -247,21 +223,14 @@ export async function resolveSitePath(
   // primary-key seek per candidate — so serving a recorded blob touches the
   // filesystem only to send it.
   const rows = await db
-    .selectFrom("site_files")
-    .leftJoin("blobs", "blobs.sha256", "site_files.sha256")
-    .select([
-      "site_files.path",
-      "site_files.sha256",
-      "site_files.event_id",
-      "blobs.size",
-      "blobs.br_size",
-      "blobs.gzip_size",
-    ])
-    .where("site_files.event_id", "in", eventIds)
-    .where("site_files.path", "in", candidates)
+    .selectFrom("host_build_files")
+    .leftJoin("blobs", "blobs.sha256", "host_build_files.sha256")
+    .select(["host_build_files.path", "host_build_files.sha256", "blobs.size", "blobs.br_size", "blobs.gzip_size"])
+    .where("host_build_files.build_id", "=", buildId)
+    .where("host_build_files.path", "in", candidates)
     .execute();
 
-  const found = newestByPath(rows, eventIds);
+  const found = new Map(rows.map((row) => [row.path, row]));
 
   const exact = found.get(normalized);
   if (exact) return resolved(exact, normalized, 200);

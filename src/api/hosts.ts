@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { requireAdmin } from "../auth.ts";
+import { currentBuild } from "../builds.ts";
 import type { Host } from "../db/schema.ts";
 import { parseHostname } from "../hostname.ts";
 import { parseNsiteAddress } from "../nsite-address.ts";
-import { activeEvent, newestByPath, newestEvent, siteKey, versionFiles } from "../sites.ts";
+import { newestEvent, siteKey } from "../sites.ts";
 import {
   type ApiDeps,
   type ApiEnv,
@@ -15,6 +16,7 @@ import {
   message,
   serializeHost,
   serializeVersion,
+  servedEvent,
 } from "./context.ts";
 
 const createSchema = z.object({
@@ -55,7 +57,7 @@ const grantsSchema = z.object({
 
 /** Routes for the hostname → nsite mappings that are npanel's whole point. */
 export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
-  const { db, settings, sync, tor, serveCache, log } = deps;
+  const { db, settings, sync, builder, tor, serveCache, log } = deps;
   const app = new Hono<ApiEnv>();
 
   app.get("/", async (c) => {
@@ -150,6 +152,9 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     serveCache.clear();
     void sync.hostsChanged();
     void tor.hostsChanged();
+    // A site another host already serves has a ready version to build from
+    // straight away, and no deploy is coming along to say so.
+    void builder.hostsChanged([inserted.id]);
 
     const host = await db.selectFrom("hosts").selectAll().where("id", "=", inserted.id).executeTakeFirstOrThrow();
 
@@ -287,6 +292,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       void sync.hostsChanged();
     }
 
+    // Every edit, rather than the ones that feed a build: the builder hashes
+    // what the build is made of and does nothing if that didn't change.
+    void builder.hostsChanged([host.id]);
+
     // A narrower condition than the sync worker's: Tor publishes a name, and
     // does not care which nsite is behind it.
     if (patch.enabled !== undefined) {
@@ -337,10 +346,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       .limit(limit)
       .execute();
 
-    const active = await activeEvent(db, host);
+    const build = await currentBuild(db, host.id, "clearnet");
 
     return c.json({
-      active_event_id: active?.event_id ?? null,
+      active_event_id: build?.event_id ?? null,
       pinned_event_id: host.pinned_event_id,
       versions: versions.map(serializeVersion),
     });
@@ -392,10 +401,10 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
     }
 
     const requested = c.req.query("event_id");
-    const active = requested ? undefined : await activeEvent(db, host);
+    const build = await currentBuild(db, host.id, "clearnet");
     const version = requested
       ? await db.selectFrom("site_events").selectAll().where("event_id", "=", requested).executeTakeFirst()
-      : (active ?? (await newestEvent(db, host)));
+      : ((build && (await servedEvent(db, build.event_id))) ?? (await newestEvent(db, host)));
 
     if (
       !version ||
@@ -406,30 +415,57 @@ export function hostRoutes(deps: ApiDeps): Hono<ApiEnv> {
       return c.json({ error: "No version to list." }, 404);
     }
 
-    // What the site actually serves, which for a merged host is more than one
-    // version's manifest. Only for the version being served: a version named
+    // What the site actually serves, which is its build: for a merged host
+    // more than one version's manifest, and for any host the files npanel
+    // generated or rewrote. Only for the version being served — one named
     // outright, or one that hasn't finished deploying, is being inspected for
     // itself, so that listing stays the manifest it is.
-    const eventIds =
-      version.event_id === active?.event_id ? (await versionFiles(db, host, version)).eventIds : [version.event_id];
+    if (build && !requested && version.event_id === build.event_id) {
+      const rows = await db
+        .selectFrom("host_build_files")
+        .leftJoin("blobs", "blobs.sha256", "host_build_files.sha256")
+        .select([
+          "host_build_files.path",
+          "host_build_files.sha256",
+          "host_build_files.event_id",
+          "host_build_files.source_sha256",
+          "blobs.size",
+        ])
+        .where("host_build_files.build_id", "=", build.id)
+        .orderBy("host_build_files.path")
+        .execute();
+
+      return c.json({
+        event_id: version.event_id,
+        files: rows.map((file) => ({
+          path: file.path,
+          sha256: file.sha256,
+          size: file.size,
+          stored: file.size !== null,
+          // Served from an earlier deploy, because this one dropped the path.
+          inherited: file.event_id !== null && file.event_id !== version.event_id,
+          source: file.event_id === null ? "generated" : file.source_sha256 !== null ? "modified" : "site",
+        })),
+      });
+    }
 
     const rows = await db
       .selectFrom("site_files")
       .leftJoin("blobs", "blobs.sha256", "site_files.sha256")
-      .select(["site_files.path", "site_files.sha256", "site_files.event_id", "blobs.size"])
-      .where("site_files.event_id", "in", eventIds)
+      .select(["site_files.path", "site_files.sha256", "blobs.size"])
+      .where("site_files.event_id", "=", version.event_id)
       .orderBy("site_files.path")
       .execute();
 
     return c.json({
       event_id: version.event_id,
-      files: [...newestByPath(rows, eventIds).values()].map((file) => ({
+      files: rows.map((file) => ({
         path: file.path,
         sha256: file.sha256,
         size: file.size,
         stored: file.size !== null,
-        // Served from an earlier deploy, because this one dropped the path.
-        inherited: file.event_id !== version.event_id,
+        inherited: false,
+        source: "site",
       })),
     });
   });

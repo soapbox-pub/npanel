@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import type { Kysely } from "kysely";
 import { BlobStore } from "./blobs.ts";
+import { HostBuilder } from "./builds.ts";
 import { openDatabase } from "./db/index.ts";
 import type { Database } from "./db/schema.ts";
 import { Logger } from "./log.ts";
@@ -45,12 +46,14 @@ async function setup(): Promise<Setup> {
   await settings.update({ tor_enabled: true, tor_control_url: `tcp://127.0.0.1:${daemon.port}` }, ACTOR);
 
   const serveCache = new ServeCache(db);
+  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
   const tor = new TorService({
     db,
     settings,
     log,
     serveSite: createSiteServer({ db, blobs, siteCsp: new SiteCsp(db, blobs, log), serveCache, log }),
     serveCache,
+    builder,
     // No test should sit through a reconnect's backoff.
     retryBackoff: 0,
   });

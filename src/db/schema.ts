@@ -23,6 +23,8 @@ export interface Database {
   deploy_log: DeployLogTable;
   onion_services: OnionServicesTable;
   nip05_names: Nip05NamesTable;
+  host_builds: HostBuildsTable;
+  host_build_files: HostBuildFilesTable;
 }
 
 export interface UsersTable {
@@ -162,6 +164,56 @@ export interface Nip05NamesTable {
   updated_at: number;
 }
 
+/** Which of a host's names a build answers for. */
+export type BuildKind = "clearnet" | "onion";
+
+/** Lifecycle of a host build. Only `ready` builds are ever served. */
+export type BuildStatus = "building" | "ready" | "failed";
+
+/**
+ * The finished bundle a host serves: every path it answers, frozen.
+ *
+ * A build is made from the host's version chain and its settings, and once
+ * `ready` it is never edited — a change to either makes a new build, and the
+ * old one keeps serving until the new one is complete. Everything serving
+ * needs is on the row or in its files, so it outlives the pruning of the
+ * versions it was made from.
+ */
+export interface HostBuildsTable {
+  id: Generated<number>;
+  host_id: number;
+  kind: BuildKind;
+  /** The origin its generated files name, eg `https://docs.example.com`. */
+  origin: string;
+  /** The version it serves: the head of the chain it was built from. */
+  event_id: string;
+  /**
+   * A hash of every input the build's output depends on. A host whose inputs
+   * hash the same as its current build has nothing to rebuild.
+   */
+  fingerprint: string;
+  status: BuildStatus;
+  error: string | null;
+  /** `Last-Modified` for its responses, in epoch seconds. */
+  last_modified: number;
+  created_at: number;
+  built_at: number | null;
+}
+
+export interface HostBuildFilesTable {
+  build_id: number;
+  /** Absolute path within the site, eg `/index.html`. */
+  path: string;
+  sha256: string;
+  /**
+   * The version whose manifest published this file, or null for one npanel
+   * generated outright.
+   */
+  event_id: string | null;
+  /** The published blob this file was made from, when npanel rewrote one. */
+  source_sha256: string | null;
+}
+
 export interface DeployLogTable {
   id: Generated<number>;
   event_id: string;
@@ -183,6 +235,8 @@ export type HostUpdate = Updateable<HostsTable>;
 export type OnionService = Selectable<OnionServicesTable>;
 
 export type Nip05NameRow = Selectable<Nip05NamesTable>;
+
+export type HostBuild = Selectable<HostBuildsTable>;
 
 export type SiteEvent = Selectable<SiteEventsTable>;
 export type SiteFile = Selectable<SiteFilesTable>;

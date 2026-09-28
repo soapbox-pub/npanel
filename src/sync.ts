@@ -1,21 +1,20 @@
 import type { NostrEvent } from "@nostrify/nostrify";
 import type { Kysely } from "kysely";
+import { recordBlob, recordVariantSizes } from "./blob-records.ts";
 import { BlobDownloadError, type BlobStore } from "./blobs.ts";
+import type { HostBuilder } from "./builds.ts";
 import type { Database, DeployStatus } from "./db/schema.ts";
+import { pruneDeployLog, writeDeployLog } from "./deploy-log.ts";
 import { type LogFields, type Logger, errFields } from "./log.ts";
 import { isSiteManifest, manifestAddress } from "./manifest.ts";
 import { isCompressible } from "./mime.ts";
 import { type NostrService, blobUrl } from "./nostr.ts";
 import { type NsiteAddress, SITE_KINDS } from "./nsite-address.ts";
-import type { ServeCache } from "./serve-cache.ts";
 import type { SettingsService } from "./settings.ts";
 import { listConfiguredSites, newestEvent, parseStoredEvent, storeManifest } from "./sites.ts";
 
 /** Blobs downloaded in parallel within one deploy. */
 const BLOB_CONCURRENCY = 4;
-
-/** Deploy log entries kept per version. Older entries are pruned. */
-const DEPLOY_LOG_LIMIT = 500;
 
 /** Wait before a second attempt at a deploy, in ms. It doubles after that. */
 const RETRY_BACKOFF = 5_000;
@@ -25,8 +24,8 @@ export interface SyncWorkerDeps {
   blobs: BlobStore;
   nostr: NostrService;
   settings: SettingsService;
-  /** Cleared when a deploy becomes servable, so requests see it at once. */
-  serveCache: ServeCache;
+  /** Told when a version becomes ready, so the hosts serving it are rebuilt. */
+  builder: HostBuilder;
   log: Logger;
   /** Overrides {@link RETRY_BACKOFF}, so tests don't have to wait one out. */
   retryBackoff?: number;
@@ -48,7 +47,8 @@ interface QueuedDeploy {
  * 2. A periodic full re-fetch, so a manifest missed on the wire (relay
  *    downtime, a restart) is still picked up.
  * 3. A blob queue that downloads every file of a new version before that
- *    version is allowed to serve.
+ *    version is allowed to serve — which it does once the builder has made
+ *    each host serving it a build of it.
  *
  * Every step also writes to the `deploy_log` table, which the dashboard shows
  * per version — a failed deploy explains itself without touching the server.
@@ -58,7 +58,7 @@ export class SyncWorker {
   private readonly blobs: BlobStore;
   private readonly nostr: NostrService;
   private readonly settings: SettingsService;
-  private readonly serveCache: ServeCache;
+  private readonly builder: HostBuilder;
   private readonly log: Logger;
   private readonly retryBackoff: number;
 
@@ -82,7 +82,7 @@ export class SyncWorker {
     this.blobs = deps.blobs;
     this.nostr = deps.nostr;
     this.settings = deps.settings;
-    this.serveCache = deps.serveCache;
+    this.builder = deps.builder;
     this.log = deps.log;
     this.retryBackoff = deps.retryBackoff ?? RETRY_BACKOFF;
   }
@@ -243,7 +243,7 @@ export class SyncWorker {
       identifier: address.identifier,
       created_at: event.created_at,
     });
-    await this.writeDeployLog(event.id, "info", "manifest_received", {
+    await writeDeployLog(this.db, event.id, "info", "manifest_received", {
       created_at: event.created_at,
     });
 
@@ -466,7 +466,7 @@ export class SyncWorker {
     }
 
     const hashes = [...new Set(files.map((file) => file.sha256))];
-    await this.writeDeployLog(eventId, "info", "deploy_started", {
+    await writeDeployLog(this.db, eventId, "info", "deploy_started", {
       files: row.files_total,
       blobs: hashes.length,
     });
@@ -477,12 +477,12 @@ export class SyncWorker {
       if (size === undefined) {
         missing.push(sha256);
       } else {
-        await this.recordBlob(sha256, size);
+        await recordBlob(this.db, sha256, size);
         // Already on disk, but not necessarily compressed: it may have been
         // downloaded before npanel did this, or by a site that serves it under
         // a name that isn't worth compressing.
         if (compressible.has(sha256)) await this.compress(eventId, sha256);
-        await this.recordVariantSizes(sha256);
+        await recordVariantSizes(this.db, this.blobs, sha256);
       }
     }
 
@@ -506,12 +506,12 @@ export class SyncWorker {
 
       const reason =
         "No Blossom servers to download from. The manifest has no server tags and the author has no kind 10063 list — add fallback servers in Settings.";
-      await this.writeDeployLog(eventId, "error", "no_blob_servers", { missing: missing.length });
+      await writeDeployLog(this.db, eventId, "error", "no_blob_servers", { missing: missing.length });
       await this.fail(eventId, reason);
       return;
     }
 
-    await this.writeDeployLog(eventId, "info", "downloading_blobs", {
+    await writeDeployLog(this.db, eventId, "info", "downloading_blobs", {
       missing: missing.length,
       servers: servers.join(" "),
     });
@@ -617,7 +617,7 @@ export class SyncWorker {
     await this.finish(eventId, "failed", explanation);
 
     if (again) {
-      await this.writeDeployLog(eventId, "info", "deploy_retrying", {
+      await writeDeployLog(this.db, eventId, "info", "deploy_retrying", {
         attempt: attempt + 1,
         of: limit,
         wait_ms: backoff,
@@ -645,7 +645,7 @@ export class SyncWorker {
       .where("event_id", "=", eventId)
       .execute();
 
-    await this.writeDeployLog(eventId, "warn", "deploy_interrupted", { remaining });
+    await writeDeployLog(this.db, eventId, "warn", "deploy_interrupted", { remaining });
     this.log.warn("deploy_interrupted", { event_id: eventId, remaining });
   }
 
@@ -663,10 +663,10 @@ export class SyncWorker {
           maxSize: opts.maxSize,
           signal: this.controller.signal,
         });
-        await this.recordBlob(sha256, size);
-        await this.writeDeployLog(eventId, "debug", "blob_downloaded", { sha256, server, size });
+        await recordBlob(this.db, sha256, size);
+        await writeDeployLog(this.db, eventId, "debug", "blob_downloaded", { sha256, server, size });
         if (opts.compress) await this.compress(eventId, sha256);
-        await this.recordVariantSizes(sha256);
+        await recordVariantSizes(this.db, this.blobs, sha256);
         return true;
       } catch (error) {
         const fields: LogFields = {
@@ -676,12 +676,12 @@ export class SyncWorker {
           status: error instanceof BlobDownloadError ? error.status : undefined,
           err_msg: message(error),
         };
-        await this.writeDeployLog(eventId, "warn", "blob_download_failed", fields);
+        await writeDeployLog(this.db, eventId, "warn", "blob_download_failed", fields);
         this.log.debug("blob_download_failed", fields);
       }
     }
 
-    await this.writeDeployLog(eventId, "error", "blob_unavailable", {
+    await writeDeployLog(this.db, eventId, "error", "blob_unavailable", {
       sha256,
       servers: servers.length,
     });
@@ -701,42 +701,13 @@ export class SyncWorker {
     try {
       const written = await this.blobs.ensureVariants(sha256);
       if (written.length) {
-        await this.writeDeployLog(eventId, "debug", "blob_compressed", { sha256, encodings: written.join(" ") });
+        await writeDeployLog(this.db, eventId, "debug", "blob_compressed", { sha256, encodings: written.join(" ") });
       }
     } catch (error) {
       const fields: LogFields = { sha256, err_msg: message(error) };
-      await this.writeDeployLog(eventId, "warn", "blob_compress_failed", fields);
+      await writeDeployLog(this.db, eventId, "warn", "blob_compress_failed", fields);
       this.log.warn("blob_compress_failed", fields);
     }
-  }
-
-  /**
-   * Record which compressed copies a blob has, so serving never has to look.
-   *
-   * Read back from the disk rather than from what {@link compress} reported,
-   * because a sidecar may predate this deploy — written by an earlier version,
-   * or by the compress-blobs script. Runs for every blob, not only the
-   * compressible ones: a JPEG's row saying -1 is exactly what lets a request
-   * for it skip the stat too.
-   */
-  private async recordVariantSizes(sha256: string): Promise<void> {
-    const variants = await this.blobs.variants(sha256);
-    if (!variants) return;
-
-    await this.db
-      .updateTable("blobs")
-      .set({ br_size: variants.br ?? -1, gzip_size: variants.gzip ?? -1 })
-      .where("sha256", "=", sha256)
-      .execute();
-  }
-
-  private async recordBlob(sha256: string, size: number): Promise<void> {
-    const now = Math.floor(Date.now() / 1000);
-    await this.db
-      .insertInto("blobs")
-      .values({ sha256, size, seen_at: now })
-      .onConflict((oc) => oc.column("sha256").doUpdateSet({ seen_at: now, size }))
-      .execute();
   }
 
   private async setProgress(eventId: string, filesReady: number): Promise<void> {
@@ -758,55 +729,23 @@ export class SyncWorker {
 
     if (status === "ready") {
       this.attempts.delete(eventId);
-      // The newest ready version may just have changed; serving must not keep
-      // answering with the old one until the cache's TTL runs out.
-      this.serveCache.clear();
       this.log.info("deploy_ready", { event_id: eventId });
-      await this.writeDeployLog(eventId, "info", "deploy_ready");
+      await writeDeployLog(this.db, eventId, "info", "deploy_ready");
+
+      // The newest ready version may just have changed, and a version is only
+      // served through a build of it.
+      const site = await this.db
+        .selectFrom("site_events")
+        .select(["pubkey", "kind", "identifier"])
+        .where("event_id", "=", eventId)
+        .executeTakeFirst();
+      if (site) void this.builder.siteChanged(site);
     } else {
       this.log.error("deploy_failed", { event_id: eventId, err_msg: error });
-      await this.writeDeployLog(eventId, "error", "deploy_failed", { err_msg: error });
+      await writeDeployLog(this.db, eventId, "error", "deploy_failed", { err_msg: error });
     }
 
-    await this.pruneDeployLog(eventId);
-  }
-
-  /** Append to the deploy log the dashboard shows for this version. */
-  private async writeDeployLog(
-    eventId: string,
-    level: "debug" | "info" | "warn" | "error",
-    msg: string,
-    fields?: LogFields,
-  ): Promise<void> {
-    const cleaned = fields
-      ? Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined))
-      : undefined;
-
-    await this.db
-      .insertInto("deploy_log")
-      .values({
-        event_id: eventId,
-        level,
-        msg,
-        fields: cleaned && Object.keys(cleaned).length ? JSON.stringify(cleaned) : null,
-        created_at: Math.floor(Date.now() / 1000),
-      })
-      .execute();
-  }
-
-  private async pruneDeployLog(eventId: string): Promise<void> {
-    const cutoff = await this.db
-      .selectFrom("deploy_log")
-      .select("id")
-      .where("event_id", "=", eventId)
-      .orderBy("id", "desc")
-      .offset(DEPLOY_LOG_LIMIT)
-      .limit(1)
-      .executeTakeFirst();
-
-    if (!cutoff) return;
-
-    await this.db.deleteFrom("deploy_log").where("event_id", "=", eventId).where("id", "<=", cutoff.id).execute();
+    await pruneDeployLog(this.db, eventId);
   }
 }
 

@@ -7,11 +7,12 @@ import { normalizeSitePath } from "./sites.ts";
 /**
  * What npanel does for a site's standing in search engines, universally.
  *
- * Three things, all derived from data npanel already holds and none touching
- * the site's own bytes: a `sitemap.xml` generated from the version's file
- * list, a `robots.txt` that points at it, and a canonical URL on every page.
- * The generated files are fallbacks — a site that published its own is served
- * as-is, the same shadow-only-if-absent rule `nostr.json` follows in reverse.
+ * Three things, all derived from data npanel already holds: a `sitemap.xml`
+ * generated from the version's file list, a `robots.txt` that points at it,
+ * and a canonical URL on every page. The files are made when a host is built
+ * (see {@link file://./builds.ts}) and are fallbacks — a site that published
+ * its own is served as-is, the same shadow-only-if-absent rule `nostr.json`
+ * follows in reverse. The canonical URL is a header, and is set per request.
  */
 
 /** The pages a sitemap lists: real documents, not the assets they load. */
@@ -124,8 +125,8 @@ export function robotsTxt(origin: RequestOrigin): string {
 /**
  * The most of a `robots.txt` npanel will read before serving it as it is.
  *
- * This runs on the serving path, and a site may publish a file of any size at
- * that name. Anything larger goes out as the blob, untouched.
+ * A site may publish a file of any size at that name, and a build reads it
+ * whole to append to it. Anything larger goes out as the blob, untouched.
  */
 export const MAX_ROBOTS_BYTES = 64 * 1024;
 

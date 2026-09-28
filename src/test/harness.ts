@@ -9,6 +9,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey } from "nostr-tools";
 import { createApp } from "../app.ts";
 import { NIP98_KIND } from "../auth.ts";
 import { BlobStore } from "../blobs.ts";
+import { HostBuilder } from "../builds.ts";
 import { openDatabase } from "../db/index.ts";
 import type { Database, UserRole } from "../db/schema.ts";
 import { type DnsResolver, DnsTargets } from "../dns.ts";
@@ -80,6 +81,11 @@ export interface Harness {
   db: Kysely<Database>;
   settings: SettingsService;
   sync: SyncWorker;
+  /**
+   * Makes the builds hosts serve from. A test that writes host or version
+   * rows directly calls `builder.hostsChanged()` before expecting them served.
+   */
+  builder: HostBuilder;
   blobs: BlobStore;
   /** Serving's cache. A test that writes host rows directly must clear it. */
   serveCache: ServeCache;
@@ -92,6 +98,66 @@ export interface Harness {
   /** Make a request to one of the served nsite hostnames. */
   site(hostname: string, path: string, init?: RequestInit): Promise<Response>;
   cleanup(): Promise<void>;
+}
+
+/**
+ * A ready build serving exactly these paths, written straight to the database.
+ *
+ * For tests of resolution and caching, which are about what serving does with
+ * a build rather than about how one is made. Makes a host to own it when none
+ * is given.
+ */
+export async function insertBuild(
+  db: Kysely<Database>,
+  paths: Record<string, string>,
+  opts: { hostId?: number; eventId?: string } = {},
+): Promise<number> {
+  const hostId =
+    opts.hostId ??
+    (
+      await db
+        .insertInto("hosts")
+        .values({
+          hostname: `build-${Math.random().toString(36).slice(2)}.example.com`,
+          pubkey: "0".repeat(64),
+          kind: 15128,
+          identifier: "",
+          pinned_event_id: null,
+          enabled: 1,
+          created_by: "0".repeat(64),
+          created_at: 1,
+          updated_at: 1,
+        })
+        .returning("id")
+        .executeTakeFirstOrThrow()
+    ).id;
+
+  const eventId = opts.eventId ?? "e".repeat(64);
+  const { id } = await db
+    .insertInto("host_builds")
+    .values({
+      host_id: hostId,
+      kind: "clearnet",
+      origin: "https://example.com",
+      event_id: eventId,
+      fingerprint: "",
+      status: "ready",
+      error: null,
+      last_modified: 1,
+      created_at: 1,
+      built_at: 1,
+    })
+    .returning("id")
+    .executeTakeFirstOrThrow();
+
+  for (const [path, sha256] of Object.entries(paths)) {
+    await db
+      .insertInto("host_build_files")
+      .values({ build_id: id, path, sha256, event_id: eventId, source_sha256: null })
+      .execute();
+  }
+
+  return id;
 }
 
 /** A DNS resolver that answers nothing, so tests never touch the network. */
@@ -116,12 +182,13 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const log = new Logger("error");
   const serveCache = new ServeCache(db);
   // No test should sit through a retry's backoff.
+  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
   const sync = new SyncWorker({
     db,
     blobs,
     nostr: opts.nostr ?? fakeNostr(),
     settings,
-    serveCache,
+    builder,
     log,
     retryBackoff: 0,
   });
@@ -136,12 +203,13 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, log });
   // Inert unless a test turns `tor_enabled` on: with no control connection its
   // reconciles return immediately and it binds no port.
-  const tor = new TorService({ db, settings, log, serveSite, serveCache });
+  const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
 
   const app = createApp({
     db,
     settings,
     sync,
+    builder,
     blobs,
     dns,
     log,
@@ -157,6 +225,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     db,
     settings,
     sync,
+    builder,
     blobs,
     serveCache,
     app,
@@ -191,6 +260,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
 
     async cleanup() {
       await sync.stop();
+      await builder.stop();
       await db.destroy();
       await rm(dir, { recursive: true, force: true });
     },

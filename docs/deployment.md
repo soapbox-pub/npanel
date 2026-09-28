@@ -521,6 +521,11 @@ sudo systemctl restart npanel
 Migrations run automatically at startup. Back up the database first. On Docker
 this is [`docker compose up -d --build`](#upgrading-the-containers) instead.
 
+An upgrade that changes what npanel builds for a site rebuilds every host at
+startup, in the background. Each keeps serving its previous build until the new
+one is ready — except on the upgrade that introduces builds, where there is no
+previous one, and sites answer `503` for the few seconds until theirs lands.
+
 ## Reclaiming disk space
 
 Every version of every site is kept, along with its files. On a site that
@@ -534,8 +539,9 @@ sudo -u npanel bun run prune-blobs --keep 10
 On Docker, `docker compose exec npanel bun run prune-blobs --keep 10`.
 
 `--keep N` forgets all but the newest N versions of each site, then deletes
-every blob no remaining version references. The version a host is currently
-serving and any pinned version are never removed. Without `--keep` it only
+every blob no remaining version or host build references. The version a host is
+currently serving and any pinned version are never removed, and neither is a
+blob recorded in the last hour, which may belong to a build still in progress. Without `--keep` it only
 deletes unreferenced blobs. `--dry-run` reports what would go.
 
 A monthly timer is reasonable. Note that pruning a version also removes the

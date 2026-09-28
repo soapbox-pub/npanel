@@ -44,7 +44,10 @@ await db.destroy();
 async function compressBlobs(): Promise<void> {
   // The same rule a deploy uses: the store is keyed by hash and can't tell
   // markup from a JPEG, so the paths a blob is served under decide for it.
-  const rows = await db.selectFrom("site_files").select(["sha256", "path"]).execute();
+  const rows = [
+    ...(await db.selectFrom("site_files").select(["sha256", "path"]).execute()),
+    ...(await db.selectFrom("host_build_files").select(["sha256", "path"]).execute()),
+  ];
 
   const candidates = new Set<string>();
   const referenced = new Set<string>();

@@ -6,11 +6,10 @@ import { isOnionAddress, wwwApex } from "./hostname.ts";
 import type { Logger } from "./log.ts";
 import { contentType } from "./mime.ts";
 import { NIP05_PATH, type Nip05Entry, listNip05Names, nip05Document } from "./nip05.ts";
-import { canonicalLink, robotsTxt, sitemapPaths, sitemapXml, versionDate } from "./seo.ts";
-import type { CachedSite, CachedVersion, ServeCache } from "./serve-cache.ts";
+import { canonicalLink } from "./seo.ts";
+import type { CachedSite, ServeCache } from "./serve-cache.ts";
 import type { SiteCsp } from "./site-csp.ts";
 import { SitePaths } from "./site-paths.ts";
-import { SiteRobots } from "./site-robots.ts";
 import type { ServedHost } from "./sites.ts";
 
 export interface SiteServerDeps {
@@ -18,7 +17,7 @@ export interface SiteServerDeps {
   blobs: BlobStore;
   /** Reads the policy a site declares for itself. Shared, so its cache is. */
   siteCsp: SiteCsp;
-  /** Answers the host and version lookups every request opens with. */
+  /** Answers the host and build lookups every request opens with. */
   serveCache: ServeCache;
   log: Logger;
 }
@@ -108,10 +107,8 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
   const { db, blobs, siteCsp, serveCache, log } = deps;
 
   // Built here rather than injected: the path map is only ever read to serve a
-  // file, so nothing outside this server has a lookup to share with it. The
-  // same goes for the `robots.txt` a site published.
+  // file, so nothing outside this server has a lookup to share with it.
   const sitePaths = new SitePaths(db);
-  const siteRobots = new SiteRobots(blobs);
 
   /**
    * The redirect `www.example.com` gets when `example.com` asked for one.
@@ -148,8 +145,8 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     // Parsed once for everything below; three callees want the path.
     const url = new URL(request.url);
 
-    // Both answers in one cache lookup. The version comes along because the
-    // policy below is the version's and applies to every answer this host
+    // Both answers in one cache lookup. The build comes along because the
+    // policy below is the build's and applies to every answer this host
     // gives — including the ones that never reach a file.
     const site = await serveCache.lookup(origin.hostname);
     const host = site?.host;
@@ -157,9 +154,9 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
 
     // On unless this one site turned it off. A hostname with no host row has
     // nobody to have turned it off, so it gets the policy too — and gets the
-    // gateway's, since there is no version to have declared another.
+    // gateway's, since there is no build to have declared another.
     if (host?.csp !== 0) {
-      const declared = site?.version && (await siteCsp.policy(site.version.event.event_id));
+      const declared = site?.version && (await siteCsp.policy(site.version.buildId));
       response.headers.set("content-security-policy", declared || CSP);
     }
 
@@ -213,95 +210,6 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
   }
 
-  /**
-   * The generated `sitemap.xml` or `robots.txt` a site gets when it published
-   * neither.
-   *
-   * Everything in them is already npanel's to say: the version's file list,
-   * when it deployed, and the hostname it is served at. Built per request so
-   * two hosts serving one nsite each name their own URLs; the sitemap still
-   * carries an `ETag` of the version it describes, since its content changes
-   * only when a deploy does.
-   *
-   * The served version's own file list, even where the host merges earlier
-   * ones. Merging keeps a withdrawn URL *answering*, for the sake of the pages
-   * and caches still asking for it; inviting a crawler to index a page the
-   * latest deploy deleted would be npanel contradicting the site about what it
-   * publishes.
-   */
-  async function seoFallback(
-    request: Request,
-    url: URL,
-    origin: RequestOrigin,
-    version: CachedVersion,
-  ): Promise<Response> {
-    const robots = url.pathname === "/robots.txt";
-    const body = UTF8.encode(
-      robots
-        ? robotsTxt(origin)
-        : sitemapXml(origin, await sitemapPaths(db, version.event.event_id), versionDate(version.event)),
-    );
-
-    const headers = new Headers({
-      "content-type": robots ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8",
-      // Long enough that crawlers polling robots.txt don't cost anything,
-      // short enough that a deploy's new sitemap is seen the same hour.
-      "cache-control": "public, max-age=3600",
-      "content-length": String(body.byteLength),
-    });
-
-    if (!robots) {
-      const etag = `"${version.event.event_id}-sitemap"`;
-      headers.set("etag", etag);
-      if (matchesEtag(request.headers.get("if-none-match"), etag)) {
-        return new Response(null, { status: 304, headers });
-      }
-    }
-
-    log.debug("site_seo_fallback", { hostname: origin.hostname, path: url.pathname });
-
-    return new Response(request.method === "HEAD" ? null : body, { status: 200, headers });
-  }
-
-  /**
-   * A site's own `robots.txt`, with npanel's `Sitemap:` line on the end.
-   *
-   * The body is derived from the blob rather than being it, so everything the
-   * blob's identity bought has to be left behind: the stored compressed copies
-   * are copies of the shorter file and would be wrong, a `Range` would count
-   * against bytes nobody is sending, and the `ETag` has to say which of the two
-   * this is. What survives is the part that is still true — the file changes
-   * only when the version does, so it revalidates like the document it is.
-   */
-  function robotsResponse(
-    request: Request,
-    origin: RequestOrigin,
-    body: string,
-    file: { path: string; sha256: string },
-    version: CachedVersion,
-    naddr: string,
-  ): Response {
-    const bytes = UTF8.encode(body);
-    const etag = `"${file.sha256}-robots"`;
-
-    const headers = new Headers({
-      "content-type": contentType(file.path),
-      "cache-control": cacheControl(file.path),
-      etag,
-      "last-modified": version.lastModified,
-      "content-length": String(bytes.byteLength),
-      "x-nsite-addr": naddr,
-    });
-
-    if (matchesEtag(request.headers.get("if-none-match"), etag)) {
-      return new Response(null, { status: 304, headers });
-    }
-
-    log.debug("site_robots_sitemap", { hostname: origin.hostname, sha256: file.sha256 });
-
-    return new Response(request.method === "HEAD" ? null : bytes, { status: 200, headers });
-  }
-
   async function respond(
     request: Request,
     url: URL,
@@ -339,7 +247,8 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     }
 
     if (!version) {
-      // Nothing servable yet: either the first deploy is still running or it failed.
+      // Nothing servable yet: the first deploy, or the first build of it, is
+      // still running or has failed.
       log.debug("site_not_deployed", { hostname });
       return new Response("This site has not finished deploying yet.", {
         status: 503,
@@ -347,17 +256,9 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
       });
     }
 
-    const file = await sitePaths.resolve(version, url.pathname, { spa: host.spa === 1 });
-
-    // Generated only where the site published no such file — the same
-    // shadow-only-if-absent rule as `nostr.json`, in reverse. Both paths have
-    // extensions, so resolution is exact match or nothing: `undefined` and the
-    // not-found page standing in both mean the site has no file here.
-    if (host.seo !== 0 && (url.pathname === "/sitemap.xml" || url.pathname === "/robots.txt")) {
-      if (!file || file.status === 404) {
-        return await seoFallback(request, url, origin, version);
-      }
-    }
+    // Everything the site answers is in its build, including the files npanel
+    // generated or rewrote for it, so from here on every body is a stored blob.
+    const file = await sitePaths.resolve(version.buildId, url.pathname, { spa: host.spa === 1 });
 
     if (!file) {
       log.debug("site_path_missing", { hostname, path: url.pathname });
@@ -368,19 +269,9 @@ export function createSiteServer(deps: SiteServerDeps): SiteServer {
     // only for rows that predate that, until `compress-blobs` backfills them.
     const variants = file.variants ?? (await blobs.variants(file.sha256));
     if (!variants) {
-      // The version is marked ready, so this means the blob was removed underneath us.
+      // The build is ready, so this means the blob was removed underneath us.
       log.error("blob_missing", { hostname, path: file.path, sha256: file.sha256 });
       return text(500, "This file is missing from local storage.");
-    }
-
-    // The one file npanel adds to rather than stands in for. A `robots.txt`
-    // naming no sitemap gets npanel's line appended; anything else — including
-    // a file that already names one — falls through and is served as stored.
-    if (host.seo !== 0 && url.pathname === "/robots.txt" && file.status === 200) {
-      const augmented = await siteRobots.body(file.sha256, variants.identity, origin);
-      if (augmented !== undefined) {
-        return robotsResponse(request, origin, augmented, file, version, site.naddr);
-      }
     }
 
     // Everything below is about the representation this picks, not the blob:
