@@ -102,53 +102,48 @@ function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: Sparkl
         <span className="min-w-0 flex-1 truncate font-semibold">{host.hostname}</span>
       </div>
 
-      {loading ? (
-        <div className="space-y-3" aria-hidden>
-          <Skeleton className="h-12" />
-          <Skeleton className="h-10 w-1/2" />
-        </div>
-      ) : (
-        <>
-          <Sparkline
-            values={sparkline?.hours ?? []}
-            className={cn('h-12', host.analytics ? 'text-primary' : 'text-muted-foreground/40')}
-          />
-
-          <div className="mt-auto flex items-end justify-between gap-3">
-            {host.analytics || sparkline?.visitors ? (
+      {host.analytics &&
+        (loading ? (
+          <div className="space-y-3" aria-hidden>
+            <Skeleton className="h-12" />
+            <Skeleton className="h-10 w-1/2" />
+          </div>
+        ) : (
+          <>
+            <Sparkline values={sparkline?.hours ?? []} className="h-12 text-primary" />
+            <div className="mt-auto flex items-end justify-between gap-3">
               <div>
                 <p className="text-xl font-bold tabular-nums">{compactNumber(sparkline?.visitors ?? 0)}</p>
                 <p className="text-sm text-muted-foreground">
                   {sparkline?.visitors === 1 ? 'visitor' : 'visitors'} in last 24h
                 </p>
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">Analytics off</p>
-            )}
+              {status.tone === 'green' ? (
+                <Change value={sparkline?.change ?? null} />
+              ) : (
+                <SiteStatus host={host} className="text-xs" />
+              )}
+            </div>
+          </>
+        ))}
 
-            {status.tone === 'green' ? (
-              host.analytics && <Change value={sparkline?.change ?? null} />
-            ) : (
-              <SiteStatus host={host} className="text-xs" />
-            )}
-          </div>
-        </>
-      )}
+      {/* Without analytics there are no numbers to sit beside, so a site that
+          needs attention says so on its own line. */}
+      {!host.analytics && status.tone !== 'green' && <SiteStatus host={host} className="mt-auto text-xs" />}
     </Link>
   );
 }
 
 /** Visitors up or down on the day before, as Plausible marks it. */
 function Change({ value }: { value: number | null }) {
-  if (value === null) return null;
+  // No change is no news, and a "0%" beside the count only adds noise.
+  if (!value) return null;
   const Arrow = value > 0 ? ArrowUpRight : ArrowDownRight;
 
   return (
     <p className="flex items-center gap-0.5 text-sm font-medium tabular-nums">
-      {value !== 0 && (
-        <Arrow className={cn('size-3.5', value > 0 ? 'text-success' : 'text-destructive')} aria-hidden />
-      )}
-      <span className="sr-only">{value > 0 ? 'Up' : value < 0 ? 'Down' : 'Unchanged'}</span>
+      <Arrow className={cn('size-3.5', value > 0 ? 'text-success' : 'text-destructive')} aria-hidden />
+      <span className="sr-only">{value > 0 ? 'Up' : 'Down'}</span>
       {Math.abs(value)}%
     </p>
   );
