@@ -6,5 +6,6 @@
 DEPLOY.md
 .ai/
 node_modules/
-data/
+# The development data directory, not src/analytics/data.
+/data/
 dashboard/dist/
