@@ -121,7 +121,7 @@
 
   color-scheme: light;
 
-  /* The logo's orange: cPanel's, kept for the mark and nothing that has to be read. */
+  /* The logo's orange, kept for the mark and nothing that has to be read. */
   --brand: hsl(18 100% 58%);
   --brand-glow: hsl(33 100% 57%);
   --brand-foreground: hsl(0 0% 100%);

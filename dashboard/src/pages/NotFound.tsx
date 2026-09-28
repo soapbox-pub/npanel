@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { cn } from '@/lib/utils';
 
-/** A nod to cPanel's most famous page, for the dashboard's missing ones. */
+/** The dashboard's page for an address it has nothing at. */
 const NotFound = () => {
   useSeoMeta({ title: 'Not found — npanel' });
 

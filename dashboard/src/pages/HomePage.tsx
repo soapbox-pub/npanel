@@ -50,7 +50,7 @@ export function HomePage() {
       </main>
 
       <footer className="mx-auto max-w-5xl border-t px-4 py-6 text-xs text-muted-foreground sm:px-6">
-        npanel is free software. Not affiliated with cPanel, L.L.C. — obviously.
+        npanel is free software.
       </footer>
     </div>
   );
