@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ScrollToTop } from "@/components/ScrollToTop";
+import AnalyticsPage from "@/pages/AnalyticsPage";
 import AuditLogPage from "@/pages/AuditLogPage";
 import HostDetailPage from "@/pages/HostDetailPage";
 import HostsPage from "@/pages/HostsPage";
@@ -17,6 +18,7 @@ export function AppRouter() {
         <Route element={<DashboardLayout />}>
           <Route path="/" element={<HostsPage />} />
           <Route path="/hosts/:hostname" element={<HostDetailPage />} />
+          <Route path="/hosts/:hostname/analytics" element={<AnalyticsPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/audit" element={<AuditLogPage />} />

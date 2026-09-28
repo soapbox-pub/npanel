@@ -63,6 +63,9 @@ export default defineConfig(() => ({
       // from a 400.
       "@shared/nip05": path.resolve(import.meta.dirname, "../src/nip05.ts"),
       "@shared/relay-url": path.resolve(import.meta.dirname, "../src/relay-url.ts"),
+      // The analytics query's metrics and dimensions, so the dashboard can't
+      // ask for one the server doesn't know.
+      "@shared/analytics-query": path.resolve(import.meta.dirname, "../src/analytics/query/parse.ts"),
     },
   },
 }));

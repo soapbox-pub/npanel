@@ -15,6 +15,10 @@ when the relays and Blossom servers it came from are down.
 - **Versioned.** Every site event is kept as a version you can inspect, pin, or
   roll back to, with a per-version deploy log that explains failures.
 - **Auditable.** Every change to a site, user, or setting is recorded.
+- **Analytics built in.** Flip a switch on a site and npanel counts its visits
+  the way Plausible does — no cookies, nothing identifying stored — and shows
+  them in a Plausible-style dashboard. npanel *is* the Plausible server; there
+  is nothing else to install, and the site's author changes nothing.
 
 ## Requirements
 

@@ -17,6 +17,7 @@ import type {
   Settings,
   SiteFile,
 } from './api-types.ts';
+import type { StatsQueryBody, StatsResponse } from './analytics/query.ts';
 
 /** NIP-98 HTTP auth event kind. */
 const NIP98_KIND = 27235;
@@ -144,6 +145,19 @@ export class ApiClient {
 
   setGrants(hostname: string, pubkeys: string[]): Promise<{ grants: string[] }> {
     return this.request('PUT', `/api/hosts/${path(hostname)}/grants`, { pubkeys });
+  }
+
+  /** Plausible's dashboard query, answered for this site. */
+  statsQuery(hostname: string, body: StatsQueryBody): Promise<StatsResponse> {
+    return this.request('POST', `/api/hosts/${path(hostname)}/stats/query`, body);
+  }
+
+  currentVisitors(hostname: string): Promise<number> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/stats/current-visitors`);
+  }
+
+  suggestions(hostname: string, filter: string, params: URLSearchParams): Promise<{ value: string; label: string }[]> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/stats/suggestions/${filter}?${params}`);
   }
 
   nip05Names(hostname: string): Promise<{ names: Nip05Name[] }> {

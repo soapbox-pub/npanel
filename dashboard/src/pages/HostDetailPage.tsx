@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowLeft, Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import { ArrowLeft, BarChart3, Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -109,6 +109,12 @@ export function HostDetailPage() {
 
         <div className="flex items-center gap-3">
           <StatusBadge host={data} />
+          <Button variant="outline" size="sm" asChild>
+            <Link to={`/hosts/${data.hostname}/analytics`}>
+              <BarChart3 className="mr-2 h-4 w-4" />
+              Analytics
+            </Link>
+          </Button>
           <Button
             variant="outline"
             size="sm"
