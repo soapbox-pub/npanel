@@ -4,7 +4,7 @@ npanel splits configuration in two.
 
 **Environment variables** cover things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are six of them, and they require a restart.
+set wrong. There are seven of them, and they require a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
