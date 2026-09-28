@@ -515,6 +515,94 @@ NIP forbids `npub` in the document itself.
 Removes one name; `404` if the host never had it. Returns the remaining list.
 Deleting the host deletes its names with it.
 
+## Analytics
+
+A site's analytics, for anyone who may manage the site. These are the three
+endpoints Plausible's own dashboard reads — `POST /api/stats/:domain/query`,
+`current-visitors` and `suggestions` — under the host instead of a Plausible
+domain, with the same bodies in and out, so anything written against
+Plausible's dashboard API reads npanel's. Site and user management have no
+counterpart: the grant npanel already checks is the whole of access control.
+
+They answer whether or not the site is counting visits right now, since the
+numbers it collected while it was are still there. While the analytics thread
+is starting or restarting, every one of them is a `503`.
+
+### `POST /api/hosts/:hostname/stats/query`
+
+Plausible's dashboard query. The body:
+
+```json
+{
+  "date_range": "28d",
+  "relative_date": "2026-09-28",
+  "metrics": ["visitors", "visits", "pageviews", "views_per_visit", "bounce_rate", "visit_duration"],
+  "dimensions": [],
+  "filters": [["is", "visit:source", ["Google"]]],
+  "order_by": [["visitors", "desc"]],
+  "pagination": { "limit": 9, "offset": 0 },
+  "include": {
+    "time_labels": false,
+    "partial_time_labels": false,
+    "compare": "previous_period",
+    "compare_match_day_of_week": true,
+    "empty_metrics": false,
+    "present_index": false
+  }
+}
+```
+
+- `date_range` is `realtime` (the last five minutes), `realtime_30m`, `day`,
+  `24h`, `7d`, `28d`, `30d`, `91d`, `month`, `6mo`, `12mo`, `year`, `all`, or
+  `["YYYY-MM-DD", "YYYY-MM-DD"]`. `Nd` is the N full days before
+  `relative_date`, and `Nmo` the N full months before its month, as in
+  Plausible; `month`, `year` and `day` in progress end now. Days are days in
+  [`analytics_timezone`](configuration.md#analytics_timezone).
+- `metrics`: `visitors`, `visits`, `pageviews`, `views_per_visit`,
+  `bounce_rate`, `visit_duration`, `time_on_page` and `scroll_depth` (with a
+  page filter or dimension), `percentage`, and `exit_rate` (with the
+  `visit:exit_page` dimension).
+- `dimensions`: `time:minute|hour|day|week|month`, `event:page`, and
+  `visit:source`, `referrer`, `channel`, `utm_medium`, `utm_source`,
+  `utm_campaign`, `utm_content`, `utm_term`, `entry_page`, `exit_page`,
+  `country`, `country_name`, `region`, `region_name`, `city`, `city_name`,
+  `device`, `browser`, `browser_version`, `os`, `os_version`.
+- `filters`: `[operator, dimension, [values], {"case_sensitive": false}?]`,
+  with `is`, `is_not`, `contains` and `contains_not`, on `event:page` or any
+  `visit:` dimension.
+- `include.compare`: `previous_period`, `year_over_year`, or a pair of dates.
+
+The response is Plausible's: `results` as `{dimensions, metrics}` rows in the
+order asked for, `comparison` on each row or — for a time series —
+`comparison_results` beside them, `meta` with the time labels and their
+indices, the present and partial buckets and the empty metrics that were asked
+for, and the `query` echoed with its resolved date ranges.
+
+What differs is only what npanel doesn't record: there are no goals, custom
+properties, revenue, imports or segments, and a query asking for them is a
+`400`. Regions and cities are identified by name — `DE-Bavaria`,
+`DE-Bavaria-Munich` — rather than by ISO code and GeoNames id, because DB-IP's
+free database carries neither.
+
+A query Plausible would refuse is a `400` with `{"error": "…"}` saying why.
+
+### `GET /api/hosts/:hostname/stats/current-visitors`
+
+The number of visitors seen in the last five minutes, as a bare JSON number.
+
+### `GET /api/hosts/:hostname/stats/suggestions/:filter`
+
+Values the dashboard's filter box can offer for `:filter` — `page`,
+`entry_page`, `exit_page`, `source`, `channel`, `referrer`, `utm_*`,
+`country`, `region`, `city`, `screen`, `browser`, `browser_version`, `os`,
+`os_version` — most visited first, at most 25. The query string is Plausible's
+older form: `period`, `date`, `from` and `to` for the range, `filters` as a
+JSON list of filters as above, and `q` for what has been typed.
+
+```json
+[{ "value": "DE", "label": "Germany" }, { "value": "US", "label": "United States" }]
+```
+
 ## Users — admin
 
 ### `GET /api/users`

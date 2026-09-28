@@ -609,6 +609,24 @@ range of dates. Every in-memory structure is bounded — open visits, the write
 buffer, the user-agent cache — so a flood of events costs accuracy rather than
 memory.
 
+**Queries** answer the dashboard's API with Plausible's semantics, not its SQL
+(`src/analytics/query/`). Periods, comparisons and time buckets are ports of
+Plausible's own functions, so the same query covers the same seconds. SQLite
+has no time zones, so bucketing moves each timestamp onto local wall time by
+the zone's offset — a `CASE` over the offsets in force across the range, found
+from `Intl`, since a range can straddle a daylight-saving change — before
+formatting it the way the labels are. A question becomes at most a few grouped
+queries, one over events and one over visits, merged by their dimensions and
+ordered and paginated in JavaScript. Visitors are counted from pageviews when
+the question is about pages and from visits otherwise, and a visit-level metric
+broken down by page is about the visits that entered there, as in Plausible.
+Visits by the hour or minute are counted in every bucket they were active in.
+
+Events reach their visit by id, through an explicitly ordered join: SQLite's
+planner, left to itself, starts from the visits and scans a site's events once
+for each. On a site of ten thousand visits a day a month's report takes a few
+hundred milliseconds to a few seconds, all of it on the analytics thread.
+
 ## Authentication
 
 NIP-98: the client signs a kind 27235 event naming the method and URL, and sends

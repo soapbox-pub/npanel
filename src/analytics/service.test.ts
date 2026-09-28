@@ -6,6 +6,7 @@ import { after, test } from "node:test";
 import { openDatabase } from "../db/index.ts";
 import { openSqlite } from "../db/sqlite.ts";
 import { Logger } from "../log.ts";
+import { SettingsService } from "../settings.ts";
 import { AnalyticsService } from "./service.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -39,6 +40,7 @@ async function setup() {
 
   const service = new AnalyticsService({
     db,
+    settings: await SettingsService.load(db),
     log: new Logger("error"),
     config: { port: 0, address: "127.0.0.1", dataDir: dir, logLevel: "error", downloadGeo: false },
   });

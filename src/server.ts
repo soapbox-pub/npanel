@@ -42,6 +42,7 @@ const siteCsp = new SiteCsp(db, blobs, log);
 // it does competes with serving sites.
 const analytics = new AnalyticsService({
   db,
+  settings,
   log,
   config: {
     port: config.analyticsPort,

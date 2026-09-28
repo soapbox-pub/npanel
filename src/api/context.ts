@@ -1,4 +1,5 @@
 import type { Kysely } from "kysely";
+import type { QueryHost } from "../analytics/query/engine.ts";
 import type { AnalyticsService } from "../analytics/service.ts";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
@@ -35,7 +36,13 @@ export interface ApiDeps {
   dashboardHost: string;
 }
 
-export type ApiEnv = { Variables: { user: AuthUser } };
+export type ApiEnv = {
+  Variables: {
+    user: AuthUser;
+    /** The host a stats route is about, once the caller's access to it is checked. */
+    host: QueryHost;
+  };
+};
 
 /**
  * Find a host by the name every route addresses it with.

@@ -8,6 +8,7 @@ import { SitePreviews } from "../site-preview.ts";
 import { type ApiDeps, type ApiEnv, audit, listedHosts, siteCard } from "./context.ts";
 import { hostRoutes } from "./hosts.ts";
 import { nip05Routes } from "./nip05.ts";
+import { statsRoutes } from "./stats.ts";
 import { userRoutes } from "./users.ts";
 
 export type { ApiDeps } from "./context.ts";
@@ -121,6 +122,8 @@ export function apiRoutes(deps: ApiDeps): Hono<ApiEnv> {
   // of their own rather than another field of a host. Both sets of paths are
   // registered side by side, and `nip05` collides with none of them.
   app.route("/hosts", nip05Routes(deps));
+  // And a third, for the site's analytics, which answer Plausible's API.
+  app.route("/hosts", statsRoutes(deps));
   app.route("/users", userRoutes(deps));
 
   app.get("/settings", requireAdmin(), (c) => {

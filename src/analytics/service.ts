@@ -2,8 +2,10 @@ import { Worker } from "node:worker_threads";
 import type { Kysely } from "kysely";
 import type { Database } from "../db/schema.ts";
 import { type Logger, errFields } from "../log.ts";
+import type { SettingsService } from "../settings.ts";
 import type { AnalyticsHost } from "./ingest.ts";
-import type { FromWorker, ToWorker, WorkerConfig } from "./protocol.ts";
+import type { FromWorker, ToWorker, WorkerConfig, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import type { QueryHost } from "./query/engine.ts";
 
 /** First and longest wait before starting a thread that died, in milliseconds. */
 const RESTART_MIN = 1_000;
@@ -15,25 +17,31 @@ const HEALTHY_AFTER = 60_000;
 /** How long an event forwarded to the thread may take to be answered. */
 const EVENT_TIMEOUT = 10_000;
 
+/** How long a dashboard query may take. Long, since a year of a busy site is a lot of rows. */
+const QUERY_TIMEOUT = 60_000;
+
+const JSON_HEADERS = { "content-type": "application/json" };
+
 export interface AnalyticsServiceDeps {
   db: Kysely<Database>;
+  settings: SettingsService;
   log: Logger;
   config: WorkerConfig;
 }
 
 interface Pending {
-  resolve(response: Response): void;
+  resolve(response: WorkerResponse): void;
   timer: ReturnType<typeof setTimeout>;
 }
 
 /**
  * Runs the analytics thread and keeps it running.
  *
- * The thread is started with the process, told which sites are counting
- * whenever that changes, and restarted when it dies — after a second, then
- * doubling, so a thread that dies at startup can't spin. Everything it is told
- * is sent again on each start, so a new thread never depends on what the last
- * one knew.
+ * The thread is started with the process, told which sites are counting and
+ * which time zone to report in whenever either changes, and restarted when it
+ * dies — after a second, then doubling, so a thread that dies at startup can't
+ * spin. Everything it is told is sent again on each start, so a new thread
+ * never depends on what the last one knew.
  *
  * It is never killed from outside. A worker thread that is terminated keeps
  * its listening socket bound for the life of the process, so a replacement
@@ -42,6 +50,7 @@ interface Pending {
  */
 export class AnalyticsService {
   private readonly db: Kysely<Database>;
+  private readonly settings: SettingsService;
   private readonly log: Logger;
   private readonly config: WorkerConfig;
 
@@ -55,15 +64,21 @@ export class AnalyticsService {
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readyWaiters: (() => void)[] = [];
+  private unsubscribe: (() => void) | undefined;
 
   constructor(deps: AnalyticsServiceDeps) {
     this.db = deps.db;
+    this.settings = deps.settings;
     this.log = deps.log;
     this.config = deps.config;
   }
 
   /** Start the thread. Resolves once it is listening. */
   async start(): Promise<void> {
+    this.unsubscribe = this.settings.onChange((keys) => {
+      if (keys.includes("analytics_timezone")) this.post(this.timezone());
+    });
+
     this.spawn();
     await this.whenReady();
   }
@@ -71,6 +86,7 @@ export class AnalyticsService {
   /** Stop the thread, letting it write what it has buffered first. */
   async stop(): Promise<void> {
     this.stopping = true;
+    this.unsubscribe?.();
     clearTimeout(this.restartTimer);
 
     const worker = this.worker;
@@ -102,35 +118,59 @@ export class AnalyticsService {
    * thread's answer returned as it gave it.
    */
   async event(request: Request): Promise<Response> {
-    if (!this.ready) {
-      return new Response("Analytics are starting. Try again in a moment.", {
-        status: 503,
-        headers: { "access-control-allow-origin": "*", "retry-after": "5" },
-      });
-    }
-
-    const id = this.nextId++;
-    const body = request.method === "POST" ? await request.text() : "";
-
-    return await new Promise<Response>((resolve) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        resolve(new Response("Analytics took too long to answer.", { status: 504 }));
-      }, EVENT_TIMEOUT);
-
-      this.pending.set(id, { resolve, timer });
-
-      this.post({
+    const response = await this.call(
+      {
         type: "event",
-        id,
         method: request.method,
-        body,
+        body: request.method === "POST" ? await request.text() : "",
         headers: {
           userAgent: request.headers.get("user-agent") ?? "",
           forwardedFor: request.headers.get("x-forwarded-for"),
           realIp: request.headers.get("x-real-ip"),
         },
-      });
+      },
+      EVENT_TIMEOUT,
+    );
+
+    // An event the thread couldn't take still reaches a browser that is owed
+    // the permission to have sent it.
+    return new Response(response.body || null, {
+      status: response.status,
+      headers: { "access-control-allow-origin": "*", ...response.headers },
+    });
+  }
+
+  /** Answer a dashboard query, Plausible's `POST /api/stats/:domain/query`. */
+  query(host: QueryHost, body: unknown): Promise<WorkerResponse> {
+    return this.call({ type: "query", host, body }, QUERY_TIMEOUT);
+  }
+
+  /** Visitors in the last five minutes, Plausible's `GET /api/stats/:domain/current-visitors`. */
+  currentVisitors(host: QueryHost): Promise<WorkerResponse> {
+    return this.call({ type: "current-visitors", host }, QUERY_TIMEOUT);
+  }
+
+  /** Filter autocomplete, Plausible's `GET /api/stats/:domain/suggestions/:filter_name`. */
+  suggestions(host: QueryHost, filter: string, params: Record<string, string>): Promise<WorkerResponse> {
+    return this.call({ type: "suggestions", host, filter, params }, QUERY_TIMEOUT);
+  }
+
+  /** Ask the thread something, and wait for its answer or give up. */
+  private call(request: WorkerRequest, timeout: number): Promise<WorkerResponse> {
+    if (!this.ready) {
+      return Promise.resolve(failure(503, "Analytics are starting. Try again in a moment."));
+    }
+
+    const id = this.nextId++;
+
+    return new Promise<WorkerResponse>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        resolve(failure(504, "Analytics took too long to answer. Try a shorter date range."));
+      }, timeout);
+
+      this.pending.set(id, { resolve, timer });
+      this.post({ type: "request", id, request });
     });
   }
 
@@ -154,7 +194,7 @@ export class AnalyticsService {
 
       for (const [id, pending] of this.pending) {
         clearTimeout(pending.timer);
-        pending.resolve(new Response("Analytics restarted before answering.", { status: 503 }));
+        pending.resolve(failure(503, "Analytics restarted before answering. Try again in a moment."));
         this.pending.delete(id);
       }
 
@@ -171,20 +211,19 @@ export class AnalyticsService {
   private async receive(message: FromWorker): Promise<void> {
     switch (message.type) {
       case "ready":
-        this.ready = true;
         this.boundPort = message.port;
+        this.post(this.timezone());
         this.post({ type: "hosts", hosts: await this.hosts() });
+        this.ready = true;
         for (const resolve of this.readyWaiters.splice(0)) resolve();
         break;
 
-      case "event": {
+      case "reply": {
         const pending = this.pending.get(message.id);
         if (!pending) return;
         this.pending.delete(message.id);
         clearTimeout(pending.timer);
-
-        const { status, headers, body } = message.response;
-        pending.resolve(new Response(body || null, { status, headers }));
+        pending.resolve(message.response);
         break;
       }
     }
@@ -199,6 +238,10 @@ export class AnalyticsService {
     this.worker?.postMessage(message);
   }
 
+  private timezone(): ToWorker {
+    return { type: "settings", timezone: this.settings.get("analytics_timezone") };
+  }
+
   /** Every host, and whether events for it are kept. */
   private async hosts(): Promise<AnalyticsHost[]> {
     const rows = await this.db.selectFrom("hosts").select(["id", "hostname", "enabled", "analytics"]).execute();
@@ -209,4 +252,8 @@ export class AnalyticsService {
       counting: row.enabled === 1 && row.analytics === 1,
     }));
   }
+}
+
+function failure(status: number, error: string): WorkerResponse {
+  return { status, headers: JSON_HEADERS, body: JSON.stringify({ error }) };
 }

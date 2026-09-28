@@ -59,6 +59,7 @@ async function setup(): Promise<Setup> {
       serveCache,
       analytics: new AnalyticsService({
         db,
+        settings,
         log,
         config: { port: 0, address: "127.0.0.1", dataDir: dir, logLevel: "error", downloadGeo: false },
       }),

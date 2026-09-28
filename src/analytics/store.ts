@@ -85,6 +85,9 @@ const MIGRATIONS: { name: string; statements: string[] }[] = [
         PRIMARY KEY (host_id, start, session_id)
       ) WITHOUT ROWID`,
       "CREATE INDEX sessions_timestamp_idx ON sessions (timestamp)",
+      // What an event is joined to its visit by, when a report of pages is
+      // filtered or broken down by where the visit came from.
+      "CREATE INDEX sessions_session_idx ON sessions (host_id, session_id)",
       `CREATE TABLE events (
         host_id INTEGER NOT NULL,
         timestamp INTEGER NOT NULL,

@@ -4,10 +4,12 @@ import { parentPort, workerData } from "node:worker_threads";
 import { openSqlite } from "../db/sqlite.ts";
 import { Logger, errFields } from "../log.ts";
 import { Geo } from "./geo.ts";
-import { type AnalyticsHost, Ingest, type IngestResponse } from "./ingest.ts";
-import type { FromWorker, SenderHeaders, ToWorker, WorkerConfig } from "./protocol.ts";
+import { type AnalyticsHost, Ingest } from "./ingest.ts";
+import type { FromWorker, SenderHeaders, ToWorker, WorkerConfig, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import { QueryEngine } from "./query/engine.ts";
 import { Salts } from "./salts.ts";
 import { SESSION_TIMEOUT, SessionCache } from "./sessions.ts";
+import { Stats } from "./stats.ts";
 import { AnalyticsStore } from "./store.ts";
 import { EVENT_PATH } from "./tracker.ts";
 import { UserAgents } from "./user-agent.ts";
@@ -76,6 +78,9 @@ for (const session of store.openSessions(now - SESSION_TIMEOUT).sort((a, b) => a
 }
 
 let hosts = new Map<string, AnalyticsHost>();
+let timezone = "UTC";
+
+const stats = new Stats(new QueryEngine(store.db), log);
 
 const ingest = new Ingest({
   store,
@@ -125,7 +130,7 @@ const server = Bun.serve({
  * The tracker posts `text/plain`, which is what spares it a preflight, but a
  * client of Plausible's API may send JSON and preflight it, so both are met.
  */
-async function receive(request: Request, headers: SenderHeaders, socketIp: string): Promise<IngestResponse> {
+async function receive(request: Request, headers: SenderHeaders, socketIp: string): Promise<WorkerResponse> {
   if (request.method === "OPTIONS") return { status: 204, headers: {}, body: "" };
   if (request.method !== "POST") {
     return { status: 405, headers: { allow: "POST, OPTIONS" }, body: "Send events with POST." };
@@ -149,7 +154,7 @@ function clientIp(headers: SenderHeaders, socketIp: string): string {
   return forwarded || headers.realIp?.trim() || socketIp;
 }
 
-function toResponse(result: IngestResponse): Response {
+function toResponse(result: WorkerResponse): Response {
   return new Response(result.body || null, { status: result.status, headers: { ...CORS, ...result.headers } });
 }
 
@@ -163,6 +168,30 @@ function flush(): void {
     }
   } catch (error) {
     log.error("analytics_flush_failed", errFields(error));
+  }
+}
+
+/** Answer something the main thread asked. */
+async function answer(request: WorkerRequest): Promise<WorkerResponse> {
+  switch (request.type) {
+    case "event":
+      return await receive(
+        new Request("http://analytics/api/event", {
+          method: request.method,
+          body: request.method === "POST" ? request.body : undefined,
+        }),
+        request.headers,
+        "",
+      );
+    case "query":
+      // Whatever arrived in the last few seconds is still in memory.
+      flush();
+      return stats.query(request.host, request.body, timezone);
+    case "current-visitors":
+      flush();
+      return stats.currentVisitors(request.host);
+    case "suggestions":
+      return stats.suggestions(request.host, request.filter, request.params, timezone);
   }
 }
 
@@ -193,14 +222,13 @@ port.on("message", (message: ToWorker) => {
       if (config.downloadGeo && message.hosts.some((host) => host.counting)) geo.keepUpdated();
       break;
 
-    case "event": {
-      const request = new Request("http://analytics/api/event", {
-        method: message.method,
-        body: message.method === "POST" ? message.body : undefined,
-      });
-      void receive(request, message.headers, "").then((response) => send({ type: "event", id: message.id, response }));
+    case "settings":
+      timezone = message.timezone;
       break;
-    }
+
+    case "request":
+      void answer(message.request).then((response) => send({ type: "reply", id: message.id, response }));
+      break;
 
     case "stop":
       void stop(0);

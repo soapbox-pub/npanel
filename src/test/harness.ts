@@ -87,6 +87,8 @@ export interface Harness {
    * rows directly calls `builder.hostsChanged()` before expecting them served.
    */
   builder: HostBuilder;
+  /** Not running unless a test starts it, which cleanup then stops. */
+  analytics: AnalyticsService;
   blobs: BlobStore;
   /** Serving's cache. A test that writes host rows directly must clear it. */
   serveCache: ServeCache;
@@ -205,6 +207,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   // isn't running answers the event path with a 503 and ignores host changes.
   const analytics = new AnalyticsService({
     db,
+    settings,
     log,
     config: { port: 0, address: "127.0.0.1", dataDir: dir, logLevel: "error", downloadGeo: false },
   });
@@ -235,6 +238,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     settings,
     sync,
     builder,
+    analytics,
     blobs,
     serveCache,
     app,
@@ -270,6 +274,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     async cleanup() {
       await sync.stop();
       await builder.stop();
+      await analytics.stop();
       await db.destroy();
       await rm(dir, { recursive: true, force: true });
     },
