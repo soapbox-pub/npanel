@@ -157,6 +157,20 @@ test("verifies the payload hash when present", async () => {
   );
 });
 
+test("a request with a body must bind it with a payload tag", async () => {
+  const body = JSON.stringify({ role: "admin" });
+  const auth = `Nostr ${token({ method: "POST" })}`;
+
+  await assert.rejects(
+    () => verifyNip98(request({ method: "POST", body, auth }), { dashboardHost: HOST }),
+    /must carry a payload tag/,
+  );
+
+  // A bodyless POST — `/sync`, say — has nothing to bind.
+  const event = await verifyNip98(request({ method: "POST", auth }), { dashboardHost: HOST });
+  assert.equal(event.pubkey, PUBKEY);
+});
+
 test("auth failures carry a 401 status", async () => {
   await assert.rejects(
     () => verifyNip98(request(), { dashboardHost: HOST }),

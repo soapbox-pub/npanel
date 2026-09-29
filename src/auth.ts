@@ -79,13 +79,17 @@ export async function verifyNip98(
   }
   assertUrlMatches(signed, request.url, opts.dashboardHost);
 
+  // A body is only bound to the signature by the payload tag, so a request
+  // with one must carry it. Without the tag, anyone who saw the header could
+  // replay it within the window above with a body of their own.
   const payload = tag(event, "payload");
-  if (payload !== undefined) {
-    const body = Buffer.from(await request.clone().arrayBuffer());
-    const digest = createHash("sha256").update(body).digest("hex");
-    if (digest !== payload) {
-      throw new AuthError("Auth event payload hash does not match the request body.");
+  const body = request.body ? Buffer.from(await request.clone().arrayBuffer()) : Buffer.alloc(0);
+  if (payload === undefined) {
+    if (body.byteLength) {
+      throw new AuthError("Auth event must carry a payload tag for a request with a body.");
     }
+  } else if (createHash("sha256").update(body).digest("hex") !== payload) {
+    throw new AuthError("Auth event payload hash does not match the request body.");
   }
 
   return event;

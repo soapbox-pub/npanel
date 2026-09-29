@@ -681,8 +681,10 @@ hundred milliseconds to a few seconds, all of it on the analytics thread.
 NIP-98: the client signs a kind 27235 event naming the method and URL, and sends
 it base64-encoded in `Authorization: Nostr <event>`. npanel verifies the
 signature, checks the event is less than 60 seconds old, that the method
-matches, and — for requests with a body — that the `payload` tag matches the
-body's sha256.
+matches, and — for requests with a body — that it carries a `payload` tag
+matching the body's sha256. The tag is required rather than checked only when
+present: it is the one thing tying a body to the signature, and without it a
+header seen once could be replayed within the minute with any body at all.
 
 The signed `u` tag is compared against `DASHBOARD_HOST`, not against the URL
 this process sees. Behind a proxy those differ: the client signs
