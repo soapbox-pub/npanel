@@ -1,6 +1,9 @@
+import { ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 
 import { Switch } from '@/components/ui/switch';
+import { type TileColor, TILE_COLORS } from '@/lib/tile-colors';
 import { cn } from '@/lib/utils';
 
 /**
@@ -110,5 +113,53 @@ export function FieldRow({ label, htmlFor, children }: { label: ReactNode; htmlF
         {children}
       </div>
     </div>
+  );
+}
+
+/** The little coloured tile a section of settings is marked with, as Settings draws one. */
+export function RowIcon({ color, children, className }: { color: TileColor; children: ReactNode; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        'flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white [&_svg]:size-4',
+        TILE_COLORS[color],
+        className,
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * A row that opens a page of its own: its section's icon, its name, a word or
+ * two of what's inside, and the chevron that says it goes somewhere.
+ */
+export function LinkRow({
+  to,
+  icon,
+  label,
+  value,
+}: {
+  to: string;
+  icon: ReactNode;
+  label: ReactNode;
+  value?: ReactNode;
+}) {
+  return (
+    <Link
+      to={to}
+      className="group flex items-center gap-3 pl-4 transition-colors hover:bg-foreground/[0.03] focus-visible:bg-foreground/[0.05] focus-visible:outline-hidden active:bg-foreground/[0.06]"
+    >
+      {icon}
+      <span data-row className="flex min-h-12 min-w-0 flex-1 items-center gap-3 border-t py-2.5 pr-3">
+        <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
+        {value !== undefined && value !== null && value !== '' && (
+          <span className="min-w-0 max-w-[50%] truncate text-sm text-muted-foreground">{value}</span>
+        )}
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
+      </span>
+    </Link>
   );
 }
