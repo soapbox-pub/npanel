@@ -75,33 +75,67 @@ function isPrivateIPv4(address: string): boolean {
 }
 
 function isPrivateIPv6(address: string): boolean {
-  // Drop any zone index (`fe80::1%eth0`).
-  const value = address.toLowerCase().split("%")[0];
+  const groups = ipv6Groups(address);
+  if (!groups) return true;
 
-  if (value === "::" || value === "::1") return true;
+  const [first, second] = groups;
+  const embedded = (high: number, low: number) =>
+    isPrivateIPv4([high >> 8, high & 0xff, low >> 8, low & 0xff].join("."));
 
-  // IPv4-mapped addresses are just IPv4 with a prefix, in either notation.
-  if (value.startsWith("::ffff:")) {
-    const mapped = value.slice("::ffff:".length);
-    if (isIP(mapped) === 4) return isPrivateIPv4(mapped);
-
-    const groups = mapped.split(":");
-    if (groups.length === 2) {
-      const high = Number.parseInt(groups[0], 16);
-      const low = Number.parseInt(groups[1], 16);
-      if (Number.isNaN(high) || Number.isNaN(low)) return true;
-      return isPrivateIPv4([high >> 8, high & 0xff, low >> 8, low & 0xff].join("."));
-    }
-
-    return true;
+  // Every address that carries an IPv4 one inside it is only as public as that
+  // address, since that is where a packet to it may end up.
+  if (groups.slice(0, 5).every((group) => group === 0)) {
+    // ::ffff:0:0/96, IPv4-mapped.
+    if (groups[5] === 0xffff) return embedded(groups[6], groups[7]);
+    // ::/96, which is `::`, `::1`, and the deprecated IPv4-compatible block.
+    if (groups[5] === 0) return true;
   }
+  // 64:ff9b::/96, NAT64's well-known prefix: a NAT64 gateway on the network
+  // forwards it to the IPv4 address in its last 32 bits.
+  if (first === 0x64 && second === 0xff9b && groups.slice(2, 6).every((group) => group === 0)) {
+    return embedded(groups[6], groups[7]);
+  }
+  // 6to4, 2002::/16, whose next 32 bits are an IPv4 address.
+  if (first === 0x2002) return embedded(second, groups[2]);
 
-  const first = Number.parseInt(value.split(":")[0] || "0", 16);
-  if (Number.isNaN(first)) return true;
-
+  if (first === 0x64 && second === 0xff9b) return true; // 64:ff9b:1::/48, local-use NAT64
+  if (first === 0x2001 && second === 0) return true; // 2001::/32, Teredo, which hides its IPv4 relay
+  if (first === 0x2001 && second === 0xdb8) return true; // 2001:db8::/32, documentation
+  if (first === 0x100 && groups.slice(1, 4).every((group) => group === 0)) return true; // 100::/64, discard
   if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local
   if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10 link local
+  if ((first & 0xffc0) === 0xfec0) return true; // fec0::/10, site local, deprecated but still routed
   if ((first & 0xff00) === 0xff00) return true; // ff00::/8 multicast
 
   return false;
+}
+
+/**
+ * The eight 16-bit groups of an IPv6 address, with `::` expanded and a
+ * trailing dotted IPv4 part folded into the last two. Undefined if it can't be
+ * read, which callers treat as private.
+ */
+function ipv6Groups(address: string): number[] | undefined {
+  // Drop any zone index (`fe80::1%eth0`).
+  let value = address.toLowerCase().split("%")[0];
+
+  const dotted = value.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    if (isIP(dotted[2]) !== 4) return undefined;
+    const [a, b, c, d] = dotted[2].split(".").map(Number);
+    value = `${dotted[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+
+  const halves = value.split("::");
+  if (halves.length > 2) return undefined;
+
+  const parse = (part: string) => (part ? part.split(":").map((group) => Number.parseInt(group, 16)) : []);
+  const head = parse(halves[0]);
+  const tail = halves.length === 2 ? parse(halves[1]) : [];
+  const missing = 8 - head.length - tail.length;
+
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return undefined;
+
+  const groups = [...head, ...Array<number>(missing).fill(0), ...tail];
+  return groups.every((group) => Number.isInteger(group) && group >= 0 && group <= 0xffff) ? groups : undefined;
 }
