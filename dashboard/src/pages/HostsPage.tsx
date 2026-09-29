@@ -47,7 +47,7 @@ export function HostsPage() {
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search"
             aria-label="Search sites"
-            className="rounded-full bg-secondary pl-9 border-transparent"
+            className="surface rounded-full border-transparent pl-9"
           />
         </div>
       )}
