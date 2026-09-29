@@ -86,7 +86,7 @@ export function HostsPage() {
 }
 
 function Grid({ children }: { children: ReactNode }) {
-  return <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>;
+  return <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>;
 }
 
 function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: SparklineData; loading: boolean }) {

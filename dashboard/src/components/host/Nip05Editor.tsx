@@ -226,7 +226,7 @@ export function Nip05Editor({ hostname }: { hostname: string }) {
 
       <Section title={editing ? `Edit ${editing}@${hostname}` : 'Add a name'}>
         <form
-          className="grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
+          className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
           onSubmit={(event) => {
             event.preventDefault();
             void save();

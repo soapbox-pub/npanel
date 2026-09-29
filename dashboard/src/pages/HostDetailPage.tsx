@@ -205,7 +205,8 @@ export function HostDetailPage() {
 
 /**
  * The site's share image, as a banner the header sits on: the picture it chose
- * for itself, faded out so the page's own text stays readable over it.
+ * for itself, faded out so the page's own text stays readable over it. Left
+ * off a phone, where it would push everything that matters below the fold.
  */
 function Banner({ src }: { src: string }) {
   const [failed, setFailed] = useState(false);
@@ -216,7 +217,7 @@ function Banner({ src }: { src: string }) {
       src={src}
       alt=""
       onError={() => setFailed(true)}
-      className="h-40 w-full rounded-2xl object-cover opacity-80 [mask-image:linear-gradient(to_bottom,black,rgb(0_0_0/0.5)_45%,transparent_90%)] sm:h-52"
+      className="hidden h-52 w-full rounded-2xl object-cover opacity-80 sm:block [mask-image:linear-gradient(to_bottom,black,rgb(0_0_0/0.5)_45%,transparent_90%)]"
     />
   );
 }

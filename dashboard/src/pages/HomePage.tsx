@@ -139,7 +139,7 @@ function ServedSites() {
   return (
     <section className="space-y-6">
       <h2 className="text-center text-2xl font-bold tracking-tight sm:text-3xl">Served from here</h2>
-      <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {sites.data.map((site) => (
           <li key={site.hostname}>
             <SiteCardLink site={site} />
@@ -180,7 +180,7 @@ function SiteCardLink({ site }: { site: SiteCard }) {
 
 function HowItWorks() {
   return (
-    <section className="grid gap-4 sm:grid-cols-3">
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
       <Step icon={<Upload />} tile="bg-linear-to-b from-[#64d2ff] to-[#0a84ff]" title="Publish">
         Push a site to Nostr with any nsite tool.
       </Step>
@@ -212,7 +212,7 @@ function Step({ icon, tile, title, children }: { icon: ReactNode; tile: string; 
 function SelfHost() {
   return (
     <section id="self-host" className="scroll-mt-20">
-      <div className="grid items-center gap-10 rounded-3xl bg-card p-6 surface sm:p-10 md:grid-cols-2">
+      <div className="grid grid-cols-1 items-center gap-10 rounded-3xl bg-card p-6 surface sm:p-10 md:grid-cols-2">
         <div className="space-y-4">
           <h2 className="text-3xl font-bold tracking-tight">Run your own.</h2>
           <p className="text-lg text-muted-foreground">
