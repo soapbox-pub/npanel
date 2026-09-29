@@ -18,12 +18,26 @@ export function SiteIcon({ hostname, src, className }: { hostname: string; src?:
       aria-hidden
       className={cn(
         '@container relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-[22%] font-semibold text-white shadow-[inset_0_0_0_0.5px_rgb(0_0_0/0.08)]',
-        icon ? 'bg-white' : cn('bg-linear-to-b', siteTile(hostname)),
+        !icon && cn('bg-linear-to-b', siteTile(hostname)),
         className,
       )}
     >
       {icon ? (
-        <img src={icon} alt="" loading="lazy" onError={() => setFailed(icon)} className="size-full object-cover" />
+        <>
+          {/*
+           * White for icons with transparency, stopping a pixel short of the
+           * edge. Were it the tile's own background, the rounded corners would
+           * blend it through the icon's antialiased edge as a light fringe.
+           */}
+          <span className="absolute inset-px rounded-[22%] bg-white" />
+          <img
+            src={icon}
+            alt=""
+            loading="lazy"
+            onError={() => setFailed(icon)}
+            className="relative size-full object-cover"
+          />
+        </>
       ) : (
         <span className="text-[55cqw] leading-none">{letter}</span>
       )}
