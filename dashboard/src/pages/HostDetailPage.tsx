@@ -4,14 +4,7 @@ import {
   ArrowUpRight,
   BarChart3,
   ChevronRight,
-  Code,
-  Eye,
-  Layers,
-  Network,
-  Power,
   RefreshCw,
-  Search,
-  Shield,
 } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -19,7 +12,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AddressInput } from '@/components/AddressInput';
 import { CopyButton } from '@/components/CopyButton';
 import { DnsRecords } from '@/components/DnsRecords';
-import { Row, RowIcon, Section, ToggleRow } from '@/components/Grouped';
+import { Row, Section, ToggleRow } from '@/components/Grouped';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
 import { Nip05Editor } from '@/components/host/Nip05Editor';
@@ -317,11 +310,6 @@ function General({ host }: { host: Host }) {
       <Section title="Serving">
         <ToggleRow
           id="enabled"
-          icon={
-            <RowIcon color="green">
-              <Power />
-            </RowIcon>
-          }
           label="Serve this site"
           description={host.enabled ? undefined : 'Every request gets a 404.'}
           checked={host.enabled}
@@ -329,11 +317,6 @@ function General({ host }: { host: Host }) {
         />
         <ToggleRow
           id="spa"
-          icon={
-            <RowIcon color="blue">
-              <Code />
-            </RowIcon>
-          }
           label="Single-page app"
           description="Unknown paths load the app instead of a 404."
           checked={host.spa}
@@ -341,11 +324,6 @@ function General({ host }: { host: Host }) {
         />
         <ToggleRow
           id="merge"
-          icon={
-            <RowIcon color="indigo">
-              <Layers />
-            </RowIcon>
-          }
           label="Keep files from earlier deploys"
           description="Pages already open keep loading their old chunks."
           checked={host.merge_deployments}
@@ -359,11 +337,6 @@ function General({ host }: { host: Host }) {
           <>
             <ToggleRow
               id="www"
-              icon={
-                <RowIcon color="teal">
-                  <Network />
-                </RowIcon>
-              }
               label={`Redirect www.${host.hostname}`}
               checked={host.redirect_www}
               onCheckedChange={(redirect) =>
@@ -371,7 +344,7 @@ function General({ host }: { host: Host }) {
               }
             />
             {host.redirect_www && (
-              <div className="pr-4 pb-3 pl-14">
+              <div className="pr-4 pb-3 pl-4">
                 <DnsRecords hostname={host.hostname} www />
               </div>
             )}
@@ -392,11 +365,6 @@ function General({ host }: { host: Host }) {
       >
         <ToggleRow
           id="csp"
-          icon={
-            <RowIcon color="blue">
-              <Shield />
-            </RowIcon>
-          }
           label="Content Security Policy"
           description={cspDescription(host)}
           checked={host.csp}
@@ -404,11 +372,6 @@ function General({ host }: { host: Host }) {
         />
         <ToggleRow
           id="analytics"
-          icon={
-            <RowIcon color="orange">
-              <BarChart3 />
-            </RowIcon>
-          }
           label="Analytics"
           description="Counts visits without cookies or personal data."
           checked={host.analytics}
@@ -418,22 +381,12 @@ function General({ host }: { host: Host }) {
         />
         <ToggleRow
           id="listed"
-          icon={
-            <RowIcon color="purple">
-              <Eye />
-            </RowIcon>
-          }
           label="Show on the public site list"
           checked={!host.hidden}
           onCheckedChange={(listed) => patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')}
         />
         <ToggleRow
           id="seo"
-          icon={
-            <RowIcon color="gray">
-              <Search />
-            </RowIcon>
-          }
           label="Search engine defaults"
           description="A sitemap and canonical URLs, when the site has none."
           checked={host.seo}

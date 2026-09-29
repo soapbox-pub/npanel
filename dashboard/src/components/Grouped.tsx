@@ -45,15 +45,12 @@ export function Section({
 export function Row({
   label,
   description,
-  icon,
   children,
   htmlFor,
   className,
 }: {
   label: ReactNode;
   description?: ReactNode;
-  /** A {@link RowIcon}, drawn in front of the label as Settings does. */
-  icon?: ReactNode;
   children?: ReactNode;
   /** The control the label names, so clicking the label reaches it. */
   htmlFor?: string;
@@ -62,8 +59,7 @@ export function Row({
   const Label = htmlFor ? 'label' : 'div';
 
   return (
-    <div className="flex items-center gap-3 pl-4">
-      {icon}
+    <div className="pl-4">
       <div
         data-row
         className={cn(
@@ -92,7 +88,6 @@ export function ToggleRow({
   id: string;
   label: ReactNode;
   description?: ReactNode;
-  icon?: ReactNode;
   checked: boolean;
   disabled?: boolean;
   onCheckedChange(checked: boolean): void;
@@ -115,31 +110,5 @@ export function FieldRow({ label, htmlFor, children }: { label: ReactNode; htmlF
         {children}
       </div>
     </div>
-  );
-}
-
-const ICON_COLORS = {
-  blue: 'bg-[#0a84ff]',
-  green: 'bg-[#30d158]',
-  orange: 'bg-[#ff9f0a]',
-  red: 'bg-[#ff453a]',
-  purple: 'bg-[#bf5af2]',
-  indigo: 'bg-[#5e5ce6]',
-  gray: 'bg-[#8e8e93]',
-  teal: 'bg-[#40c8e0]',
-} as const;
-
-/** The little coloured tile in front of a Settings row. */
-export function RowIcon({ color, children }: { color: keyof typeof ICON_COLORS; children: ReactNode }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'flex size-7 shrink-0 items-center justify-center rounded-[7px] text-white [&_svg]:size-4',
-        ICON_COLORS[color],
-      )}
-    >
-      {children}
-    </span>
   );
 }
