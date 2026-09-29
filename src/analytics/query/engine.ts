@@ -3,6 +3,7 @@ import {
   type Dimension,
   type Filter,
   type Metric,
+  QueryError,
   type StatsQuery,
   type VisitDimension,
   timeInterval,
@@ -148,7 +149,7 @@ export class QueryEngine {
     const compare = query.include.compare;
 
     const range = mainRange(query.dateRange, ctx, compare);
-    const labels = interval ? timeLabels(interval, range, timezone, now) : [];
+    const labels = interval ? boundedLabels(interval, range, timezone, now) : [];
     const orderBy = query.orderBy ?? defaultOrder(query);
 
     const all = sortRows(this.rows(query, { ...this.scope(host, query, range, timezone), labels }), query, orderBy);
@@ -164,7 +165,7 @@ export class QueryEngine {
 
     if (compare) {
       comparison = comparisonRange(query.dateRange, range, compare, query.include.compareMatchDayOfWeek, ctx);
-      const comparisonLabels = interval ? timeLabels(interval, comparison, timezone, now) : [];
+      const comparisonLabels = interval ? boundedLabels(interval, comparison, timezone, now) : [];
       const compared = this.rows(query, {
         ...this.scope(host, query, comparison, timezone),
         labels: comparisonLabels,
@@ -581,6 +582,37 @@ export class QueryEngine {
     }
     return VISIT_SQL[dimension as VisitDimension];
   }
+}
+
+/**
+ * Most time buckets one query may ask for: a year by the hour, with room over.
+ *
+ * Every bucket is a label in memory, and with an hourly interval three bound
+ * parameters too, so a custom range spanning millennia would otherwise be
+ * enough to take the analytics thread down.
+ */
+const MAX_TIME_BUCKETS = 10_000;
+
+/** The shortest each interval can be, in seconds, for counting buckets before making them. */
+const INTERVAL_SECONDS: Record<Interval, number> = {
+  minute: 60,
+  hour: 3600,
+  day: 86_400,
+  week: 7 * 86_400,
+  month: 28 * 86_400,
+};
+
+/** {@link timeLabels}, refusing a range that would have too many. */
+function boundedLabels(interval: Interval, range: TimeRange, timezone: string, now: number): string[] {
+  // Counted from the shortest an interval can be, so this errs towards refusing
+  // a range right at the limit rather than building one far past it.
+  if ((range.last - range.first) / INTERVAL_SECONDS[interval] > MAX_TIME_BUCKETS) {
+    throw new QueryError(
+      `That range is too long to show by the ${interval}. Pick a shorter range or a longer interval.`,
+    );
+  }
+
+  return timeLabels(interval, range, timezone, now);
 }
 
 /** Dimensions whose values are codes, and the dimension that names them. */

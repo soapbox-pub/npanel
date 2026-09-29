@@ -392,3 +392,26 @@ test("questions Plausible refuses are refused with its reasons", () => {
   refuse({ metrics: ["visitors"], filters: [["matches", "event:page", ["/"]]] }, /operator 'matches'/);
   refuse({ metrics: ["visitors"], date_range: "all", include: { compare: "previous_period" } }, /Comparisons/);
 });
+
+test("a range with more time buckets than the limit is refused rather than built", async () => {
+  const { query } = await setup();
+
+  assert.throws(
+    () => query({ metrics: ["visitors"], date_range: ["1900-01-01", "2100-12-31"], dimensions: ["time:hour"] }),
+    (error: Error) => error instanceof QueryError && /too long to show by the hour/.test(error.message),
+  );
+  assert.throws(
+    () =>
+      query({
+        metrics: ["visitors"],
+        date_range: ["2026-09-01", "2026-09-27"],
+        dimensions: ["time:day"],
+        include: { compare: ["1900-01-01", "2100-12-31"] },
+      }),
+    /too long to show by the day/,
+  );
+
+  // A year by the hour is the longest question the dashboard asks, and fits.
+  const year = query({ metrics: ["visitors"], date_range: ["2025-09-28", "2026-09-27"], dimensions: ["time:hour"] });
+  assert.ok(Array.isArray(year.results));
+});
