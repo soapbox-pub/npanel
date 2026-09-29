@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BlobStore } from "./blobs.ts";
-import { SitePreviews, extractManifestIcon, extractMeta, resolveImage } from "./site-preview.ts";
+import { SitePreviews, extractManifestIcons, extractMeta, resolveImage } from "./site-preview.ts";
 
 const dirs: string[] = [];
 
@@ -183,28 +183,30 @@ test("reads the icons and manifest a document links", () => {
   assert.deepEqual(meta, {
     icons: [
       { href: "/favicon-32.png", apple: false, size: 32 },
-      { href: "/touch.png", apple: true, size: 180 },
+      { href: "/touch.png", apple: true, size: 0 },
     ],
     manifest: "/app.webmanifest",
   });
 });
 
-test("a manifest offers its largest icon meant for ordinary display", () => {
+test("a manifest offers every icon but a bare silhouette", () => {
   const manifest = JSON.stringify({
     icons: [
       { src: "icon-192.png", sizes: "192x192" },
-      { src: "icon-512.png", sizes: "512x512" },
-      { src: "maskable-1024.png", sizes: "1024x1024", purpose: "maskable" },
+      { src: "maskable-512.png", sizes: "512x512", purpose: "maskable" },
+      { src: "logo.svg", purpose: "any monochrome" },
+      { src: "badge.png", sizes: "96x96", purpose: "monochrome" },
+      { src: " " },
     ],
   });
 
-  assert.equal(extractManifestIcon(manifest), "icon-512.png");
-  assert.equal(
-    extractManifestIcon(JSON.stringify({ icons: [{ src: "m.png", sizes: "512x512", purpose: "maskable" }] })),
-    "m.png",
-  );
-  assert.equal(extractManifestIcon("{ not json"), null);
-  assert.equal(extractManifestIcon(JSON.stringify({ name: "No icons" })), null);
+  assert.deepEqual(extractManifestIcons(manifest), [
+    { src: "icon-192.png", size: 192 },
+    { src: "maskable-512.png", size: 512 },
+    { src: "logo.svg", size: 1024 },
+  ]);
+  assert.deepEqual(extractManifestIcons("{ not json"), []);
+  assert.deepEqual(extractManifestIcons(JSON.stringify({ name: "No icons" })), []);
 });
 
 test("finds a site's icon the way a home screen would", async () => {
@@ -219,22 +221,44 @@ test("finds a site's icon the way a home screen would", async () => {
       <link rel="manifest" href="/assets/app.webmanifest">
     </head></html>`,
   );
-  const manifest = await put(blobs, JSON.stringify({ icons: [{ src: "icon-512.png", sizes: "512x512" }] }));
+  const manifest = await put(
+    blobs,
+    JSON.stringify({
+      icons: [
+        { src: "icon-192.png", sizes: "192x192" },
+        { src: "icon-512.png", sizes: "512x512" },
+      ],
+    }),
+  );
 
-  // The manifest's first, resolved against the manifest rather than the page.
+  // An apple-touch-icon first: it was drawn for exactly this.
   assert.equal(
     await previews.icon(
       page,
       ORIGIN,
       build({ "/assets/app.webmanifest": manifest, "/assets/icon-512.png": "i", "/touch.png": "t" }),
     ),
+    "https://docs.example.com/touch.png",
+  );
+
+  // Then the manifest's largest, resolved against the manifest rather than the page.
+  assert.equal(
+    await previews.icon(
+      page,
+      ORIGIN,
+      build({ "/assets/app.webmanifest": manifest, "/assets/icon-512.png": "i", "/favicon.svg": "s" }),
+    ),
     "https://docs.example.com/assets/icon-512.png",
   );
 
-  // Then an apple-touch-icon, when the manifest isn't in the build.
+  // A manifest icon the build doesn't have gives way to the next one it does.
   assert.equal(
-    await previews.icon(page, ORIGIN, build({ "/touch.png": "t", "/favicon.svg": "s" })),
-    "https://docs.example.com/touch.png",
+    await previews.icon(
+      page,
+      ORIGIN,
+      build({ "/assets/app.webmanifest": manifest, "/assets/icon-192.png": "i", "/favicon.svg": "s" }),
+    ),
+    "https://docs.example.com/assets/icon-192.png",
   );
 
   // A link to a file the build doesn't have is passed over, not shown broken.
@@ -243,10 +267,15 @@ test("finds a site's icon the way a home screen would", async () => {
     "https://docs.example.com/favicon.svg",
   );
 
-  // And a favicon.ico that is simply there, for a page that names nothing.
+  // A file at a conventional name counts for a page that names nothing, with
+  // an apple-touch-icon above any favicon.
   assert.equal(
     await previews.icon(undefined, ORIGIN, build({ "/favicon.ico": "f" })),
     "https://docs.example.com/favicon.ico",
+  );
+  assert.equal(
+    await previews.icon(undefined, ORIGIN, build({ "/favicon.ico": "f", "/apple-touch-icon.png": "a" })),
+    "https://docs.example.com/apple-touch-icon.png",
   );
   assert.equal(await previews.icon(undefined, ORIGIN, build({})), null);
 });

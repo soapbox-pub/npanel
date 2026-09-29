@@ -27,8 +27,22 @@ interface IconLink {
   href: string;
   /** `apple-touch-icon` is drawn full-bleed on a rounded square, which is how npanel draws icons too. */
   apple: boolean;
-  /** The largest edge it claims, in pixels; a vector scales to anything. */
+  /** The largest edge it claims, in pixels; {@link LARGEST} for a vector, 0 if it doesn't say. */
   size: number;
+}
+
+/** An icon a web app manifest names, as written. */
+interface ManifestIcon {
+  src: string;
+  size: number;
+}
+
+/** An icon from anywhere, ready to be ranked against the rest. */
+interface IconCandidate {
+  href: string;
+  /** What `href` is relative to: the page, or the manifest that named it. */
+  base: URL;
+  score: number;
 }
 
 /** Preview metadata as it was written, before URLs are resolved. */
@@ -56,8 +70,41 @@ const MAX_CACHED = 500;
 /** How much of a web app manifest is read. A real one is a few kilobytes. */
 const MAX_MANIFEST_BYTES = 64 * 1024;
 
-/** What a vector icon counts as, against icons that give their size in pixels. */
-const VECTOR_SIZE = 4096;
+/**
+ * The edge past which a bigger icon is no better, and what a vector counts as:
+ * more than enough for any tile npanel draws.
+ */
+const LARGEST = 1024;
+
+/**
+ * Where an icon came from, ranked. A site can declare the same picture several
+ * ways, and the declarations differ in what they promise: an apple-touch-icon
+ * is drawn to be a home screen icon and fills its tile edge to edge, a web app
+ * manifest icon is the same thing by another name, and a favicon is a glyph
+ * meant to be read at 16px in a tab. Higher wins.
+ */
+const RANK = { appleTouch: 300, manifest: 200, favicon: 100 } as const;
+
+/**
+ * Files at the conventional names, for sites that ship an icon without ever
+ * linking to it. Browsers probe `/favicon.ico` the same way.
+ */
+const CONVENTIONAL: Array<[path: string, score: number]> = [
+  ["/apple-touch-icon.png", RANK.appleTouch],
+  ["/icon.svg", RANK.favicon + 0.9],
+  ["/icon.png", RANK.favicon + 0.8],
+  ["/favicon.svg", RANK.favicon + 0.7],
+  ["/favicon.png", RANK.favicon + 0.6],
+  ["/favicon.ico", RANK.favicon + 0.5],
+];
+
+/**
+ * Rank within a class by declared size, without ever outranking the class
+ * above: a 1024px favicon is still a favicon.
+ */
+function score(rank: number, size: number): number {
+  return rank + Math.min(size, LARGEST) / (LARGEST + 1);
+}
 
 /**
  * Preview metadata for served sites, cached by the sha256 of the document it
@@ -71,8 +118,8 @@ const VECTOR_SIZE = 4096;
  */
 export class SitePreviews {
   private documents = new Map<string, RawMeta>();
-  /** The icon each manifest names, as written, by the manifest's hash. */
-  private manifests = new Map<string, string | null>();
+  /** The icons each manifest names, as written, by the manifest's hash. */
+  private manifests = new Map<string, ManifestIcon[]>();
 
   constructor(private readonly blobs: BlobStore) {}
 
@@ -88,12 +135,10 @@ export class SitePreviews {
   }
 
   /**
-   * The site's icon, taken first from its web app manifest — the largest icon
-   * meant for ordinary display — the way its title and share image are taken
-   * from its landing page. A site with no manifest, or one naming no usable
-   * icon, falls back to an `apple-touch-icon`, then whatever
-   * `<link rel="icon">` it has — a vector first — and finally a `/favicon.ico`
-   * that is simply there.
+   * The site's icon, the way a home screen would pick it: every icon the site
+   * declares — its landing page's links, the web app manifest those link, and
+   * files at the conventional names — ranked by {@link RANK} and then by size,
+   * and the best one the build can actually serve.
    *
    * `page` is the landing page's hash, when it has one. An icon on the site's
    * own domain counts only if the build really has the file, so a stale link
@@ -101,40 +146,42 @@ export class SitePreviews {
    */
   async icon(page: string | undefined, origin: URL, lookup: BuildLookup): Promise<string | null> {
     const meta = page ? await this.meta(page) : {};
-    const links = [...(meta.icons ?? [])].sort((a, b) => b.size - a.size);
 
-    if (meta.manifest) {
-      const url = await this.manifestIcon(meta.manifest, origin, lookup);
-      if (url) return url;
+    const candidates: IconCandidate[] = (meta.icons ?? []).map((link) => ({
+      href: link.href,
+      base: origin,
+      score: score(link.apple ? RANK.appleTouch : RANK.favicon, link.size),
+    }));
+
+    if (meta.manifest) candidates.push(...(await this.manifestIcons(meta.manifest, origin, lookup)));
+
+    for (const [path, rank] of CONVENTIONAL) {
+      candidates.push({ href: path, base: origin, score: rank });
     }
 
-    for (const link of links.filter((link) => link.apple)) {
-      const url = await usable(link.href, origin, lookup);
+    candidates.sort((a, b) => b.score - a.score);
+
+    for (const candidate of candidates) {
+      const url = await usable(candidate.href, candidate.base, lookup);
       if (url) return url;
     }
-
-    for (const link of links.filter((link) => !link.apple)) {
-      const url = await usable(link.href, origin, lookup);
-      if (url) return url;
-    }
-
-    return await usable("/favicon.ico", origin, lookup);
+    return null;
   }
 
-  private async manifestIcon(href: string, origin: URL, lookup: BuildLookup): Promise<string | null> {
+  private async manifestIcons(href: string, origin: URL, lookup: BuildLookup): Promise<IconCandidate[]> {
     // A manifest elsewhere would have to be fetched, and nothing here fetches.
     const url = sameOrigin(href, origin);
     const sha256 = url && (await lookup(sitePath(url)));
-    if (!url || !sha256) return null;
+    if (!url || !sha256) return [];
 
-    let src = this.manifests.get(sha256);
-    if (src === undefined) {
-      src = extractManifestIcon(await this.blobs.readText(sha256, MAX_MANIFEST_BYTES));
-      remember(this.manifests, sha256, src);
+    let icons = this.manifests.get(sha256);
+    if (!icons) {
+      icons = extractManifestIcons(await this.blobs.readText(sha256, MAX_MANIFEST_BYTES));
+      remember(this.manifests, sha256, icons);
     }
 
     // Icons in a manifest are relative to the manifest, not to the page.
-    return src ? await usable(src, url, lookup) : null;
+    return icons.map((icon) => ({ href: icon.src, base: url, score: score(RANK.manifest, icon.size) }));
   }
 
   private async meta(sha256: string): Promise<RawMeta> {
@@ -188,31 +235,33 @@ function sitePath(url: URL): string {
 }
 
 /**
- * The icon a web app manifest would put on a home screen: the largest one
- * meant for ordinary display. Maskable icons carry a safe zone of padding and
- * monochrome ones are a silhouette, so they are only taken when there is
- * nothing else.
+ * The icons a web app manifest names that could stand for the site.
+ *
+ * A `monochrome` icon is a silhouette meant to be tinted by whatever shows it,
+ * which is useless as a tile, so one declared for nothing else is left out. A
+ * site may declare one asset for several purposes, though, and that one stays.
  */
-export function extractManifestIcon(json: string): string | null {
+export function extractManifestIcons(json: string): ManifestIcon[] {
   let manifest: unknown;
   try {
     manifest = JSON.parse(json);
   } catch {
-    return null;
+    return [];
   }
 
   const icons = (manifest as { icons?: unknown })?.icons;
-  if (!Array.isArray(icons)) return null;
+  if (!Array.isArray(icons)) return [];
 
-  const candidates = icons.flatMap((icon: unknown) => {
+  return icons.flatMap((icon: unknown) => {
     const { src, sizes, purpose, type } = (icon ?? {}) as Record<string, unknown>;
-    if (typeof src !== "string" || !src) return [];
+    if (typeof src !== "string" || !src.trim()) return [];
 
-    const purposes = typeof purpose === "string" ? purpose.toLowerCase().split(/\s+/) : ["any"];
+    const purposes = typeof purpose === "string" ? purpose.toLowerCase().trim().split(/\s+/) : [];
+    if (purposes.length > 0 && purposes.every((p) => p === "monochrome")) return [];
+
     return [
       {
-        src,
-        plain: purposes.includes("any"),
+        src: src.trim(),
         size: largestSize(
           typeof sizes === "string" ? sizes : undefined,
           src,
@@ -221,15 +270,12 @@ export function extractManifestIcon(json: string): string | null {
       },
     ];
   });
-
-  candidates.sort((a, b) => Number(b.plain) - Number(a.plain) || b.size - a.size);
-  return candidates[0]?.src ?? null;
 }
 
 /** The largest edge an icon claims, from its `sizes` or — for a vector — its type. */
 function largestSize(sizes: string | undefined, href: string, type: string | undefined): number {
   if (type === "image/svg+xml" || /\.svg(?:[?#]|$)/i.test(href) || sizes?.toLowerCase().includes("any")) {
-    return VECTOR_SIZE;
+    return LARGEST;
   }
 
   let largest = 0;
@@ -282,10 +328,7 @@ export function extractMeta(html: string): RawMeta {
       icons.push({
         href: decodeHTML(href),
         apple: rel.some((token) => token.startsWith("apple-touch-icon")),
-        // An apple-touch-icon that doesn't say is the 180px Apple asks for.
-        size:
-          largestSize(element.getAttribute("sizes") ?? undefined, href, element.getAttribute("type") ?? undefined) ||
-          (rel.includes("icon") ? 0 : 180),
+        size: largestSize(element.getAttribute("sizes") ?? undefined, href, element.getAttribute("type") ?? undefined),
       });
     }
   }
