@@ -517,7 +517,7 @@ restricts it to `a-z0-9-_.`, and anything else is a `400` rather than something
 escaped, since a name outside that set is one no client will ever look up. `_`
 is legal and is the identifier clients render as the bare domain.
 
-`relays` is optional, at most ten, and each must be `ws://` or `wss://`. They
+`relays` is optional, at most ten, and each must be `wss://`. They
 are normalized and deduplicated, so the same relay written two ways is stored
 once. The pubkey is stored and served as hex whatever form it arrives in — the
 NIP forbids `npub` in the document itself.

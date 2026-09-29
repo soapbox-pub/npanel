@@ -8,7 +8,11 @@
  */
 
 /**
- * Accept a `ws://` or `wss://` URL; always return it normalized.
+ * Accept a `wss://` URL; always return it normalized.
+ *
+ * Plain `ws://` is refused everywhere. Anything on the path can read or rewrite
+ * an unencrypted relay connection — which manifests npanel sees, which relays a
+ * NIP-05 name points clients at — and no relay worth naming lacks TLS.
  *
  * The trailing slash `URL` adds to a bare origin is dropped, because a relay is
  * named by its origin and `wss://relay.example.com/` is the same relay as
@@ -25,8 +29,8 @@ export function parseRelayUrl(input: string): string {
     throw new Error(`Not a valid relay URL: ${value}`);
   }
 
-  if (url.protocol !== "wss:" && url.protocol !== "ws:") {
-    throw new Error(`A relay URL has to start with wss:// or ws://: ${value}`);
+  if (url.protocol !== "wss:") {
+    throw new Error(`A relay URL has to start with wss://: ${value}`);
   }
 
   return url.toString().replace(/\/$/, "");

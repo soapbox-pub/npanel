@@ -10,7 +10,7 @@ import type { DeployStatus } from "../db/schema.ts";
 import { Logger } from "../log.ts";
 import { ServeCache } from "../serve-cache.ts";
 import { SettingsService } from "../settings.ts";
-import { startEmptyRelay } from "../test/empty-relay.ts";
+import { serve } from "../test/serve.ts";
 import { DeployService } from "./service.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -53,8 +53,12 @@ async function setup(status: DeployStatus) {
   const settings = await SettingsService.load(db);
   // The thread opens its own relay pool, so it can't be handed a fake one.
   // The defaults are real relays and Blossom servers, which no test may touch.
-  const relay = startEmptyRelay();
-  await settings.update({ relays: [relay.url], blossom_fallback_servers: [], deploy_attempts: 1 }, PUBKEY);
+  // Relays must be wss://, and the thread can't be made to trust a test
+  // certificate, so the one it gets is a local server that fails the TLS
+  // handshake: nothing leaves the machine, and nothing here needs a relay.
+  const relay = serve(() => new Response("Not a relay."));
+  const relayUrl = relay.url.replace(/^http:/, "wss:");
+  await settings.update({ relays: [relayUrl], blossom_fallback_servers: [], deploy_attempts: 1 }, PUBKEY);
 
   const { id: hostId } = await db
     .insertInto("hosts")
@@ -150,14 +154,10 @@ test("a host is rebuilt on the thread when the main thread asks", async () => {
 });
 
 test("a setting changed on the main thread reaches the deploy thread", async () => {
-  const { db, settings, service, served, storePage } = await setup("pending");
+  // A deploy that already failed, which nothing but a settings change will
+  // retry: the startup resync is stuck asking a relay that never answers.
+  const { settings, service, served, storePage } = await setup("failed");
   await service.start();
-
-  // Nothing to download from, and one attempt allowed: it fails and stays failed.
-  await eventually(async () => {
-    const row = await db.selectFrom("site_events").select("status").executeTakeFirstOrThrow();
-    return row.status === "failed";
-  }, "The deploy never failed.");
 
   await storePage();
   // New fallbacks retry every version that isn't ready. The blob is on disk

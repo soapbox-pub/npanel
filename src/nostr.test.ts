@@ -9,10 +9,10 @@ const literalIsPublic = async (url: URL) => isPublicAddress(url.hostname.replace
 test("an author's relays on private addresses are never connected to", async () => {
   const relays = await vetRelayHints(
     [
-      "ws://127.0.0.1:9051",
-      "ws://169.254.169.254/latest",
+      "wss://127.0.0.1:9051",
+      "wss://169.254.169.254/latest",
       "wss://10.0.0.5",
-      "ws://[::1]:7777",
+      "wss://[::1]:7777",
       "wss://93.184.215.14",
       "wss://[2606:4700::1111]",
     ],
@@ -22,9 +22,15 @@ test("an author's relays on private addresses are never connected to", async () 
   assert.deepEqual(relays, ["wss://93.184.215.14", "wss://[2606:4700::1111]"]);
 });
 
-test("entries that are not websocket URLs are dropped, and duplicates kept once", async () => {
+test("entries that are not wss:// URLs are dropped, and duplicates kept once", async () => {
   const relays = await vetRelayHints(
-    ["https://relay.example.com", "not a url", "wss://relay.example.com/", "wss://relay.example.com"],
+    [
+      "https://relay.example.com",
+      "ws://plain.example.com",
+      "not a url",
+      "wss://relay.example.com/",
+      "wss://relay.example.com",
+    ],
     async () => true,
   );
 

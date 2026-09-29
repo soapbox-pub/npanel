@@ -365,6 +365,22 @@ const MIGRATIONS: Migration[] = [
         WHERE action = 'settings.update' AND target = 'tor_control_password'`,
     ],
   },
+  {
+    // Relays have to be wss:// now. A stored ws:// one would fail validation on
+    // load and take every other relay in the setting down with it, so they are
+    // dropped here instead. A relay list left empty is deleted, and the next
+    // start seeds the defaults in its place, as for any missing setting.
+    name: "019_relays_wss_only",
+    statements: [
+      `UPDATE settings
+        SET value = (SELECT json_group_array(value) FROM json_each(settings.value) WHERE value NOT LIKE 'ws://%')
+        WHERE key = 'relays'`,
+      "DELETE FROM settings WHERE key = 'relays' AND value = '[]'",
+      `UPDATE nip05_names
+        SET relays = (SELECT json_group_array(value) FROM json_each(nip05_names.relays) WHERE value NOT LIKE 'ws://%')
+        WHERE relays LIKE '%"ws://%'`,
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */

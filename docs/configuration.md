@@ -136,7 +136,9 @@ The relays npanel uses for everything: watching for new site manifests, and
 looking up authors' NIP-65 relay lists (kind 10002) and Blossom server lists
 (kind 10063). There is no separate lookup-relay list.
 
-At least one relay is required, and each must be a `ws://` or `wss://` URL.
+At least one relay is required, and each must be a `wss://` URL. Plain `ws://`
+is refused here and everywhere else npanel takes a relay: an unencrypted
+connection lets anything on the path read or rewrite what the relay says.
 Consider adding a couple of profile-oriented relays (`purplepag.es`,
 `user.kindpag.es`) — that's where kind 10002 and 10063 events usually live, and
 without them npanel may not learn where an author's blobs are.

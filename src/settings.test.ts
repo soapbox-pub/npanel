@@ -77,7 +77,8 @@ test("unchanged values are not written or announced", async () => {
 
 test("invalid values are rejected", () => {
   assert.throws(() => parseSetting("relays", []), /At least one relay/);
-  assert.throws(() => parseSetting("relays", ["https://example.com"]), /ws:\/\//);
+  assert.throws(() => parseSetting("relays", ["https://example.com"]), /wss:\/\//);
+  assert.throws(() => parseSetting("relays", ["ws://relay.example.com"]), /wss:\/\//);
   assert.throws(() => parseSetting("relays", ["not a url"]), /valid relay URL/);
   assert.throws(() => parseSetting("max_file_size", 0), /max_file_size/);
   assert.throws(() => parseSetting("resync_interval", 5), /resync_interval/);

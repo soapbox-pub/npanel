@@ -239,7 +239,7 @@ export function blobUrl(server: string, sha256: string): string {
 
 /**
  * The relays from an author's list that npanel will connect to: well-formed
- * `ws(s)://` URLs on public addresses, at most {@link MAX_AUTHOR_RELAYS}.
+ * `wss://` URLs on public addresses, at most {@link MAX_AUTHOR_RELAYS}.
  *
  * The same rule blob downloads follow, for the same reason. The list is written
  * by whoever publishes a site, so without it a kind 10002 event is enough to

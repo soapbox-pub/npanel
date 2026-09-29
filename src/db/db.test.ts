@@ -127,3 +127,64 @@ test("the Tor control password is scrubbed from audit entries written before it 
 
   await db.destroy();
 });
+
+test("plain ws:// relays are dropped from stored settings and NIP-05 names", async () => {
+  const db = await openDatabase(":memory:");
+
+  await db
+    .insertInto("settings")
+    .values([
+      { key: "relays", value: JSON.stringify(["ws://plain.example.com", "wss://relay.example.com"]), updated_at: 1 },
+    ])
+    .execute();
+  const { id } = await db
+    .insertInto("hosts")
+    .values({
+      hostname: "docs.example.com",
+      pubkey: "a".repeat(64),
+      kind: 15128,
+      identifier: "",
+      pinned_event_id: null,
+      enabled: 1,
+      created_by: "b".repeat(64),
+      created_at: 1,
+      updated_at: 1,
+    })
+    .returning("id")
+    .executeTakeFirstOrThrow();
+  await db
+    .insertInto("nip05_names")
+    .values({
+      host_id: id,
+      name: "alice",
+      pubkey: "c".repeat(64),
+      relays: JSON.stringify(["wss://relay.example.com", "ws://plain.example.com"]),
+      created_at: 1,
+      updated_at: 1,
+    })
+    .execute();
+
+  await sql`DELETE FROM schema_migrations WHERE name = '019_relays_wss_only'`.execute(db);
+  await migrate(db);
+
+  const relays = await db.selectFrom("settings").select("value").where("key", "=", "relays").executeTakeFirstOrThrow();
+  assert.deepEqual(JSON.parse(relays.value), ["wss://relay.example.com"]);
+  const name = await db.selectFrom("nip05_names").select("relays").executeTakeFirstOrThrow();
+  assert.deepEqual(JSON.parse(name.relays), ["wss://relay.example.com"]);
+
+  // A list with nothing left is removed, so the defaults are seeded next start.
+  await db
+    .updateTable("settings")
+    .set({ value: JSON.stringify(["ws://plain.example.com"]) })
+    .where("key", "=", "relays")
+    .execute();
+  await sql`DELETE FROM schema_migrations WHERE name = '019_relays_wss_only'`.execute(db);
+  await migrate(db);
+
+  assert.equal(
+    await db.selectFrom("settings").select("value").where("key", "=", "relays").executeTakeFirst(),
+    undefined,
+  );
+
+  await db.destroy();
+});

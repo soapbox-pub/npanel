@@ -163,9 +163,10 @@ a neighbouring service would be a disaster.
 
 Relays the author lists in their kind 10002 are held to the same rule, since
 they are just as much the author's to choose and each one is a WebSocket the
-deploy thread opens. Only `ws(s)://` URLs on public addresses are used, and only
+deploy thread opens. Only `wss://` URLs on public addresses are used, and only
 the first five (`vetRelayHints`, `src/nostr.ts`). The relays an admin configures
-are not checked: pointing npanel at a relay on the LAN is theirs to decide.
+are not checked against the address rule — pointing npanel at a relay on the
+LAN is theirs to decide — but they too must be `wss://`.
 
 That last part is the important invariant: **a host serves only `ready`
 versions**. A deploy that is still downloading, or that failed outright, never
