@@ -72,6 +72,8 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   relays: { label: 'Relays' },
   blossom_fallback_servers: { label: 'Fallback Blossom servers' },
   max_file_size: { label: 'Largest file', format: (value) => formatBytes(Number(value)) },
+  max_site_size: { label: 'Largest site', format: (value) => formatBytes(Number(value)) },
+  max_site_files: { label: 'Most files in a site' },
   deploy_attempts: { label: 'Attempts before giving up' },
   resync_interval: { label: 'Check relays every', format: (value) => `${value} seconds` },
   dns_targets: { label: 'DNS target' },

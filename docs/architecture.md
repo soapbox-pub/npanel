@@ -140,6 +140,15 @@ Deploying means downloading every blob the version references, four at a time,
 trying each candidate server in turn. Only when all of them are on disk does the
 version become `ready`.
 
+What gets downloaded is the author's choice, not staff's, so it is bounded.
+Only a site's newest version is deployed — one that a newer manifest overtook
+while it waited fails as superseded — and a version over `max_site_files` or
+`max_site_size` fails without being retried. An author publishing manifests as
+fast as they can is downloaded one bounded version at a time, not one version
+per manifest. Superseded versions still hold their blobs until `prune-blobs`
+removes them, so a gateway serving sites it doesn't trust should run it on a
+schedule.
+
 Downloads only go to public addresses, and there is no way to turn that off.
 Download targets are not npanel's to choose — they come from the manifest's own
 `server` tags, from the author's kind 10063 list, and from wherever those

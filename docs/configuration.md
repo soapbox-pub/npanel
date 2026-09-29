@@ -171,6 +171,30 @@ will download. A blob that exceeds it is aborted mid-stream and the version
 fails with the reason recorded in its deploy log. Raising the limit retries
 incomplete versions.
 
+### `max_site_size`
+
+Default `1073741824` (1 GiB), allowed range 1 MiB–1 TiB. The largest one version
+of a site may be: every blob it references added up, including ones another
+site already brought. What a deploy downloads is decided by the site's author,
+not by anyone with access to npanel, so this is what keeps one author from
+filling the disk.
+
+A manifest doesn't say how big its files are, so npanel finds out by
+downloading. Once a version passes the limit nothing new is started, the few
+downloads already under way finish, and the version fails. It is not retried,
+since the next attempt would meet the same answer; raising the limit retries
+incomplete versions.
+
+### `max_site_files`
+
+Default `50000`, allowed range 1–1,000,000. The most files one version of a site
+may list. A version over it fails before anything is downloaded, and, like
+`max_site_size`, raising the limit retries it.
+
+Only a site's newest version is ever downloaded. A manifest that arrives after a
+newer one from the same site — or that is still waiting its turn when a newer
+one lands — fails as superseded rather than being fetched in full.
+
 ### `deploy_attempts`
 
 Default `3`, allowed range 1–10. How many times a version is deployed before

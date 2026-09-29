@@ -23,6 +23,16 @@ export interface SettingsValues {
   /** Largest single blob npanel will download, in bytes. */
   max_file_size: number;
   /**
+   * Largest one version of a site may be, in bytes: every blob it references,
+   * counted whether or not another site already brought it.
+   *
+   * A site's author, not its staff, decides what a deploy downloads, so this is
+   * what stops one of them filling the gateway's disk.
+   */
+  max_site_size: number;
+  /** Most files one version of a site may list. */
+  max_site_files: number;
+  /**
    * How many times a version is deployed before npanel stops for now — 1
    * disables retrying.
    *
@@ -270,6 +280,12 @@ const SCHEMAS = {
     .int()
     .positive()
     .max(8 * 1024 ** 3),
+  max_site_size: z
+    .number()
+    .int()
+    .min(1024 ** 2)
+    .max(1024 ** 4),
+  max_site_files: z.number().int().min(1).max(1_000_000),
   deploy_attempts: z.number().int().min(1).max(10),
   resync_interval: z.number().int().min(60).max(86400),
   // A CNAME may not coexist with any other record for the same name, so a
@@ -300,6 +316,8 @@ export const DEFAULT_SETTINGS: SettingsValues = {
     "https://blossom.primal.net/",
   ],
   max_file_size: 100 * 1024 * 1024,
+  max_site_size: 1024 ** 3,
+  max_site_files: 50_000,
   deploy_attempts: 3,
   resync_interval: 600,
   dns_targets: [],

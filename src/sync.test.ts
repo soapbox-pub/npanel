@@ -281,6 +281,87 @@ test("a version whose blobs are unavailable fails and does not replace the live 
   assert.ok(logs.some((entry) => entry.msg === "deploy_failed"));
 });
 
+test("a version published after a newer one is never downloaded", async () => {
+  const newer = { "/index.html": "v2" };
+  const older = { "/index.html": "v1" };
+  const server = blossom({
+    [sha256(newer["/index.html"])]: newer["/index.html"],
+    [sha256(older["/index.html"])]: older["/index.html"],
+  });
+
+  const { db, worker } = await harness();
+
+  const second = manifest(newer, { servers: [server.url], createdAt: 2000 });
+  const first = manifest(older, { servers: [server.url], createdAt: 1000 });
+  await worker.ingest(second);
+  await worker.ingest(first);
+  await worker.whenIdle();
+
+  const rows = await db.selectFrom("site_events").select(["event_id", "status", "error"]).execute();
+  const status = Object.fromEntries(rows.map((row) => [row.event_id, row]));
+
+  assert.equal(status[second.id].status, "ready");
+  assert.equal(status[first.id].status, "failed");
+  assert.match(status[first.id].error ?? "", /newer version was published/);
+  assert.ok(!server.requests.includes(sha256(older["/index.html"])), "the superseded blob was never fetched");
+});
+
+test("a version listing more files than allowed is refused before downloading anything", async () => {
+  const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };
+  const server = blossom({
+    [sha256(files["/index.html"])]: files["/index.html"],
+    [sha256(files["/style.css"])]: files["/style.css"],
+  });
+
+  const { db, settings, worker } = await harness();
+  await settings.update({ max_site_files: 1 }, PUBKEY);
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /2 files, more than the 1/);
+  assert.deepEqual(server.requests, []);
+
+  // No retry was queued: the answer would be the same.
+  const logs = await db.selectFrom("deploy_log").select("msg").execute();
+  assert.ok(logs.some((entry) => entry.msg === "too_many_files"));
+  assert.ok(!logs.some((entry) => entry.msg === "deploy_retrying"));
+
+  // Raising the limit is what a refused deploy was waiting for.
+  await settings.update({ max_site_files: 10 }, PUBKEY);
+  await eventually(
+    async () => (await db.selectFrom("site_events").select("status").executeTakeFirstOrThrow()).status === "ready",
+    "the version deploys once the limit allows it",
+  );
+});
+
+test("a version larger than allowed stops downloading and fails", async () => {
+  const files = {
+    "/a.bin": "a".repeat(700 * 1024),
+    "/b.bin": "b".repeat(700 * 1024),
+  };
+  const server = blossom({
+    [sha256(files["/a.bin"])]: files["/a.bin"],
+    [sha256(files["/b.bin"])]: files["/b.bin"],
+  });
+
+  const { db, settings, worker } = await harness();
+  await settings.update({ max_site_size: 1024 * 1024 }, PUBKEY);
+
+  await worker.ingest(manifest(files, { servers: [server.url] }));
+  await worker.whenIdle();
+
+  const row = await db.selectFrom("site_events").selectAll().executeTakeFirstOrThrow();
+  assert.equal(row.status, "failed");
+  assert.match(row.error ?? "", /larger than the 1 MB/);
+
+  const logs = await db.selectFrom("deploy_log").select("msg").execute();
+  assert.ok(logs.some((entry) => entry.msg === "site_too_large"));
+  assert.ok(!logs.some((entry) => entry.msg === "deploy_retrying"));
+});
+
 test("retries a failed deploy, keeping what the last attempt downloaded", async () => {
   const files = { "/index.html": "<h1>hi</h1>", "/style.css": "body{}" };
   const server = blossom(

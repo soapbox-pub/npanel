@@ -108,7 +108,12 @@ export class SyncWorker {
       if (keys.includes("resync_interval")) {
         this.scheduleResync();
       }
-      if (keys.includes("blossom_fallback_servers") || keys.includes("max_file_size")) {
+      if (
+        keys.includes("blossom_fallback_servers") ||
+        keys.includes("max_file_size") ||
+        keys.includes("max_site_size") ||
+        keys.includes("max_site_files")
+      ) {
         // New servers or a bigger limit may be exactly what a failed deploy needed.
         void this.retryIncomplete();
       }
@@ -442,6 +447,32 @@ export class SyncWorker {
 
     if (!row || row.status === "ready") return;
 
+    // Only the newest version of a site is worth downloading. Every manifest an
+    // author publishes is queued as it arrives, and without this one who
+    // publishes faster than npanel deploys would have every version fetched in
+    // full, on the gateway's disk rather than their own.
+    const newest = await newestEvent(this.db, row);
+    if (newest && newest.created_at > row.created_at) {
+      await this.refuse(
+        eventId,
+        "A newer version was published before this one was deployed, so npanel deployed that one instead.",
+        "deploy_superseded",
+        { newer: newest.event_id },
+      );
+      return;
+    }
+
+    const maxFiles = this.settings.get("max_site_files");
+    if (row.files_total > maxFiles) {
+      await this.refuse(
+        eventId,
+        `This version has ${row.files_total} files, more than the ${maxFiles} a site may have here. An admin can raise the limit under Settings.`,
+        "too_many_files",
+        { files: row.files_total, limit: maxFiles },
+      );
+      return;
+    }
+
     const event = parseStoredEvent(row);
 
     await this.db
@@ -472,11 +503,15 @@ export class SyncWorker {
     });
 
     const missing: string[] = [];
+    // Bytes of this version already on disk. Blobs other sites share count
+    // too: the limit is on how big a version is, not on what it costs to add.
+    let stored = 0;
     for (const sha256 of hashes) {
       const size = await this.blobs.size(sha256);
       if (size === undefined) {
         missing.push(sha256);
       } else {
+        stored += size;
         await recordBlob(this.db, sha256, size);
         // Already on disk, but not necessarily compressed: it may have been
         // downloaded before npanel did this, or by a site that serves it under
@@ -487,6 +522,12 @@ export class SyncWorker {
     }
 
     await this.setProgress(eventId, hashes.length - missing.length);
+
+    const maxSize = this.settings.get("max_site_size");
+    if (stored > maxSize) {
+      await this.refuse(eventId, oversized(maxSize), "site_too_large", { bytes: stored, limit: maxSize });
+      return;
+    }
 
     if (!missing.length) {
       await this.finish(eventId, "ready");
@@ -516,10 +557,18 @@ export class SyncWorker {
       servers: servers.join(" "),
     });
 
-    const { failed, abandoned } = await this.downloadAll(eventId, missing, servers, {
+    const { failed, abandoned, bytes } = await this.downloadAll(eventId, missing, servers, {
       compressible,
       alreadyReady: hashes.length - missing.length,
+      budget: maxSize - stored,
     });
+
+    // Ahead of the shutdown check: a deploy stopped for its size is finished,
+    // and resuming it would only download more of what it can't have.
+    if (stored + bytes > maxSize) {
+      await this.refuse(eventId, oversized(maxSize), "site_too_large", { bytes: stored + bytes, limit: maxSize });
+      return;
+    }
 
     if (abandoned) {
       // Shutting down mid-deploy. Marking this ready would serve a site whose
@@ -543,29 +592,37 @@ export class SyncWorker {
    *
    * Returns the blobs no server could supply, plus however many were never
    * attempted because the worker stopped — those are not failures, and a
-   * version that has any of them must not be marked ready.
+   * version that has any of them must not be marked ready — and the bytes
+   * downloaded.
+   *
+   * Nothing new is started once the downloads pass `budget` bytes. A manifest
+   * doesn't say how big its blobs are, so the limit is found by crossing it:
+   * the downloads already under way finish, which bounds the overshoot at a
+   * few files of `max_file_size` each.
    */
   private async downloadAll(
     eventId: string,
     missing: string[],
     servers: string[],
-    opts: { compressible: Set<string>; alreadyReady: number },
-  ): Promise<{ failed: string[]; abandoned: number }> {
+    opts: { compressible: Set<string>; alreadyReady: number; budget: number },
+  ): Promise<{ failed: string[]; abandoned: number; bytes: number }> {
     const maxSize = this.settings.get("max_file_size");
     const queue = [...missing];
     const failed: string[] = [];
     let ready = opts.alreadyReady;
+    let bytes = 0;
 
     const worker = async (): Promise<void> => {
-      while (this.running) {
+      while (this.running && bytes <= opts.budget) {
         const sha256 = queue.shift();
         if (!sha256) return;
 
-        const ok = await this.downloadBlob(eventId, sha256, servers, {
+        const size = await this.downloadBlob(eventId, sha256, servers, {
           maxSize,
           compress: opts.compressible.has(sha256),
         });
-        if (ok) {
+        if (size !== undefined) {
+          bytes += size;
           ready++;
           await this.setProgress(eventId, ready);
         } else {
@@ -576,7 +633,7 @@ export class SyncWorker {
 
     await Promise.all(Array.from({ length: Math.min(BLOB_CONCURRENCY, queue.length) }, worker));
 
-    return { failed, abandoned: queue.length };
+    return { failed, abandoned: queue.length, bytes };
   }
 
   /**
@@ -627,6 +684,17 @@ export class SyncWorker {
   }
 
   /**
+   * Fail a version for a reason retrying can't fix: it was superseded, or it
+   * breaks a limit. Nothing is queued, since the next attempt would meet the
+   * same answer; raising the limit re-queues the site's newest version.
+   */
+  private async refuse(eventId: string, reason: string, msg: string, fields: LogFields): Promise<void> {
+    this.attempts.delete(eventId);
+    await writeDeployLog(this.db, eventId, "warn", msg, fields);
+    await this.finish(eventId, "failed", reason);
+  }
+
+  /**
    * Leave an interrupted deploy incomplete, so the next sync resumes it.
    *
    * A version only ever leaves `pending`/`fetching_blobs` when every blob is
@@ -649,13 +717,13 @@ export class SyncWorker {
     this.log.warn("deploy_interrupted", { event_id: eventId, remaining });
   }
 
-  /** Try each server in turn for one blob. */
+  /** Try each server in turn for one blob. Returns its size, or undefined if no server had it. */
   private async downloadBlob(
     eventId: string,
     sha256: string,
     servers: string[],
     opts: { maxSize: number; compress: boolean },
-  ): Promise<boolean> {
+  ): Promise<number | undefined> {
     for (const server of servers) {
       const url = blobUrl(server, sha256);
       try {
@@ -667,7 +735,7 @@ export class SyncWorker {
         await writeDeployLog(this.db, eventId, "debug", "blob_downloaded", { sha256, server, size });
         if (opts.compress) await this.compress(eventId, sha256);
         await recordVariantSizes(this.db, this.blobs, sha256);
-        return true;
+        return size;
       } catch (error) {
         const fields: LogFields = {
           sha256,
@@ -686,7 +754,7 @@ export class SyncWorker {
       servers: servers.length,
     });
 
-    return false;
+    return undefined;
   }
 
   /**
@@ -751,6 +819,11 @@ export class SyncWorker {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Why a version too big for `max_site_size` was refused. */
+function oversized(limit: number): string {
+  return `This version is larger than the ${Math.round(limit / 1024 ** 2)} MB a site may take up here. An admin can raise the limit under Settings.`;
 }
 
 /** A wait, as someone reading about it would say it. */

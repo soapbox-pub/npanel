@@ -22,6 +22,8 @@ interface Draft {
   relays?: string;
   servers?: string;
   maxFileSize?: string;
+  maxSiteSize?: string;
+  maxSiteFiles?: string;
   deployAttempts?: string;
   resyncInterval?: string;
   allowedHostSuffixes?: string;
@@ -63,6 +65,8 @@ export function SettingsSectionPage() {
   const relays = draft.relays ?? current?.relays.join('\n') ?? '';
   const servers = draft.servers ?? current?.blossom_fallback_servers.join('\n') ?? '';
   const maxFileSize = draft.maxFileSize ?? String(Math.round((current?.max_file_size ?? 0) / (1024 * 1024)));
+  const maxSiteSize = draft.maxSiteSize ?? String(Math.round((current?.max_site_size ?? 0) / (1024 * 1024)));
+  const maxSiteFiles = draft.maxSiteFiles ?? String(current?.max_site_files ?? '');
   const deployAttempts = draft.deployAttempts ?? String(current?.deploy_attempts ?? '');
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
   const allowedHostSuffixes = draft.allowedHostSuffixes ?? current?.allowed_host_suffixes.join('\n') ?? '';
@@ -82,6 +86,8 @@ export function SettingsSectionPage() {
         relays: lines(relays),
         blossom_fallback_servers: lines(servers),
         max_file_size: Math.round(Number(maxFileSize) * 1024 * 1024),
+        max_site_size: Math.round(Number(maxSiteSize) * 1024 * 1024),
+        max_site_files: Number(maxSiteFiles),
         deploy_attempts: Number(deployAttempts),
         resync_interval: Number(resyncInterval),
         allowed_host_suffixes: lines(allowedHostSuffixes),
@@ -217,6 +223,23 @@ export function SettingsSectionPage() {
             min={1}
             value={maxFileSize}
             onChange={(value) => setDraft({ ...draft, maxFileSize: value })}
+          />
+          <NumberRow
+            id="max-site-size"
+            label="Largest site"
+            description="All of one version's files together."
+            unit="MB"
+            min={1}
+            value={maxSiteSize}
+            onChange={(value) => setDraft({ ...draft, maxSiteSize: value })}
+          />
+          <NumberRow
+            id="max-site-files"
+            label="Most files in a site"
+            unit="files"
+            min={1}
+            value={maxSiteFiles}
+            onChange={(value) => setDraft({ ...draft, maxSiteFiles: value })}
           />
           <NumberRow
             id="resync-interval"

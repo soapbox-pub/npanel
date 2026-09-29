@@ -141,6 +141,8 @@ export interface Settings {
   relays: string[];
   blossom_fallback_servers: string[];
   max_file_size: number;
+  max_site_size: number;
+  max_site_files: number;
   deploy_attempts: number;
   resync_interval: number;
   dns_targets: string[];
