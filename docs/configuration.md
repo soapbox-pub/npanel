@@ -266,6 +266,15 @@ here, one enthusiastic or compromised account can exhaust issuance for a domain
 that everything else on the gateway shares. Setting this to the domains you
 actually serve bounds that.
 
+It is also the only thing bounding *which* names staff can claim. A grant covers
+the hosts it names, but adding a host needs no grant: any staff user can take
+any hostname nobody has configured yet, including the `www` of a root domain
+someone else serves — a `www` host configured deliberately wins over that
+domain's redirect — or a subdomain under it. npanel doesn't check that whoever
+adds a name controls its DNS. On a gateway shared by teams that don't trust one
+another, list the domains each may use here, or keep the staff role to people
+you would trust with all of them.
+
 It applies when a host is created and when one is renamed. Hosts that already
 exist keep working, so tightening it never takes a site offline.
 
