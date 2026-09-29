@@ -152,6 +152,12 @@ pinning the connection to the address it checked, so a determined DNS-rebinding
 attack can still get through: don't run npanel somewhere a single GET request to
 a neighbouring service would be a disaster.
 
+Relays the author lists in their kind 10002 are held to the same rule, since
+they are just as much the author's to choose and each one is a WebSocket the
+deploy thread opens. Only `ws(s)://` URLs on public addresses are used, and only
+the first five (`vetRelayHints`, `src/nostr.ts`). The relays an admin configures
+are not checked: pointing npanel at a relay on the LAN is theirs to decide.
+
 That last part is the important invariant: **a host serves only `ready`
 versions**. A deploy that is still downloading, or that failed outright, never
 replaces a working site — the previous version keeps serving. A brand-new host

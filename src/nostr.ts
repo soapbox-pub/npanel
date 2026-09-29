@@ -2,7 +2,9 @@ import { NPool, NRelay1 } from "@nostrify/nostrify";
 import type { NostrEvent, NostrFilter } from "@nostrify/nostrify";
 import { type Logger, errFields } from "./log.ts";
 import { getManifestServers, parseRelayList, parseServerList } from "./manifest.ts";
+import { isPublicUrl } from "./net.ts";
 import { NAMED_SITE_KIND, type NsiteAddress } from "./nsite-address.ts";
+import { parseRelayUrl } from "./relay-url.ts";
 
 /** NIP-65 relay list. */
 const RELAY_LIST_KIND = 10002;
@@ -13,6 +15,15 @@ const SERVER_LIST_KIND = 10063;
 const LIST_STALE_TIME = 60 * 60 * 1000;
 
 const DEFAULT_TIMEOUT = 10_000;
+
+/**
+ * Most relays taken from one author's kind 10002 list.
+ *
+ * The list is the author's to write, and every entry is a connection the deploy
+ * thread opens and holds for as long as the subscription runs. A handful covers
+ * any honest outbox; a list of hundreds would otherwise be hundreds of sockets.
+ */
+export const MAX_AUTHOR_RELAYS = 5;
 
 interface CachedList {
   value: string[];
@@ -32,9 +43,14 @@ export class NostrService {
   private relayLists = new Map<string, CachedList>();
   private serverLists = new Map<string, CachedList>();
 
+  /**
+   * `isPublic` decides whether an author's relay may be connected to. It
+   * defaults to the DNS-resolving check blob downloads use.
+   */
   constructor(
     private readonly settings: { get(key: "relays"): string[] },
     private readonly log: Logger,
+    private readonly isPublic: (url: URL) => Promise<boolean> = isPublicUrl,
   ) {
     this.pool = new NPool({
       open: (url) => new NRelay1(url),
@@ -120,7 +136,7 @@ export class NostrService {
 
     for (const pubkey of misses) {
       const newest = latest(byAuthor.get(pubkey) ?? []);
-      const value = newest ? parseRelayList(newest).write : [];
+      const value = newest ? await vetRelayHints(parseRelayList(newest).write, this.isPublic) : [];
 
       lists.set(pubkey, value);
       this.relayLists.set(pubkey, { value, fetchedAt: Date.now() });
@@ -219,6 +235,33 @@ export function manifestFilter(address: NsiteAddress, since?: number): NostrFilt
 /** The URL a blob would live at on a Blossom server. */
 export function blobUrl(server: string, sha256: string): string {
   return new URL(sha256, server).toString();
+}
+
+/**
+ * The relays from an author's list that npanel will connect to: well-formed
+ * `ws(s)://` URLs on public addresses, at most {@link MAX_AUTHOR_RELAYS}.
+ *
+ * The same rule blob downloads follow, for the same reason. The list is written
+ * by whoever publishes a site, so without it a kind 10002 event is enough to
+ * make the deploy thread open connections to loopback, the LAN, or a cloud
+ * metadata service. Entries keep the author's order, so the cap keeps the ones
+ * they listed first, and only the first few are resolved at all: each check is
+ * a DNS lookup, and the list can be as long as its author likes.
+ */
+export async function vetRelayHints(urls: string[], isPublic: (url: URL) => Promise<boolean>): Promise<string[]> {
+  const candidates = dedupe(
+    urls.flatMap((url) => {
+      try {
+        return [parseRelayUrl(url)];
+      } catch {
+        return [];
+      }
+    }),
+  ).slice(0, MAX_AUTHOR_RELAYS * 4);
+
+  const verdicts = await Promise.all(candidates.map((url) => isPublic(new URL(url)).catch(() => false)));
+
+  return candidates.filter((_, index) => verdicts[index]).slice(0, MAX_AUTHOR_RELAYS);
 }
 
 function normalizeServer(server: string): string | undefined {
