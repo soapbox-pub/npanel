@@ -19,7 +19,6 @@ import {
   sitemapXml,
   versionDate,
 } from "./seo.ts";
-import type { ServeCache } from "./serve-cache.ts";
 import type { RequestOrigin } from "./serve-site.ts";
 import type { SettingsService } from "./settings.ts";
 import { activeEvent, newestByPath, versionChain } from "./sites.ts";
@@ -72,8 +71,12 @@ export interface HostBuilderDeps {
   db: Kysely<Database>;
   blobs: BlobStore;
   settings: SettingsService;
-  /** Cleared when a build goes live, so the next request is served from it. */
-  serveCache: ServeCache;
+  /**
+   * Told whenever what a host serves changes, so serving's cache is cleared
+   * and the next request is answered from the new build. Serving may be on
+   * another thread, so this is a notification rather than the cache itself.
+   */
+  servingChanged(): void;
   log: Logger;
   /** Overrides {@link RETRY_BACKOFF}, so tests don't have to wait one out. */
   retryBackoff?: number;
@@ -127,7 +130,7 @@ export class HostBuilder {
   private readonly db: Kysely<Database>;
   private readonly blobs: BlobStore;
   private readonly settings: SettingsService;
-  private readonly serveCache: ServeCache;
+  private readonly servingChanged: () => void;
   private readonly log: Logger;
   private readonly retryBackoff: number;
 
@@ -146,7 +149,7 @@ export class HostBuilder {
     this.db = deps.db;
     this.blobs = deps.blobs;
     this.settings = deps.settings;
-    this.serveCache = deps.serveCache;
+    this.servingChanged = deps.servingChanged;
     this.log = deps.log;
     this.retryBackoff = deps.retryBackoff ?? RETRY_BACKOFF;
   }
@@ -287,7 +290,7 @@ export class HostBuilder {
     const event = await activeEvent(this.db, host);
     if (!event) {
       const dropped = await this.db.deleteFrom("host_builds").where("host_id", "=", hostId).executeTakeFirst();
-      if (dropped.numDeletedRows > 0n) this.serveCache.clear();
+      if (dropped.numDeletedRows > 0n) this.servingChanged();
       return undefined;
     }
 
@@ -387,7 +390,7 @@ export class HostBuilder {
         .execute();
     });
 
-    this.serveCache.clear();
+    this.servingChanged();
 
     this.log.info("build_ready", { ...fields, files: files.size, ms: Date.now() - started });
     await writeDeployLog(this.db, event.event_id, "info", "build_ready", { ...fields, files: files.size });

@@ -6,15 +6,16 @@ import { after, describe, it } from "node:test";
 import type { Kysely } from "kysely";
 import { AnalyticsService } from "./analytics/service.ts";
 import { BlobStore } from "./blobs.ts";
-import { HostBuilder } from "./builds.ts";
 import { openDatabase } from "./db/index.ts";
 import type { Database } from "./db/schema.ts";
+import { Deployer } from "./deploy/deployer.ts";
 import { Logger } from "./log.ts";
 import { ServeCache } from "./serve-cache.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SiteCsp } from "./site-csp.ts";
 import { type FakeTorDaemon, startFakeTorDaemon } from "./test/fake-tor.ts";
+import { fakeNostr } from "./test/harness.ts";
 import { TorService } from "./tor.ts";
 
 const ACTOR = "f".repeat(64);
@@ -47,7 +48,15 @@ async function setup(): Promise<Setup> {
   await settings.update({ tor_enabled: true, tor_control_url: `tcp://127.0.0.1:${daemon.port}` }, ACTOR);
 
   const serveCache = new ServeCache(db);
-  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
+  const deployments = new Deployer({
+    db,
+    blobs,
+    nostr: fakeNostr(),
+    settings,
+    log,
+    servingChanged: () => serveCache.clear(),
+    retryBackoff: 0,
+  });
   const tor = new TorService({
     db,
     settings,
@@ -66,7 +75,7 @@ async function setup(): Promise<Setup> {
       log,
     }),
     serveCache,
-    builder,
+    deployments,
     // No test should sit through a reconnect's backoff.
     retryBackoff: 0,
   });

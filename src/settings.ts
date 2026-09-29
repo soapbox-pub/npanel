@@ -433,6 +433,21 @@ export class SettingsService {
     return changed;
   }
 
+  /**
+   * Take on settings another thread has already written, telling subscribers
+   * which ones changed.
+   *
+   * For the deploy thread, whose copy is kept current by the main thread
+   * rather than written or read back itself.
+   */
+  adopt(values: SettingsValues): void {
+    const changed = SETTING_KEYS.filter((key) => JSON.stringify(this.cache[key]) !== JSON.stringify(values[key]));
+    if (!changed.length) return;
+
+    this.cache = { ...values };
+    this.emitter.emit("change", changed);
+  }
+
   /** Subscribe to settings changes. Returns an unsubscribe function. */
   onChange(listener: (keys: SettingKey[]) => void): () => void {
     this.emitter.on("change", listener);

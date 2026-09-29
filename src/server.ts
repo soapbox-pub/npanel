@@ -4,18 +4,16 @@ import { fileURLToPath } from "node:url";
 import { AnalyticsService } from "./analytics/service.ts";
 import { createApp } from "./app.ts";
 import { BlobStore } from "./blobs.ts";
-import { HostBuilder } from "./builds.ts";
 import { Config } from "./config.ts";
 import { openDatabase } from "./db/index.ts";
+import { DeployService } from "./deploy/service.ts";
 import { DnsTargets } from "./dns.ts";
 import { Logger, errFields } from "./log.ts";
-import { NostrService } from "./nostr.ts";
 import { ServeCache } from "./serve-cache.ts";
 import { createSiteServer } from "./serve-site.ts";
 import { SettingsService } from "./settings.ts";
 import { SiteCsp } from "./site-csp.ts";
 import { SitePreviews } from "./site-preview.ts";
-import { SyncWorker } from "./sync.ts";
 import { startTlsCheckServer } from "./tls-check.ts";
 import { TorService } from "./tor.ts";
 
@@ -30,12 +28,17 @@ const log = new Logger(config.logLevel);
 const db = await openDatabase(config.databasePath, log);
 const settings = await SettingsService.load(db, log);
 const blobs = new BlobStore(config.blobsDir);
-const nostr = new NostrService(settings, log);
 // One instance: serving reads it, and every writer that changes what serving
-// would answer — the hosts API, the builder, Tor — clears it.
+// would answer — the hosts API, the deploy thread, Tor — clears it.
 const serveCache = new ServeCache(db);
-const builder = new HostBuilder({ db, blobs, settings, serveCache, log });
-const sync = new SyncWorker({ db, blobs, nostr, settings, builder, log });
+// Relays, downloads, compression and builds, on a thread of their own so that
+// a deploy never makes a visitor wait.
+const deployments = new DeployService({
+  settings,
+  serveCache,
+  log,
+  config: { databasePath: config.databasePath, blobsDir: config.blobsDir, logLevel: config.logLevel },
+});
 const dns = new DnsTargets({ dashboardHost: config.dashboardHost, settings, log });
 // One instance, so the serving path and the dashboard share its cache.
 const siteCsp = new SiteCsp(db, blobs, log);
@@ -55,16 +58,12 @@ const analytics = new AnalyticsService({
   },
 });
 const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, analytics, log });
-const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
+const tor = new TorService({ db, settings, log, serveSite, serveCache, deployments });
 
-// Ahead of sync, so a deploy that finishes early finds nothing stale left to
-// clear. Every host is reconciled in the background; one whose build is
-// current costs a hash.
-await builder.start();
-await sync.start();
-
-// Not awaited either: the analytics thread starting late, or failing to bind
-// its port and retrying, must never hold up serving sites.
+// Neither thread is awaited: one starting late, dying and being restarted, or
+// failing to bind its port and retrying, must never hold up serving sites.
+// Whatever the API asks of the deploy thread meanwhile is held until it's up.
+void deployments.start();
 void analytics.start();
 
 // Onion services, if an admin has turned them on. Everything here is driven by
@@ -83,8 +82,7 @@ const tlsCheck = startTlsCheckServer(
 const app = createApp({
   db,
   settings,
-  sync,
-  builder,
+  deployments,
   analytics,
   blobs,
   dns,
@@ -118,8 +116,7 @@ async function shutdown(): Promise<void> {
   try {
     await tlsCheck.stop();
     await tor.stop();
-    await sync.stop();
-    await builder.stop();
+    await deployments.stop();
     await analytics.stop();
     await db.destroy();
   } catch (error) {

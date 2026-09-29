@@ -1,6 +1,6 @@
 import type { Kysely } from "kysely";
-import type { HostBuilder } from "./builds.ts";
 import type { Database } from "./db/schema.ts";
+import type { Deployments } from "./deploy/deployer.ts";
 import { isOnionAddress, requestHostname } from "./hostname.ts";
 import { type Logger, errFields } from "./log.ts";
 import type { ServeCache } from "./serve-cache.ts";
@@ -44,7 +44,7 @@ export interface TorServiceDeps {
   /** Cleared when an onion is minted, so serving learns the new address. */
   serveCache: ServeCache;
   /** Told when an onion is minted, since the onion is served from a build of its own. */
-  builder: HostBuilder;
+  deployments: Deployments;
   /** First wait before retrying an unreachable Tor. Tests set it to zero. */
   retryBackoff?: number;
 }
@@ -89,7 +89,7 @@ export class TorService {
   private readonly log: Logger;
   private readonly serveSite: SiteServer;
   private readonly serveCache: ServeCache;
-  private readonly builder: HostBuilder;
+  private readonly deployments: Deployments;
   private readonly retryMin: number;
 
   private server: OnionServer | undefined;
@@ -112,7 +112,7 @@ export class TorService {
     this.log = deps.log;
     this.serveSite = deps.serveSite;
     this.serveCache = deps.serveCache;
-    this.builder = deps.builder;
+    this.deployments = deps.deployments;
     this.retryMin = deps.retryBackoff ?? RETRY_MIN;
     this.retryDelay = this.retryMin;
   }
@@ -318,7 +318,7 @@ export class TorService {
       // The lookup for this host now answers with the onion address too, and
       // the onion needs a build naming it before it serves anything.
       this.serveCache.clear();
-      void this.builder.hostsChanged([host.id]);
+      this.deployments.rebuild([host.id]);
     }
 
     this.live.set(host.id, key);

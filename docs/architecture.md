@@ -1,8 +1,8 @@
 # Architecture
 
 npanel is one process that does three things: it serves nsites over HTTP, it
-serves a dashboard for configuring which nsites those are, and it runs a
-background worker that keeps local storage in sync with Nostr.
+serves a dashboard for configuring which nsites those are, and, on a thread of
+its own, it keeps local storage in sync with Nostr.
 
 ```
         DNS ──► reverse proxy (TLS) ──► npanel :3000
@@ -218,6 +218,40 @@ only, so pruning the versions it was made from cannot take a working site down.
 Each host keeps its current build and the one before it — a request that
 looked up the old one a moment before the switch may still be resolving a path
 in it — and older ones are deleted as the new one goes live.
+
+## The deploy thread
+
+Sync and builds run on a worker thread of their own (`src/deploy/`), starting
+from the relay pool. Everything expensive about deploying a site happens there:
+checking the signature of every event a relay sends, downloading and hashing
+every blob, compressing at brotli's slowest setting, rewriting pages and
+generating files for a build, and the database writes that record each step.
+None of it is on the thread that serves sites, which goes on answering requests
+for the whole of a large deploy.
+
+The two threads share a database file rather than memory. The deploy thread
+opens its own connection to it, once the main thread has migrated it, and
+writes versions, deploy logs and builds there, where serving and the dashboard
+read them. So very little has to cross the channel: the main thread sends the
+settings whenever they change, and says when a host was edited or someone
+pressed *Check for a new version*; the deploy thread says when a build went
+live, so that serving's cache is cleared (`DeployService`,
+`src/deploy/service.ts`).
+
+None of what the main thread says has to arrive. Sync and builds are reconciled
+rather than tracked, so a thread starting up does everything a missed message
+would have asked for: it resyncs every site and rebuilds every host whose build
+is out of date. That is what makes the thread cheap to restart. An uncaught
+error ends it and it is started again with backoff, and whatever is sent while
+it starts is held until it is ready — behind a fresh copy of the settings,
+since one may have been written in between.
+
+The price is a second SQLite writer. WAL keeps reads from ever waiting on a
+write, but two writes still take turns, and with a synchronous binding the
+wait happens on the thread that asked. Serving never writes, the main thread
+writes only when staff change something, and the deploy thread's transactions
+are short — the longest inserts one build's file rows — so the worst it costs
+is a dashboard save waiting a moment, never a visitor.
 
 ## Storage
 
@@ -667,6 +701,10 @@ that are gone and clears its list caches, the subscription restarts, the resync
 timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
+
+The deploy thread keeps a copy of its own, sent across whole on every change,
+and applies it the same way (`SettingsService.adopt`), so its subscribers
+reconfigure exactly as they would on the main thread.
 
 Nothing in the settings UI requires a restart, which is the point: the six
 environment variables are the only things that do.

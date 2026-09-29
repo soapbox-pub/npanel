@@ -9,8 +9,8 @@ import { type ServedHost, findHost } from "./sites.ts";
  * How long an entry may be believed, in milliseconds.
  *
  * A backstop rather than the invalidation mechanism: every writer inside the
- * process — the hosts API, the builder putting a build live, Tor minting an
- * onion — calls {@link ServeCache.clear} the moment serving's answer changes.
+ * process — the hosts API, the deploy thread putting a build live, Tor minting
+ * an onion — calls {@link ServeCache.clear} the moment serving's answer changes.
  * The TTL is for the writers the process can't see, like `prune-blobs` running
  * against the same database, and bounds how long their work goes unnoticed.
  */

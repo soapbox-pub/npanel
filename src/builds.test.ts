@@ -195,7 +195,7 @@ test("a build that fails leaves the previous one serving", async () => {
     db: harness.db,
     blobs: new FullDisk("/nonexistent"),
     settings: harness.settings,
-    serveCache: harness.serveCache,
+    servingChanged: () => harness.serveCache.clear(),
     log: new Quiet("error"),
     retryBackoff: 0,
   });

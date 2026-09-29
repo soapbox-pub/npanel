@@ -25,6 +25,7 @@ src/                    server (Bun/Node, Hono, Kysely)
   nostr.ts              relay pool, relay/server list caches
   sync.ts               the sync worker: subscribe, resync, deploy
   builds.ts             host builds: the frozen bundle each host serves
+  deploy/               the thread sync and builds run on, and its handle
   tls-check.ts          certificate authorization, on its own port
   analytics/            the Plausible-compatible analytics thread
   blobs.ts              content-addressed filesystem store

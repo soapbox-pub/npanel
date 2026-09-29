@@ -44,7 +44,8 @@ export async function openSqlite(path: string): Promise<SqliteDatabase> {
   // open that collides with one fails outright rather than waiting.
   db.exec("PRAGMA busy_timeout = 5000");
 
-  // WAL keeps readers (blob serving) from blocking on the sync worker's writes.
+  // WAL keeps readers (blob serving) from blocking on the deploy thread's
+  // writes, which come through a connection of its own.
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec("PRAGMA synchronous = NORMAL");

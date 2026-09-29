@@ -113,7 +113,14 @@ async function harness(opts: { retryBackoff?: number } = {}) {
   await settings.update({ blossom_fallback_servers: [] }, PUBKEY);
   const log = new Logger("error");
   const serveCache = new ServeCache(db);
-  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
+  const builder = new HostBuilder({
+    db,
+    blobs,
+    settings,
+    servingChanged: () => serveCache.clear(),
+    log,
+    retryBackoff: 0,
+  });
   // Retries are instant unless a test is about the backoff itself.
   const worker = new SyncWorker({
     db,

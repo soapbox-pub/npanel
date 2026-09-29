@@ -3,8 +3,9 @@ import type { QueryHost } from "../analytics/query/engine.ts";
 import type { AnalyticsService } from "../analytics/service.ts";
 import type { AuthUser } from "../auth.ts";
 import type { BlobStore } from "../blobs.ts";
-import { type HostBuilder, currentBuild } from "../builds.ts";
+import { currentBuild } from "../builds.ts";
 import type { Database, Host, HostBuild, SiteEvent } from "../db/schema.ts";
+import type { Deployments } from "../deploy/deployer.ts";
 import type { DnsTargets } from "../dns.ts";
 import type { Logger } from "../log.ts";
 import { encodeNaddr, formatNsiteAddress } from "../nsite-address.ts";
@@ -14,15 +15,16 @@ import type { SettingsService } from "../settings.ts";
 import type { SiteCsp } from "../site-csp.ts";
 import type { SitePreview, SitePreviews } from "../site-preview.ts";
 import { newestEvent, resolveSitePath } from "../sites.ts";
-import type { SyncWorker } from "../sync.ts";
 import type { TorService } from "../tor.ts";
 
 export interface ApiDeps {
   db: Kysely<Database>;
   settings: SettingsService;
-  sync: SyncWorker;
-  /** Rebuilds a host whenever an edit changes what its build is made of. */
-  builder: HostBuilder;
+  /**
+   * Told when hosts change, so the deploy thread resubscribes and rebuilds
+   * whatever an edit changed the makings of.
+   */
+  deployments: Deployments;
   /** Told whenever a host changes, since which sites are counting may have. */
   analytics: AnalyticsService;
   blobs: BlobStore;

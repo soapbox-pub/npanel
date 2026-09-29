@@ -10,9 +10,10 @@ import { AnalyticsService } from "../analytics/service.ts";
 import { createApp } from "../app.ts";
 import { NIP98_KIND } from "../auth.ts";
 import { BlobStore } from "../blobs.ts";
-import { HostBuilder } from "../builds.ts";
+import type { HostBuilder } from "../builds.ts";
 import { openDatabase } from "../db/index.ts";
 import type { Database, UserRole } from "../db/schema.ts";
+import { Deployer } from "../deploy/deployer.ts";
 import { type DnsResolver, DnsTargets } from "../dns.ts";
 import { Logger } from "../log.ts";
 import type { NostrService } from "../nostr.ts";
@@ -21,7 +22,7 @@ import { createSiteServer } from "../serve-site.ts";
 import { SettingsService } from "../settings.ts";
 import { SiteCsp } from "../site-csp.ts";
 import { SitePreviews } from "../site-preview.ts";
-import { SyncWorker } from "../sync.ts";
+import type { SyncWorker } from "../sync.ts";
 import { TorService } from "../tor.ts";
 
 export const DASHBOARD_HOST = "panel.test";
@@ -185,17 +186,19 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const blobs = new BlobStore(join(dir, "blobs"));
   const log = new Logger("error");
   const serveCache = new ServeCache(db);
-  // No test should sit through a retry's backoff.
-  const builder = new HostBuilder({ db, blobs, settings, serveCache, log, retryBackoff: 0 });
-  const sync = new SyncWorker({
+  // In-process: the thread it runs on in production is DeployService's
+  // concern, and has tests of its own.
+  const deployer = new Deployer({
     db,
     blobs,
     nostr: opts.nostr ?? fakeNostr(),
     settings,
-    builder,
     log,
+    servingChanged: () => serveCache.clear(),
+    // No test should sit through a retry's backoff.
     retryBackoff: 0,
   });
+  const { sync, builder } = deployer;
   const dns = new DnsTargets({
     dashboardHost: DASHBOARD_HOST,
     settings,
@@ -216,13 +219,12 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
   const serveSite = createSiteServer({ db, blobs, siteCsp, serveCache, analytics, log });
   // Inert unless a test turns `tor_enabled` on: with no control connection its
   // reconciles return immediately and it binds no port.
-  const tor = new TorService({ db, settings, log, serveSite, serveCache, builder });
+  const tor = new TorService({ db, settings, log, serveSite, serveCache, deployments: deployer });
 
   const app = createApp({
     db,
     settings,
-    sync,
-    builder,
+    deployments: deployer,
     analytics,
     blobs,
     dns,
@@ -275,8 +277,7 @@ export async function createHarness(opts: { nostr?: NostrService; resolver?: Dns
     },
 
     async cleanup() {
-      await sync.stop();
-      await builder.stop();
+      await deployer.stop();
       await analytics.stop();
       await db.destroy();
       await rm(dir, { recursive: true, force: true });
