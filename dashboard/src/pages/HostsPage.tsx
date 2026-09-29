@@ -97,7 +97,7 @@ function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: Sparkl
   return (
     <Link
       to={`/hosts/${host.hostname}`}
-      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-[box-shadow,transform] duration-200 hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] dark:hover:bg-secondary/40"
+      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card surface transition-[box-shadow,transform] duration-200 hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden active:scale-[0.99] dark:hover:bg-secondary/40"
     >
       <div className="flex flex-1 flex-col gap-4 p-5">
         <div className="flex items-center gap-3">
@@ -190,7 +190,7 @@ function OtherSites({ hostnames }: { hostnames: string[] }) {
               href={`https://${hostname}`}
               target="_blank"
               rel="noreferrer noopener"
-              className="inline-flex items-center gap-2 rounded-full bg-card py-1 pr-3 pl-1 text-sm shadow-sm hover:text-primary"
+              className="inline-flex items-center gap-2 rounded-full bg-card py-1 pr-3 pl-1 text-sm surface hover:text-primary"
             >
               <SiteIcon hostname={hostname} className="size-5" />
               {hostname}

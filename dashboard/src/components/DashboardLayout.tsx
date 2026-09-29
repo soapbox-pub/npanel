@@ -212,7 +212,7 @@ function NoAccess({ pubkey, message }: { pubkey: string; message?: string }) {
       </div>
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">Send an admin your npub so they can add you.</p>
-        <div className="flex items-center gap-1 rounded-xl bg-card py-2 pr-2 pl-3 text-left shadow-sm">
+        <div className="flex items-center gap-1 rounded-xl bg-card py-2 pr-2 pl-3 text-left surface">
           <code className="min-w-0 flex-1 truncate font-mono text-xs">{npub}</code>
           <CopyButton value={npub} label="Copy your npub" />
         </div>

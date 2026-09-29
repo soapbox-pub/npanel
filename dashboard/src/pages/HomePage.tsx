@@ -93,7 +93,7 @@ function Operator() {
   if (instance.isLoading) return <Skeleton className="mx-auto h-9 w-64 rounded-full" />;
 
   return (
-    <div className="mx-auto inline-flex max-w-full items-center gap-2 rounded-full bg-card py-1.5 pr-4 pl-1.5 text-sm shadow-sm">
+    <div className="mx-auto inline-flex max-w-full items-center gap-2 rounded-full bg-card py-1.5 pr-4 pl-1.5 text-sm surface">
       {instance.data?.contact_npub ? (
         <OperatorName npub={instance.data.contact_npub} host={host} />
       ) : (
@@ -159,7 +159,7 @@ function SiteCardLink({ site }: { site: SiteCard }) {
       href={`https://${site.hostname}`}
       target="_blank"
       rel="noreferrer noopener"
-      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card shadow-sm transition-shadow hover:shadow-lg focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+      className="group flex h-full flex-col overflow-hidden rounded-2xl bg-card surface transition-shadow hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
     >
       <SiteCover hostname={site.hostname} preview={site} />
 
@@ -198,7 +198,7 @@ function HowItWorks() {
 
 function Step({ icon, tile, title, children }: { icon: ReactNode; tile: string; title: string; children: ReactNode }) {
   return (
-    <div className="space-y-3 rounded-2xl bg-card p-6 shadow-sm">
+    <div className="space-y-3 rounded-2xl bg-card p-6 surface">
       <span
         aria-hidden
         className={cn('flex size-11 items-center justify-center rounded-xl text-white shadow-sm [&_svg]:size-5', tile)}
@@ -214,7 +214,7 @@ function Step({ icon, tile, title, children }: { icon: ReactNode; tile: string; 
 function SelfHost() {
   return (
     <section id="self-host" className="scroll-mt-20">
-      <div className="grid items-center gap-10 rounded-3xl bg-card p-6 shadow-sm sm:p-10 md:grid-cols-2">
+      <div className="grid items-center gap-10 rounded-3xl bg-card p-6 surface sm:p-10 md:grid-cols-2">
         <div className="space-y-4">
           <h2 className="text-3xl font-bold tracking-tight">Run your own.</h2>
           <p className="text-lg text-muted-foreground">

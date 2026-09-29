@@ -115,7 +115,7 @@ function CurrentVisitors({
   return (
     <button
       type="button"
-      className="flex h-8 items-center gap-2 rounded-full bg-card px-3 text-sm shadow-sm transition-colors hover:bg-secondary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+      className="flex h-8 items-center gap-2 rounded-full bg-card px-3 text-sm surface transition-colors hover:bg-secondary focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
       onClick={() => onChange({ ...state, period: 'realtime', date: null, comparison: 'off' })}
     >
       <span className="size-2 animate-pulse rounded-full bg-success" aria-hidden />
@@ -130,7 +130,7 @@ function CountingOff({ hostname }: { hostname: string }) {
   const { toast } = useToast();
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-card p-4 shadow-sm">
+    <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl bg-card p-4 surface">
       <div className="space-y-0.5">
         <p className="text-sm font-medium">This site isn&apos;t counting visits.</p>
         <p className="text-xs text-muted-foreground">No cookies, and nothing that identifies a visitor is kept.</p>

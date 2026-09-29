@@ -220,7 +220,7 @@ function LinkPreview({ host }: { host: Host }) {
       href={`https://${host.hostname}`}
       target="_blank"
       rel="noreferrer noopener"
-      className="group flex flex-col overflow-hidden rounded-2xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-shadow hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden sm:flex-row dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+      className="group flex flex-col overflow-hidden rounded-2xl bg-card surface transition-shadow hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden sm:flex-row "
     >
       <SiteCover hostname={host.hostname} preview={preview} className="sm:w-80 sm:shrink-0" />
       <div className="flex min-w-0 flex-col justify-center gap-1.5 p-5">
@@ -244,7 +244,7 @@ function Visitors({ host }: { host: Host }) {
   return (
     <Link
       to={`/hosts/${host.hostname}/analytics`}
-      className="group flex items-center gap-6 rounded-2xl bg-card p-5 shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_3px_rgb(0_0_0/0.06)] transition-shadow hover:shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_8px_24px_rgb(0_0_0/0.1)] focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+      className="group flex items-center gap-6 rounded-2xl bg-card p-5 surface transition-shadow hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden "
     >
       <div className="shrink-0 space-y-1">
         <p className="flex items-center gap-1.5 text-sm font-medium text-primary">
@@ -540,7 +540,7 @@ function DeleteSite({ hostname }: { hostname: string }) {
       <AlertDialogTrigger asChild>
         <button
           type="button"
-          className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-card text-sm text-destructive shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_2px_rgb(0_0_0/0.04)] transition-colors hover:bg-destructive/5 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)]"
+          className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-card text-sm text-destructive surface transition-colors hover:bg-destructive/5 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden "
         >
           Delete Site…
         </button>

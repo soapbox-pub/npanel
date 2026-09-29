@@ -30,7 +30,7 @@ export function Section({
           {action}
         </div>
       )}
-      <div className="overflow-hidden rounded-xl bg-card shadow-[0_0_0_0.5px_rgb(0_0_0/0.05),0_1px_2px_rgb(0_0_0/0.04)] dark:shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.08)] [&>*:first-child>[data-row]]:border-t-0">
+      <div className="overflow-hidden rounded-xl bg-card surface [&>*:first-child>[data-row]]:border-t-0">
         {children}
       </div>
       {footer && <div className="px-1 text-xs leading-relaxed text-muted-foreground">{footer}</div>}
