@@ -1,6 +1,5 @@
 import { ChevronsUpDown, LogOut, UserPlus } from 'lucide-react';
 
-import { AppearanceSubmenu } from '@/components/ThemeToggle';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import {
   DropdownMenu,
@@ -91,8 +90,6 @@ export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcher
           </DropdownMenuItem>
         ))}
 
-        <DropdownMenuSeparator />
-        <AppearanceSubmenu />
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onAddAccountClick} className="cursor-pointer gap-2 p-2">
           <UserPlus className="size-4" />

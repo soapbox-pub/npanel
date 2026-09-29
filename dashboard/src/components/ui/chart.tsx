@@ -7,7 +7,8 @@ import type { TooltipValueType } from "recharts"
 import { cn } from "@/lib/utils"
 
 // Format: { THEME_NAME: CSS_SELECTOR }
-const THEMES = { light: "", dark: ".dark" } as const
+// Dark follows the system, by media query rather than a class; see index.css.
+const THEMES = { light: "", dark: "@media (prefers-color-scheme: dark)" } as const
 
 const INITIAL_DIMENSION = { width: 320, height: 200 } as const
 type TooltipNameType = number | string
@@ -95,8 +96,9 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
           .map(
-            ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
+            ([theme, media]) => `
+${media ? `${media} {` : ""}
+[data-chart=${id}] {
 ${colorConfig
   .map(([key, itemConfig]) => {
     const color =
@@ -106,6 +108,7 @@ ${colorConfig
   })
   .join("\n")}
 }
+${media ? "}" : ""}
 `
           )
           .join("\n"),

@@ -1,7 +1,5 @@
 import { createContext } from "react";
 
-export type Theme = "dark" | "light" | "system";
-
 export interface RelayMetadata {
   /** List of relays with read/write permissions */
   relays: { url: string; read: boolean; write: boolean }[];
@@ -18,8 +16,6 @@ export interface BlossomServerMetadata {
 }
 
 export interface AppConfig {
-  /** Current theme */
-  theme: Theme;
   /** NIP-65 relay list metadata */
   relayMetadata: RelayMetadata;
   /** User's kind 10063 Blossom server list. */

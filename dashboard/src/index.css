@@ -1,7 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/* The system decides: there is no appearance setting of npanel's own. */
+@custom-variant dark (@media (prefers-color-scheme: dark));
 
 @theme inline {
   --color-background: var(--background);
@@ -235,86 +236,77 @@
   --sidebar-ring: hsl(211 100% 50%);
 }
 
-.dark {
-  color-scheme: dark;
-
-  --brand: hsl(20 100% 60%);
-  --brand-glow: hsl(35 100% 60%);
-  --brand-foreground: hsl(0 0% 100%);
-
-  --background: hsl(240 3% 7%);
-  --foreground: hsl(0 0% 96%);
-
-  --card: hsl(240 3% 14%);
-  --card-foreground: hsl(0 0% 96%);
-
-  --popover: hsl(240 3% 16% / 0.92);
-  --popover-foreground: hsl(0 0% 96%);
-
-  --primary: hsl(210 100% 52%);
-  --primary-foreground: hsl(0 0% 100%);
-
-  --secondary: hsl(240 3% 20%);
-  --secondary-foreground: hsl(0 0% 96%);
-
-  --muted: hsl(240 3% 16%);
-  --muted-foreground: hsl(240 5% 65%);
-
-  --accent: hsl(240 3% 20%);
-  --accent-foreground: hsl(0 0% 96%);
-
-  --destructive: hsl(3 100% 61%);
-  --destructive-foreground: hsl(0 0% 100%);
-
-  --success: hsl(135 64% 55%);
-  --toggle: hsl(135 64% 50%);
-  --warning: hsl(35 100% 55%);
-
-  --border: hsl(240 3% 20%);
-  --input: hsl(240 3% 26%);
-  --ring: hsl(210 100% 55%);
-
-  --chart-1: hsl(210 100% 60%);
-  --chart-2: hsl(135 64% 50%);
-  --chart-3: hsl(35 100% 55%);
-  --chart-4: hsl(280 85% 70%);
-  --chart-5: hsl(3 100% 61%);
-
-  --material: hsl(240 3% 9% / 0.72);
-
-  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  --brush: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  --brush-dark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.002 0.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  --metal: hsl(240 3% 15%);
-  --metal-top: hsl(240 3% 18%);
-  --metal-bottom: hsl(240 3% 12%);
-  --metal-sheen: hsl(0 0% 100% / 0.04);
-  --perf-hole: hsl(0 0% 0% / 0.7);
-  --perf-lip: hsl(0 0% 100% / 0.07);
-
-  --surface-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09), inset 0 1px 0 rgb(255 255 255 / 0.06),
-    0 2px 10px rgb(0 0 0 / 0.55);
-  --surface-shadow-lift: inset 0 0 0 1px rgb(255 255 255 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.08),
-    0 12px 32px rgb(0 0 0 / 0.7);
-
-  --sidebar: hsl(240 3% 14% / 0.7);
-  --sidebar-foreground: hsl(0 0% 96%);
-  --sidebar-primary: hsl(210 100% 52%);
-  --sidebar-primary-foreground: hsl(0 0% 100%);
-  --sidebar-accent: hsl(0 0% 100% / 0.1);
-  --sidebar-accent-foreground: hsl(0 0% 100%);
-  --sidebar-border: hsl(240 3% 18%);
-  --sidebar-ring: hsl(210 100% 55%);
-}
-
-/*
- * There is no theme class on <html> until React mounts, so a dark-mode desktop
- * would flash white first. Only the bare canvas is visible that early, so only
- * the canvas needs covering — and a <script> can't do it under our CSP.
- */
 @media (prefers-color-scheme: dark) {
-  html:not(.light):not(.dark) {
-    background-color: hsl(240 3% 7%);
+  :root {
+    color-scheme: dark;
+
+    --brand: hsl(20 100% 60%);
+    --brand-glow: hsl(35 100% 60%);
+    --brand-foreground: hsl(0 0% 100%);
+
+    --background: hsl(240 3% 7%);
+    --foreground: hsl(0 0% 96%);
+
+    --card: hsl(240 3% 14%);
+    --card-foreground: hsl(0 0% 96%);
+
+    --popover: hsl(240 3% 16% / 0.92);
+    --popover-foreground: hsl(0 0% 96%);
+
+    --primary: hsl(210 100% 52%);
+    --primary-foreground: hsl(0 0% 100%);
+
+    --secondary: hsl(240 3% 20%);
+    --secondary-foreground: hsl(0 0% 96%);
+
+    --muted: hsl(240 3% 16%);
+    --muted-foreground: hsl(240 5% 65%);
+
+    --accent: hsl(240 3% 20%);
+    --accent-foreground: hsl(0 0% 96%);
+
+    --destructive: hsl(3 100% 61%);
+    --destructive-foreground: hsl(0 0% 100%);
+
+    --success: hsl(135 64% 55%);
+    --toggle: hsl(135 64% 50%);
+    --warning: hsl(35 100% 55%);
+
+    --border: hsl(240 3% 20%);
+    --input: hsl(240 3% 26%);
+    --ring: hsl(210 100% 55%);
+
+    --chart-1: hsl(210 100% 60%);
+    --chart-2: hsl(135 64% 50%);
+    --chart-3: hsl(35 100% 55%);
+    --chart-4: hsl(280 85% 70%);
+    --chart-5: hsl(3 100% 61%);
+
+    --material: hsl(240 3% 9% / 0.72);
+
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --brush: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --brush-dark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.002 0.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --metal: hsl(240 3% 15%);
+    --metal-top: hsl(240 3% 18%);
+    --metal-bottom: hsl(240 3% 12%);
+    --metal-sheen: hsl(0 0% 100% / 0.04);
+    --perf-hole: hsl(0 0% 0% / 0.7);
+    --perf-lip: hsl(0 0% 100% / 0.07);
+
+    --surface-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.09), inset 0 1px 0 rgb(255 255 255 / 0.06),
+      0 2px 10px rgb(0 0 0 / 0.55);
+    --surface-shadow-lift: inset 0 0 0 1px rgb(255 255 255 / 0.14), inset 0 1px 0 rgb(255 255 255 / 0.08),
+      0 12px 32px rgb(0 0 0 / 0.7);
+
+    --sidebar: hsl(240 3% 14% / 0.7);
+    --sidebar-foreground: hsl(0 0% 96%);
+    --sidebar-primary: hsl(210 100% 52%);
+    --sidebar-primary-foreground: hsl(0 0% 100%);
+    --sidebar-accent: hsl(0 0% 100% / 0.1);
+    --sidebar-accent-foreground: hsl(0 0% 100%);
+    --sidebar-border: hsl(240 3% 18%);
+    --sidebar-ring: hsl(210 100% 55%);
   }
 }
 

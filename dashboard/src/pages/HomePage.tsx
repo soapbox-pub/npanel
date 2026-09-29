@@ -7,7 +7,6 @@ import { Logo } from '@/components/Logo';
 import { Perforation } from '@/components/Perforation';
 import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
-import { ThemeToggle } from '@/components/ThemeToggle';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { buttonVariants } from '@/components/ui/button-variants';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -39,7 +38,6 @@ export function HomePage() {
             <Logo className="size-7" />
             <span className="text-[15px] font-semibold tracking-tight">npanel</span>
           </span>
-          <ThemeToggle />
         </div>
       </header>
 
