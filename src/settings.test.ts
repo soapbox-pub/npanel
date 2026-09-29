@@ -41,6 +41,24 @@ test("update persists, audits, and notifies listeners", async () => {
   await db.destroy();
 });
 
+test("the audit log records whether a secret is set, never the secret", async () => {
+  const db = await openDatabase(":memory:");
+  const settings = await SettingsService.load(db);
+
+  await settings.update({ tor_control_password: "hunter2" }, "a".repeat(64));
+  await settings.update({ tor_control_password: "" }, "a".repeat(64));
+
+  assert.equal(settings.get("tor_control_password"), "");
+  const audit = await db.selectFrom("audit_log").select(["old_value", "new_value"]).orderBy("id").execute();
+  assert.deepEqual(audit, [
+    { old_value: "false", new_value: "true" },
+    { old_value: "true", new_value: "false" },
+  ]);
+  assert.ok(!JSON.stringify(audit).includes("hunter2"));
+
+  await db.destroy();
+});
+
 test("unchanged values are not written or announced", async () => {
   const db = await openDatabase(":memory:");
   const settings = await SettingsService.load(db);

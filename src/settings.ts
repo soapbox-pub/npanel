@@ -432,8 +432,8 @@ export class SettingsService {
             actor_pubkey: actorPubkey,
             action: "settings.update",
             target: key,
-            old_value: JSON.stringify(previous),
-            new_value: JSON.stringify(value),
+            old_value: JSON.stringify(auditValue(key, previous)),
+            new_value: JSON.stringify(auditValue(key, value)),
             created_at: now,
           })
           .execute();
@@ -473,6 +473,18 @@ export class SettingsService {
       this.emitter.off("change", listener);
     };
   }
+}
+
+/** Settings that are credentials, which the audit log must not repeat. */
+const SECRET_SETTINGS: ReadonlySet<SettingKey> = new Set(["tor_control_password"]);
+
+/**
+ * A setting's value as the audit log records it: whether a secret is set,
+ * rather than the secret. The log is kept forever and read by every admin,
+ * which is no place for a password that has since been changed.
+ */
+function auditValue(key: SettingKey, value: SettingsValues[SettingKey]): unknown {
+  return SECRET_SETTINGS.has(key) ? value !== "" : value;
 }
 
 /** Assign one key of a settings object without widening its value type. */

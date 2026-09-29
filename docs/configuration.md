@@ -389,6 +389,11 @@ cookie file, whose path Tor names itself when npanel asks how to authenticate.
 npanel only has to be able to read it — see
 [deployment](deployment.md#tor) for the group that grants.
 
+The audit log records only whether a password was set or cleared, never the
+password. It is still stored in the `settings` table and returned to admins by
+`GET /api/settings`: any admin could recover it anyway, by pointing
+`tor_control_url` at a listener of their own.
+
 ### `analytics_timezone`
 
 Default `UTC`. The IANA time zone every site's analytics are reported in, like

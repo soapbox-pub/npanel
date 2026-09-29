@@ -352,6 +352,19 @@ const MIGRATIONS: Migration[] = [
     name: "017_hosts_analytics",
     statements: ["ALTER TABLE hosts ADD COLUMN analytics INTEGER NOT NULL DEFAULT 0"],
   },
+  {
+    // The audit log recorded the Tor control password verbatim on every change,
+    // where it outlived the password itself in every backup. It now records
+    // only whether one was set; the entries already written are cut down to
+    // the same.
+    name: "018_audit_log_redact_secrets",
+    statements: [
+      `UPDATE audit_log
+        SET old_value = CASE WHEN old_value IS NULL THEN NULL WHEN old_value = '""' THEN 'false' ELSE 'true' END,
+            new_value = CASE WHEN new_value IS NULL THEN NULL WHEN new_value = '""' THEN 'false' ELSE 'true' END
+        WHERE action = 'settings.update' AND target = 'tor_control_password'`,
+    ],
+  },
 ];
 
 /** Create the schema and apply any migrations the database is missing. */
