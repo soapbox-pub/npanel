@@ -4,7 +4,14 @@ import type { Database } from "../db/schema.ts";
 import { type Logger, errFields } from "../log.ts";
 import type { SettingsService } from "../settings.ts";
 import type { AnalyticsHost } from "./ingest.ts";
-import type { FromWorker, ToWorker, WorkerConfig, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import {
+  type FromWorker,
+  MAX_EVENT_BODY,
+  type ToWorker,
+  type WorkerConfig,
+  type WorkerRequest,
+  type WorkerResponse,
+} from "./protocol.ts";
 import type { QueryHost } from "./query/engine.ts";
 
 /** First and longest wait before starting a thread that died, in milliseconds. */
@@ -115,14 +122,24 @@ export class AnalyticsService {
    * deployment whose proxy doesn't route the path.
    *
    * The body is read and handed over whole — a few hundred bytes — and the
-   * thread's answer returned as it gave it.
+   * thread's answer returned as it gave it. It is read only up to the limit
+   * the analytics port enforces, because here it is read on the thread that
+   * serves sites, by anyone who can reach an onion.
    */
   async event(request: Request): Promise<Response> {
+    const body = request.method === "POST" ? await readCapped(request, MAX_EVENT_BODY) : "";
+    if (body === undefined) {
+      return new Response("Request body is too large.", {
+        status: 413,
+        headers: { "access-control-allow-origin": "*", "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
     const response = await this.call(
       {
         type: "event",
         method: request.method,
-        body: request.method === "POST" ? await request.text() : "",
+        body,
         headers: {
           userAgent: request.headers.get("user-agent") ?? "",
           forwardedFor: request.headers.get("x-forwarded-for"),
@@ -261,4 +278,34 @@ export class AnalyticsService {
 
 function failure(status: number, error: string): WorkerResponse {
   return { status, headers: JSON_HEADERS, body: JSON.stringify({ error }) };
+}
+
+/**
+ * A request body as text, or undefined if it is longer than `max` bytes.
+ *
+ * A declared length over the limit is refused before a byte is read; one that
+ * lies, or a chunked body that declares none, is cut off as soon as it passes.
+ */
+export async function readCapped(request: Request, max: number): Promise<string | undefined> {
+  const declared = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > max) return undefined;
+  if (!request.body) return "";
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return undefined;
+    }
+    chunks.push(value);
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
 }

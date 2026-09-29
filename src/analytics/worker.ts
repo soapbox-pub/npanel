@@ -5,7 +5,15 @@ import { openSqlite } from "../db/sqlite.ts";
 import { Logger, errFields } from "../log.ts";
 import { Geo } from "./geo.ts";
 import { type AnalyticsHost, Ingest } from "./ingest.ts";
-import type { FromWorker, SenderHeaders, ToWorker, WorkerConfig, WorkerRequest, WorkerResponse } from "./protocol.ts";
+import {
+  type FromWorker,
+  MAX_EVENT_BODY,
+  type SenderHeaders,
+  type ToWorker,
+  type WorkerConfig,
+  type WorkerRequest,
+  type WorkerResponse,
+} from "./protocol.ts";
 import { QueryEngine } from "./query/engine.ts";
 import { Salts } from "./salts.ts";
 import { SESSION_TIMEOUT, SessionCache } from "./sessions.ts";
@@ -48,12 +56,6 @@ const FLUSH_EVERY = 2_000;
 
 /** How often expired sessions are forgotten. */
 const SWEEP_EVERY = 60_000;
-
-/**
- * The largest event accepted. A real one is a few hundred bytes; this leaves
- * room for props without letting anyone post megabytes at the thread.
- */
-const MAX_BODY = 64 * 1024;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -100,7 +102,7 @@ const sweepTimer = setInterval(() => sessions.sweep(Math.floor(Date.now() / 1000
 const server = Bun.serve({
   port: config.port,
   hostname: config.address,
-  maxRequestBodySize: MAX_BODY,
+  maxRequestBodySize: MAX_EVENT_BODY,
 
   async fetch(request, bun) {
     const url = new URL(request.url);

@@ -7,6 +7,7 @@ import { openDatabase } from "../db/index.ts";
 import { openSqlite } from "../db/sqlite.ts";
 import { Logger } from "../log.ts";
 import { SettingsService } from "../settings.ts";
+import { MAX_EVENT_BODY } from "./protocol.ts";
 import { AnalyticsService } from "./service.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -100,6 +101,37 @@ test("an event that reached the main thread is handed to the analytics thread", 
 
   assert.equal(response.status, 202);
   assert.deepEqual(await recorded(), [{ host_id: hostId, pathname: "/over-tor" }]);
+});
+
+test("an oversized event reaching the main thread is refused without being read whole", async () => {
+  const { service, recorded } = await setup();
+  await service.start();
+
+  const declared = await service.event(
+    new Request("http://abc.onion/.npanel/api/event", {
+      method: "POST",
+      headers: { "content-length": String(MAX_EVENT_BODY + 1) },
+      body: "x".repeat(MAX_EVENT_BODY + 1),
+    }),
+  );
+  assert.equal(declared.status, 413);
+  assert.equal(declared.headers.get("access-control-allow-origin"), "*");
+
+  // No length declared: the stream is cut off once it passes the limit.
+  let pulled = 0;
+  const endless = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled++;
+      controller.enqueue(new Uint8Array(16 * 1024));
+    },
+  });
+  const streamed = await service.event(
+    new Request("http://abc.onion/.npanel/api/event", { method: "POST", body: endless, duplex: "half" } as RequestInit),
+  );
+  assert.equal(streamed.status, 413);
+  assert.ok(pulled <= MAX_EVENT_BODY / (16 * 1024) + 2, "reading stops at the limit");
+
+  assert.deepEqual(await recorded(), []);
 });
 
 test("a site that stops counting is dropped from then on", async () => {

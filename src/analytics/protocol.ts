@@ -16,6 +16,12 @@ export interface WorkerConfig {
   downloadGeo: boolean;
 }
 
+/**
+ * The largest event accepted, on either listener. A real one is a few hundred
+ * bytes; this leaves room for props without letting anyone post megabytes.
+ */
+export const MAX_EVENT_BODY = 64 * 1024;
+
 /** The request headers an event's sender is worked out from. */
 export interface SenderHeaders {
   userAgent: string;
