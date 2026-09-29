@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
+import { Perforation } from '@/components/Perforation';
 import { ServerRack } from '@/components/ServerRack';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -55,7 +56,8 @@ export function DashboardLayout() {
       <Sidebar items={items} />
       <MobileBar />
 
-      <main className="md:pl-64">
+      <main className="relative isolate md:pl-64">
+        <Perforation />
         <div
           className={cn(
             'mx-auto max-w-5xl px-4 pt-4 pb-12 sm:px-6 md:px-10 md:pt-10',
@@ -79,15 +81,15 @@ function useActive() {
 }
 
 /**
- * The sidebar, as macOS 26 draws one: a pane of glass floating inside the
- * window's edge rather than a column bolted to it, with the admin places
- * under a heading of their own and the account at the foot.
+ * The sidebar: a brushed-metal panel floating inside the window's edge, like
+ * the faceplate of the machine it describes, with the admin places under a
+ * heading of their own and the server and the account at the foot.
  */
 function Sidebar({ items }: { items: NavItem[] }) {
   const [main, ...admin] = items;
 
   return (
-    <aside className="material fixed top-2 bottom-2 left-2 z-30 hidden w-60 flex-col rounded-2xl bg-sidebar text-sidebar-foreground shadow-[0_8px_32px_rgb(0_0_0/0.08),0_0_0_0.5px_rgb(0_0_0/0.08)] md:flex dark:shadow-[0_8px_32px_rgb(0_0_0/0.5),inset_0_0_0_0.5px_rgb(255_255_255/0.1)]">
+    <aside className="brushed fixed top-2 bottom-2 left-2 z-30 hidden w-60 flex-col rounded-2xl text-sidebar-foreground shadow-[0_8px_32px_rgb(0_0_0/0.12),0_0_0_0.5px_rgb(0_0_0/0.15),inset_0_1px_0_rgb(255_255_255/0.9)] md:flex dark:shadow-[0_8px_32px_rgb(0_0_0/0.5),inset_0_0_0_0.5px_rgb(255_255_255/0.1),inset_0_1px_0_rgb(255_255_255/0.08)]">
       <Link
         to="/"
         className="mx-2 mt-3 mb-4 flex items-center gap-2 self-start rounded-lg px-2 py-1 focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"

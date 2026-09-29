@@ -94,6 +94,30 @@
   }
 }
 
+/*
+ * Perforated sheet metal, as on the front of a rack server: a grid of holes,
+ * each with a lit lower lip. Laid behind the top of a page and faded out.
+ */
+@utility perforated {
+  background-image:
+    radial-gradient(circle at 50% 60%, var(--perf-lip) 1.3px, transparent 1.6px),
+    radial-gradient(circle, var(--perf-hole) 1.3px, transparent 1.6px);
+  background-size: 9px 9px;
+}
+
+/*
+ * Brushed aluminium: the faceplate of a server, or a Mac OS X window from the
+ * years when metal meant metal. A soft sheen across, streaks along.
+ */
+@utility brushed {
+  background-color: var(--metal);
+  background-image:
+    var(--brush),
+    var(--brush-dark),
+    linear-gradient(to right, transparent, var(--metal-sheen) 35%, transparent 65%, var(--metal-sheen) 90%, transparent),
+    linear-gradient(to bottom, var(--metal-top), var(--metal-bottom));
+}
+
 /* Container utility replacement for v4 (previously configured in tailwind.config) */
 @utility container {
   margin-inline: auto;
@@ -174,6 +198,17 @@
 
   --material: hsl(240 11% 96% / 0.72);
 
+  /* Textures: grain over the page, metal on the sidebar, holes behind page tops. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --brush: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.22 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --brush-dark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.002 0.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --metal: hsl(240 5% 90%);
+  --metal-top: hsl(240 6% 94%);
+  --metal-bottom: hsl(240 4% 86%);
+  --metal-sheen: hsl(0 0% 100% / 0.45);
+  --perf-hole: hsl(240 6% 80%);
+  --perf-lip: hsl(0 0% 100%);
+
   --sidebar: hsl(0 0% 100% / 0.65);
   --sidebar-foreground: hsl(240 3% 11%);
   --sidebar-primary: hsl(211 100% 45%);
@@ -231,6 +266,16 @@
 
   --material: hsl(240 3% 9% / 0.72);
 
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --brush: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.003 0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.08 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --brush-dark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.002 0.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  --metal: hsl(240 3% 15%);
+  --metal-top: hsl(240 3% 18%);
+  --metal-bottom: hsl(240 3% 12%);
+  --metal-sheen: hsl(0 0% 100% / 0.04);
+  --perf-hole: hsl(0 0% 0% / 0.7);
+  --perf-lip: hsl(0 0% 100% / 0.07);
+
   --sidebar: hsl(240 3% 14% / 0.7);
   --sidebar-foreground: hsl(0 0% 96%);
   --sidebar-primary: hsl(210 100% 52%);
@@ -263,6 +308,7 @@
 
   body {
     @apply bg-background text-foreground;
+    background-image: var(--grain);
     font-family: var(--font-ui);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

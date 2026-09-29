@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
 import { Logo } from '@/components/Logo';
-import { WebButtons } from '@/components/WebButtons';
+import { Perforation } from '@/components/Perforation';
 import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -32,7 +32,7 @@ export function HomePage() {
   });
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen overflow-x-clip">
       <header className="material sticky top-0 z-30 bg-material">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
           <span className="flex items-center gap-2">
@@ -43,16 +43,16 @@ export function HomePage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-24 px-4 pt-16 pb-16 sm:px-6 sm:pt-24">
+      <main className="relative isolate mx-auto max-w-5xl space-y-24 px-4 pt-16 pb-16 sm:px-6 sm:pt-24">
+        <Perforation className="-inset-x-[50vw] -top-14 h-[36rem] [mask-image:radial-gradient(ellipse_50%_70%_at_50%_30%,black,transparent)]" />
         <Hero />
         <ServedSites />
         <HowItWorks />
         <SelfHost />
       </main>
 
-      <footer className="mx-auto flex max-w-5xl flex-col-reverse gap-4 border-t px-4 py-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
-        <span>npanel is free software.</span>
-        <WebButtons />
+      <footer className="mx-auto max-w-5xl border-t px-4 py-6 text-xs text-muted-foreground sm:px-6">
+        npanel is free software.
       </footer>
     </div>
   );
