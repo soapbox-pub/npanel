@@ -101,7 +101,12 @@ export class SyncWorker {
 
     this.unsubscribeSettings = this.settings.onChange((keys) => {
       if (keys.includes("relays")) {
-        this.nostr.pruneRelays();
+        // Connections to relays that were removed are left to close themselves:
+        // the restarted subscription stops asking them anything, and a relay
+        // with nothing asked of it disconnects after its idle timeout. Closing
+        // one here would strand it, since the pool hands the same closed
+        // instance back for that URL forever — breaking the relay if it's
+        // added again, and every author relay the subscription reopens.
         this.nostr.clearCaches();
         void this.restartSubscription();
       }

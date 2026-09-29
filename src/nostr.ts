@@ -193,17 +193,6 @@ export class NostrService {
     return dedupe(servers);
   }
 
-  /** Drop connections to relays that are no longer configured. */
-  pruneRelays(): void {
-    const configured = new Set(this.relays);
-    for (const [url, relay] of this.pool.relays) {
-      if (!configured.has(url)) {
-        relay.close();
-        this.log.debug("relay_closed", { url });
-      }
-    }
-  }
-
   /** Forget cached relay and server lists, forcing a refetch. */
   clearCaches(): void {
     this.relayLists.clear();

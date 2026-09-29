@@ -96,7 +96,6 @@ function fakeNostr(): NostrService {
       ...event.tags.filter((tag) => tag[0] === "server").map((tag) => tag[1]),
       ...fallbacks,
     ],
-    pruneRelays: () => {},
     clearCaches: () => {},
     close: async () => {},
   } as unknown as NostrService;

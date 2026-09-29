@@ -714,8 +714,9 @@ and those cannot express it.
 ## Live settings
 
 `SettingsService` caches settings in memory and emits a change event on write.
-Subscribers reconfigure in place: the relay pool drops connections to relays
-that are gone and clears its list caches, the subscription restarts, the resync
+Subscribers reconfigure in place: the relay pool clears its list caches, the
+subscription restarts — so a relay that is gone is asked nothing more and its
+connection closes itself once idle — the resync
 timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
