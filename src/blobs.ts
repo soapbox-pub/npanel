@@ -347,15 +347,33 @@ export class BlobStore {
     const hash = createHash("sha256");
     let size = 0;
 
+    // Read with a reader rather than `for await`: Bun's async iterator over a
+    // fetch body intermittently throws "undefined is not a function" when
+    // several multi-chunk downloads run at once, which failed real deploys.
     async function* verified(body: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
-      for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-        size += chunk.byteLength;
-        // Servers may omit content-length, so enforce the cap mid-stream too.
-        if (size > opts.maxSize) {
-          throw new BlobDownloadError(`Body exceeds the ${opts.maxSize} byte limit`, "too_large");
+      const reader = body.getReader();
+      let finished = false;
+
+      try {
+        for (;;) {
+          const { done, value: chunk } = await reader.read();
+          if (done) {
+            finished = true;
+            return;
+          }
+
+          size += chunk.byteLength;
+          // Servers may omit content-length, so enforce the cap mid-stream too.
+          if (size > opts.maxSize) {
+            throw new BlobDownloadError(`Body exceeds the ${opts.maxSize} byte limit`, "too_large");
+          }
+          hash.update(chunk);
+          yield chunk;
         }
-        hash.update(chunk);
-        yield chunk;
+      } finally {
+        // Abandoned partway — too large, or the write failed — so the rest of
+        // the body is never going to be read.
+        if (!finished) await reader.cancel().catch(() => {});
       }
     }
 

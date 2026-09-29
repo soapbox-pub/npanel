@@ -97,6 +97,29 @@ test("downloads and verifies a blob", async () => {
   }
 });
 
+test("several large downloads at once all arrive", async () => {
+  // Many chunks each, several at a time — the shape of a deploy, and the one
+  // Bun's async iterator over a fetch body used to fail at random.
+  const bodies = ["a", "b", "c", "d"].map((letter) => letter.repeat(700 * 1024));
+  const hashes = bodies.map(sha256);
+  const server = serve((request) => new Response(bodies[hashes.indexOf(new URL(request.url).pathname.slice(1))]));
+
+  try {
+    for (let round = 0; round < 10; round++) {
+      const blobs = await store();
+      const sizes = await Promise.all(
+        hashes.map((hash) => blobs.download(`${server.url}/${hash}`, hash, { maxSize: 1024 * 1024 })),
+      );
+      assert.deepEqual(
+        sizes,
+        bodies.map((body) => body.length),
+      );
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test("a lying server leaves nothing behind", async () => {
   const blobs = await store();
   const hash = sha256("expected");
