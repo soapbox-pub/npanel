@@ -26,7 +26,6 @@ import { Nip05Editor } from '@/components/host/Nip05Editor';
 import { VersionList } from '@/components/host/VersionList';
 import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
-import { SiteCover } from '@/components/SiteCover';
 import { SiteIcon } from '@/components/SiteIcon';
 import { SiteStatus } from '@/components/SiteStatus';
 import { Sparkline } from '@/components/Sparkline';
@@ -109,14 +108,18 @@ export function HostDetailPage() {
     }
   };
 
+  const { preview } = data;
+
   return (
     <div className="space-y-8">
       <PageHeader
         back={BACK}
-        icon={<SiteIcon hostname={data.hostname} src={data.preview.icon} className="size-14" />}
-        title={data.hostname}
+        banner={preview.image && <Banner src={preview.image} />}
+        icon={<SiteIcon hostname={data.hostname} src={preview.icon} className="size-14" />}
+        title={<span title={preview.title ?? undefined}>{preview.title ?? data.hostname}</span>}
         subtitle={
           <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {preview.title && <span className="w-full truncate text-foreground/80">{data.hostname}</span>}
             <SiteStatus host={data} />
             <span aria-hidden>·</span>
             <PubkeyLabel pubkey={data.pubkey} compact />
@@ -157,12 +160,13 @@ export function HostDetailPage() {
         </p>
       )}
 
-      <LinkPreview host={data} />
-
       <Visitors host={data} />
 
       <Tabs defaultValue="general" className="gap-6">
-        <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+        {/* Scrolls sideways on a narrow phone. Clipped vertically: overflow-x
+            alone makes overflow-y auto too, and the triggers' underline sits a
+            few pixels below the list, which gave it a scrollbar of nothing. */}
+        <div className="-mx-4 overflow-x-auto overflow-y-hidden px-4 [scrollbar-width:none] sm:mx-0 sm:px-0">
           <TabsList>
             <TabsTrigger value="general" className="px-3">
               General
@@ -207,31 +211,20 @@ export function HostDetailPage() {
 }
 
 /**
- * The site as it looks when someone shares a link to it: its share image,
- * title and blurb, all its own. Nothing at all for a site that says nothing
- * about itself, since a card of blanks would only be a bigger hostname.
+ * The site's share image, as a banner the header sits on: the picture it chose
+ * for itself, faded out so the page's own text stays readable over it.
  */
-function LinkPreview({ host }: { host: Host }) {
-  const { preview } = host;
-  if (!preview.image && !preview.title && !preview.description) return null;
+function Banner({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
 
   return (
-    <a
-      href={`https://${host.hostname}`}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="group flex flex-col overflow-hidden rounded-2xl bg-card surface transition-shadow hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden sm:flex-row "
-    >
-      <SiteCover hostname={host.hostname} preview={preview} className="sm:w-80 sm:shrink-0" />
-      <div className="flex min-w-0 flex-col justify-center gap-1.5 p-5">
-        <p className="text-lg leading-snug font-semibold">{preview.title ?? host.hostname}</p>
-        {preview.description && <p className="line-clamp-3 text-sm text-muted-foreground">{preview.description}</p>}
-        <p className="flex items-center gap-1 pt-1 text-xs text-primary">
-          <span className="truncate">{host.hostname}</span>
-          <ArrowUpRight className="size-3 shrink-0" aria-hidden />
-        </p>
-      </div>
-    </a>
+    <img
+      src={src}
+      alt=""
+      onError={() => setFailed(true)}
+      className="h-40 w-full rounded-2xl object-cover opacity-80 [mask-image:linear-gradient(to_bottom,black,rgb(0_0_0/0.5)_45%,transparent_90%)] sm:h-52"
+    />
   );
 }
 

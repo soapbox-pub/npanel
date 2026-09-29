@@ -13,6 +13,7 @@ export function PageHeader({
   title,
   subtitle,
   back,
+  banner,
   icon,
   actions,
   className,
@@ -20,6 +21,8 @@ export function PageHeader({
   title: ReactNode;
   subtitle?: ReactNode;
   back?: { to: string; label: string };
+  /** A picture above the title, faded at its foot; the title overlaps it. */
+  banner?: ReactNode;
   /** Drawn in front of the title, like a {@link SiteIcon}. */
   icon?: ReactNode;
   actions?: ReactNode;
@@ -37,7 +40,15 @@ export function PageHeader({
         </Link>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-4">
+      {banner}
+
+      <div
+        className={cn(
+          'flex flex-wrap items-center justify-between gap-x-6 gap-y-4',
+          // Pulled up into the banner's fade, so the two read as one.
+          banner && 'relative -mt-10 px-4 sm:-mt-12 sm:px-6',
+        )}
+      >
         <div className="flex min-w-0 items-center gap-4">
           {icon}
           <div className="min-w-0">
