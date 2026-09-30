@@ -31,7 +31,7 @@ use crate::fields;
 use crate::hostname::{is_onion_address, request_hostname};
 use crate::log::{with_err, Logger};
 use crate::serve::{RequestOrigin, ServeCache, SiteServer};
-use crate::settings::Settings;
+use crate::settings::{Settings, SettingsValues};
 use crate::tor_control::{OnionKey, TorControl};
 
 const RETRY_MIN: Duration = Duration::from_secs(1);
@@ -82,21 +82,19 @@ impl TorService {
         let status = Arc::new(Mutex::new(TorStatus::default()));
         let settings = deps.settings.clone();
 
-        // Reconnecting on any `tor_` key is deliberate: a changed address or
+        // Reconnecting on any Tor setting is deliberate: a changed address or
         // password is a different Tor.
         let mut changes = settings.subscribe();
         let notify = tx.clone();
         tokio::spawn(async move {
-            loop {
-                let relevant = match changes.recv().await {
-                    Ok(keys) => keys.iter().any(|key| key.starts_with("tor_")),
-                    // Missed notices may have been about Tor.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                };
-                if relevant && notify.send(Command::Apply).is_err() {
+            let tor = |s: &SettingsValues| (s.tor_enabled, s.tor_control_url.clone(), s.tor_control_password.clone());
+            let mut seen = tor(&changes.borrow_and_update());
+            while changes.changed().await.is_ok() {
+                let now = tor(&changes.borrow_and_update());
+                if now != seen && notify.send(Command::Apply).is_err() {
                     break;
                 }
+                seen = now;
             }
         });
 

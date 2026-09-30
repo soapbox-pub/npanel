@@ -764,9 +764,11 @@ and those cannot express it.
 
 ## Live settings
 
-`Settings` (`src/settings.rs`) caches settings in memory and broadcasts the keys
-that changed on every write.
-Subscribers reconfigure in place: the relay pool clears its list caches, the
+`Settings` (`src/settings.rs`) caches settings in memory and publishes each new
+set of values on a watch channel. A subscriber compares the fields it cares
+about with the last values it saw, so one that falls behind skips to the
+newest values rather than missing a change, and a field it names is one the
+compiler has checked exists. Subscribers reconfigure in place: the relay pool clears its list caches, the
 subscription restarts — so a relay that is gone is asked nothing more and its
 connection closes itself once idle — the resync
 timer re-arms, and adding Blossom fallbacks or raising the size limit

@@ -21,7 +21,7 @@ use anyhow::Result;
 use futures_util::FutureExt;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
-use tokio::sync::{broadcast, watch, Notify};
+use tokio::sync::{watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -159,31 +159,28 @@ impl SyncWorker {
         let mut changes = self.deps().settings.subscribe();
         let worker = self.clone();
         let listener = tokio::spawn(async move {
-            loop {
-                let keys = match changes.recv().await {
-                    Ok(keys) => keys,
-                    // Missed notices name keys nobody can recover, so react
-                    // as if every one of them changed.
-                    Err(broadcast::error::RecvError::Lagged(_)) => Arc::new(crate::settings::KEYS.to_vec()),
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-                if keys.contains(&"relays") {
+            let mut seen = changes.borrow_and_update().clone();
+            while changes.changed().await.is_ok() {
+                let now = changes.borrow_and_update().clone();
+                if now.relays != seen.relays {
                     // Connections to relays that were removed close themselves
                     // once the restarted subscription stops asking them anything.
                     worker.deps().nostr.clear_caches();
                     worker.restart_subscription().await;
                 }
-                if keys.contains(&"resync_interval") {
+                if now.resync_interval != seen.resync_interval {
                     worker.schedule_resync();
                 }
-                if ["blossom_fallback_servers", "max_file_size", "max_site_size", "max_site_files"]
-                    .iter()
-                    .any(|key| keys.contains(key))
+                // New servers or a bigger limit may be exactly what a failed
+                // deploy needed.
+                if now.blossom_fallback_servers != seen.blossom_fallback_servers
+                    || now.max_file_size != seen.max_file_size
+                    || now.max_site_size != seen.max_site_size
+                    || now.max_site_files != seen.max_site_files
                 {
-                    // New servers or a bigger limit may be exactly what a
-                    // failed deploy needed.
                     worker.retry_incomplete().await;
                 }
+                seen = now;
             }
         });
         self.inner.state.lock().settings_listener = Some(listener);

@@ -1,22 +1,22 @@
 //! Runtime settings, DB-backed and live-reloading.
 //!
 //! Admins edit these on the dashboard; they take effect without a restart.
-//! Consumers subscribe with [`Settings::subscribe`] and reconfigure themselves
-//! — the relay pool resubscribes, the resync timer re-arms.
+//! Consumers subscribe with [`Settings::subscribe`], compare the fields they
+//! care about with the last values they saw, and reconfigure themselves — the
+//! relay pool resubscribes, the resync timer re-arms.
 //!
-//! Adding a setting: a field on [`SettingsValues`], its key in [`KEYS`], a
-//! default, a branch in [`parse_setting`], and — if anything needs to react to
-//! it — a subscriber. Then surface it on the dashboard's Settings page.
+//! Adding a setting: a field in the [`settings!`] list, a default, a branch in
+//! [`parse_setting`], and — if anything needs to react to it — a subscriber.
+//! Then surface it on the dashboard's Settings page.
 
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use parking_lot::RwLock;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::sync::broadcast;
+use tokio::sync::watch;
 
 use crate::db::Db;
 use crate::fields;
@@ -25,47 +25,80 @@ use crate::identifiers::parse_relay_url;
 use crate::log::Logger;
 use crate::nostr::nip19::{self, Decoded};
 
-/// Runtime configuration, editable by admins from the dashboard.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SettingsValues {
+/// Declares [`SettingsValues`] and everything that has to name each of its
+/// fields: [`KEYS`], and reading or replacing one field by its key. One list,
+/// so a setting can't be added to one of them and forgotten in another.
+macro_rules! settings {
+    ($($(#[$doc:meta])* $name:ident: $type:ty,)*) => {
+        /// Runtime configuration, editable by admins from the dashboard.
+        #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+        pub struct SettingsValues {
+            $($(#[$doc])* pub $name: $type,)*
+        }
+
+        /// Every setting, in the order they are listed and seeded.
+        pub const KEYS: &[&str] = &[$(stringify!($name)),*];
+
+        impl SettingsValues {
+            /// One setting, as JSON.
+            fn get(&self, key: &str) -> Value {
+                match key {
+                    $(stringify!($name) => serde_json::to_value(&self.$name).unwrap_or(Value::Null),)*
+                    _ => Value::Null,
+                }
+            }
+
+            /// Replace one setting with a value [`parse_setting`] returned.
+            fn set(&mut self, key: &str, value: Value) -> Result<(), String> {
+                match key {
+                    $(stringify!($name) => self.$name = serde_json::from_value(value).map_err(|e| e.to_string())?,)*
+                    _ => return Err("Unknown setting.".into()),
+                }
+                Ok(())
+            }
+        }
+    };
+}
+
+settings! {
     /// Relays used for everything: watching for manifests, and looking up
     /// relay lists (kind 10002) and Blossom server lists (kind 10063).
-    pub relays: Vec<String>,
+    relays: Vec<String>,
     /// Blossom servers tried when a manifest has no `server` tags and its
     /// author publishes no kind 10063 list.
-    pub blossom_fallback_servers: Vec<String>,
+    blossom_fallback_servers: Vec<String>,
     /// Largest single blob npanel will download, in bytes.
-    pub max_file_size: i64,
+    max_file_size: i64,
     /// Largest one version of a site may be, in bytes. A site's author, not
     /// its staff, decides what a deploy downloads, so this is what stops one of
     /// them filling the gateway's disk.
-    pub max_site_size: i64,
+    max_site_size: i64,
     /// Most files one version of a site may list.
-    pub max_site_files: i64,
+    max_site_files: i64,
     /// How many times a version is deployed before npanel stops for now.
-    pub deploy_attempts: i64,
+    deploy_attempts: i64,
     /// Seconds between full manifest re-fetches from relays.
-    pub resync_interval: i64,
+    resync_interval: i64,
     /// What staff are told to point hostnames at. Empty means detect it.
-    pub dns_targets: Vec<String>,
+    dns_targets: Vec<String>,
     /// Domains hostnames may sit under, or empty to allow any hostname.
-    pub allowed_host_suffixes: Vec<String>,
+    allowed_host_suffixes: Vec<String>,
     /// Certificates `/tls-check` will authorize for one hostname per hour.
-    pub tls_check_limit_per_host: i64,
+    tls_check_limit_per_host: i64,
     /// Certificates `/tls-check` will authorize across all hostnames per hour.
-    pub tls_check_limit_total: i64,
+    tls_check_limit_total: i64,
     /// Whoever runs this instance, shown on the logged-out homepage.
-    pub contact_npub: String,
+    contact_npub: String,
     /// Whether the sites this gateway serves are listed publicly.
-    pub public_site_list: bool,
+    public_site_list: bool,
     /// Whether every site also gets a Tor onion address.
-    pub tor_enabled: bool,
+    tor_enabled: bool,
     /// The Tor control endpoint, as `tcp://host:port` or `unix:/path`.
-    pub tor_control_url: String,
+    tor_control_url: String,
     /// Password for the control port, when Tor uses a `HashedControlPassword`.
-    pub tor_control_password: String,
+    tor_control_password: String,
     /// The IANA time zone analytics are reported in.
-    pub analytics_timezone: String,
+    analytics_timezone: String,
 }
 
 impl Default for SettingsValues {
@@ -104,51 +137,19 @@ impl SettingsValues {
             _ => Map::new(),
         }
     }
-
-    fn get(&self, key: &str) -> Value {
-        self.to_map().remove(key).unwrap_or(Value::Null)
-    }
-
-    fn with(&self, key: &str, value: Value) -> SettingsValues {
-        let mut map = self.to_map();
-        map.insert(key.to_string(), value);
-        serde_json::from_value(Value::Object(map)).unwrap_or_else(|_| self.clone())
-    }
 }
-
-/// Every setting, in the order they are listed and seeded.
-pub const KEYS: [&str; 17] = [
-    "relays",
-    "blossom_fallback_servers",
-    "max_file_size",
-    "max_site_size",
-    "max_site_files",
-    "deploy_attempts",
-    "resync_interval",
-    "dns_targets",
-    "allowed_host_suffixes",
-    "tls_check_limit_per_host",
-    "tls_check_limit_total",
-    "contact_npub",
-    "public_site_list",
-    "tor_enabled",
-    "tor_control_url",
-    "tor_control_password",
-    "analytics_timezone",
-];
 
 /// Settings that are credentials, which the audit log must not repeat.
 const SECRET_SETTINGS: [&str; 1] = ["tor_control_password"];
-
-/// The keys that changed in one write.
-pub type Changed = Arc<Vec<&'static str>>;
 
 /// Reads and writes runtime settings, caching them in memory.
 pub struct Settings {
     db: Db,
     log: Option<Logger>,
-    cache: RwLock<Arc<SettingsValues>>,
-    changes: broadcast::Sender<Changed>,
+    /// The current values, and the channel subscribers watch them on. A
+    /// subscriber that falls behind skips to the newest values rather than
+    /// missing a change.
+    values: watch::Sender<Arc<SettingsValues>>,
     /// Held across a whole update, so two saves at once can't each start
     /// from the same snapshot and have the later one drop the other's change.
     writing: tokio::sync::Mutex<()>,
@@ -166,7 +167,7 @@ impl Settings {
             let mut values = SettingsValues::default();
             let mut missing = Vec::new();
 
-            for key in KEYS {
+            for &key in KEYS {
                 let Some(raw) = stored.get(key) else {
                     missing.push(key);
                     continue;
@@ -174,8 +175,8 @@ impl Settings {
                 let parsed = serde_json::from_str::<Value>(raw)
                     .map_err(|e| e.to_string())
                     .and_then(|value| parse_setting(key, &value));
-                match parsed {
-                    Ok(value) => values = values.with(key, value),
+                match parsed.and_then(|value| values.set(key, value)) {
+                    Ok(()) => {}
                     // A corrupt or outdated row must not stop the server from booting.
                     Err(error) => {
                         if let Some(log) = &log {
@@ -203,18 +204,18 @@ impl Settings {
             Ok(values)
         })?;
 
-        let (changes, _) = broadcast::channel(64);
-        Ok(Arc::new(Settings { db: db.clone(), log, cache: RwLock::new(Arc::new(values)), changes, writing: tokio::sync::Mutex::new(()) }))
+        Ok(Arc::new(Settings { db: db.clone(), log, values: watch::Sender::new(Arc::new(values)), writing: tokio::sync::Mutex::new(()) }))
     }
 
     /// A snapshot of every setting.
     pub fn get(&self) -> Arc<SettingsValues> {
-        self.cache.read().clone()
+        self.values.borrow().clone()
     }
 
-    /// Subscribe to settings changes: each message is the keys one write changed.
-    pub fn subscribe(&self) -> broadcast::Receiver<Changed> {
-        self.changes.subscribe()
+    /// Watch the settings: the receiver is marked changed after every write
+    /// that changed anything.
+    pub fn subscribe(&self) -> watch::Receiver<Arc<SettingsValues>> {
+        self.values.subscribe()
     }
 
     /// Validate and persist a partial update, writing one audit entry per
@@ -228,7 +229,7 @@ impl Settings {
         let mut next = (*current).clone();
         let mut changed: Vec<(&'static str, Value, Value)> = Vec::new();
 
-        for key in KEYS {
+        for &key in KEYS {
             let Some(raw) = patch.get(key) else {
                 continue;
             };
@@ -237,7 +238,7 @@ impl Settings {
             if previous == value {
                 continue;
             }
-            next = next.with(key, value.clone());
+            next.set(key, value.clone())?;
             changed.push((key, previous, value));
         }
 
@@ -270,13 +271,12 @@ impl Settings {
             .await
             .map_err(|e| e.to_string())?;
 
-        *self.cache.write() = Arc::new(next);
+        self.values.send_replace(Arc::new(next));
 
         let keys: Vec<&'static str> = changed.iter().map(|(key, ..)| *key).collect();
         if let Some(log) = &self.log {
             log.info("settings_updated", fields! { "keys" => keys.join(","), "actor" => actor });
         }
-        let _ = self.changes.send(Arc::new(keys.clone()));
 
         Ok(keys)
     }
@@ -505,7 +505,8 @@ mod tests {
         let patch = json!({ "resync_interval": 120, "tor_control_password": "hunter2", "max_file_size": 104857600 });
         let changed = settings.update(patch.as_object().unwrap(), "actor").await.unwrap();
         assert_eq!(changed, ["resync_interval", "tor_control_password"]);
-        assert_eq!(*changes.recv().await.unwrap(), ["resync_interval", "tor_control_password"]);
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(changes.borrow_and_update().resync_interval, 120);
         assert_eq!(settings.get().resync_interval, 120);
 
         let audit: Vec<(String, String)> = t
@@ -523,6 +524,7 @@ mod tests {
         let bad = json!({ "resync_interval": 300, "relays": [] });
         assert!(settings.update(bad.as_object().unwrap(), "actor").await.is_err());
         assert_eq!(settings.get().resync_interval, 120);
+        assert!(!changes.has_changed().unwrap());
 
         // Reloads from the database.
         assert_eq!(Settings::load(&t.db, None).unwrap().get().resync_interval, 120);

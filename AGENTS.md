@@ -69,9 +69,9 @@ docs/                   deployment, configuration, architecture, api, developmen
   across an `.await`.
 - Only six things are environment variables. Everything else belongs in the
   `settings` table so admins can change it without a restart. Adding a setting:
-  a field on `SettingsValues`, its key in `KEYS`, a default, a branch in
-  `validate`, and a subscriber if anything reacts to it. Then surface it on the
-  dashboard's Settings page.
+  a field in the `settings!` list, a default, a branch in `validate`, and a
+  subscriber if anything reacts to it. Then surface it on the dashboard's
+  Settings page.
 - Migrations are append-only, and new ones have to be added to the TypeScript
   npanel's list too if the two are to keep opening each other's databases.
 - The dashboard has TypeScript twins of the server's parsing rules in
