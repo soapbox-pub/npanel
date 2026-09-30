@@ -17,7 +17,7 @@ use super::request::{parse_event_request, EventRequest};
 use super::salts::Salts;
 use super::sessions::{Session, SessionAttributes, SessionCache};
 use super::source::{acquisition, is_spam_referrer, query_param};
-use super::store::{AnalyticsStore, EventRow, KIND_CUSTOM, KIND_ENGAGEMENT, KIND_PAGEVIEW};
+use super::store::{AnalyticsStore, EventKind, EventRow};
 use super::user_agent::{Device, UserAgents};
 use super::WorkerResponse;
 
@@ -157,11 +157,11 @@ impl Ingest {
         };
 
         let kind = if pageview {
-            KIND_PAGEVIEW
+            EventKind::Pageview
         } else if event.name == "engagement" {
-            KIND_ENGAGEMENT
+            EventKind::Engagement
         } else {
-            KIND_CUSTOM
+            EventKind::Custom
         };
 
         Some(self.store.add_event(EventRow {

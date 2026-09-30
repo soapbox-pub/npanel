@@ -5,39 +5,42 @@
 use std::collections::HashMap;
 
 use rusqlite::Connection;
+use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::query::engine::{QueryEngine, QueryHost, StatsError};
-use super::query::parse::{parse_stats_query, QueryError};
-use super::query::period::PERIODS;
+use super::query::engine::{Number, QueryEngine, QueryHost, StatsError};
+use super::query::parse::{parse_stats_query, Dimension, Metric, QueryError, StatsQuery, VisitDimension};
+use super::query::period::{Compare, Interval, Period};
 use super::WorkerResponse;
 use crate::fields;
 use crate::log::Logger;
 
 /// The suggestions endpoint's filter names, and the dimension each one means.
-fn suggestion_dimension(filter: &str) -> Option<&'static str> {
-    Some(match filter {
-        "page" => "event:page",
-        "entry_page" => "visit:entry_page",
-        "exit_page" => "visit:exit_page",
-        "source" => "visit:source",
-        "channel" => "visit:channel",
-        "referrer" => "visit:referrer",
-        "utm_medium" => "visit:utm_medium",
-        "utm_source" => "visit:utm_source",
-        "utm_campaign" => "visit:utm_campaign",
-        "utm_content" => "visit:utm_content",
-        "utm_term" => "visit:utm_term",
-        "country" => "visit:country",
-        "region" => "visit:region",
-        "city" => "visit:city",
-        "screen" => "visit:device",
-        "browser" => "visit:browser",
-        "browser_version" => "visit:browser_version",
-        "os" => "visit:os",
-        "os_version" => "visit:os_version",
+fn suggestion_dimension(filter: &str) -> Option<Dimension> {
+    use VisitDimension::*;
+    let visit = match filter {
+        "page" => return Some(Dimension::Page),
+        "entry_page" => EntryPage,
+        "exit_page" => ExitPage,
+        "source" => Source,
+        "channel" => Channel,
+        "referrer" => Referrer,
+        "utm_medium" => UtmMedium,
+        "utm_source" => UtmSource,
+        "utm_campaign" => UtmCampaign,
+        "utm_content" => UtmContent,
+        "utm_term" => UtmTerm,
+        "country" => Country,
+        "region" => Region,
+        "city" => City,
+        "screen" => Device,
+        "browser" => Browser,
+        "browser_version" => BrowserVersion,
+        "os" => Os,
+        "os_version" => OsVersion,
         _ => return None,
-    })
+    };
+    Some(Dimension::Visit(visit))
 }
 
 pub fn query(conn: &Connection, log: &Logger, now: i64, host: &QueryHost, body: &Value, timezone: &str) -> WorkerResponse {
@@ -48,7 +51,17 @@ pub fn query(conn: &Connection, log: &Logger, now: i64, host: &QueryHost, body: 
 }
 
 pub fn current_visitors(conn: &Connection, log: &Logger, now: i64, host: &QueryHost) -> WorkerResponse {
-    answer(log, || Ok(json!(QueryEngine::new(conn, now).current_visitors(host)?)))
+    answer(log, || QueryEngine::new(conn, now).current_visitors(host))
+}
+
+/// One site's last 24 hours.
+#[derive(Serialize)]
+struct Sparkline {
+    visitors: Number,
+    /// Against the 24 hours before.
+    change: Option<Number>,
+    /// The visitors of each hour.
+    hours: Vec<Option<Number>>,
 }
 
 /// The last 24 hours of each site: unique visitors, their change against the
@@ -56,17 +69,11 @@ pub fn current_visitors(conn: &Connection, log: &Logger, now: i64, host: &QueryH
 /// hourly buckets don't add up to a day's unique visitors.
 pub fn sparklines(conn: &Connection, log: &Logger, now: i64, hosts: &[QueryHost], timezone: &str) -> WorkerResponse {
     answer(log, || {
-        let total = parse_stats_query(&json!({
-            "date_range": "24h",
-            "metrics": ["visitors"],
-            "include": { "compare": "previous_period", "compare_match_day_of_week": false },
-        }))?;
-        let series = parse_stats_query(&json!({
-            "date_range": "24h",
-            "metrics": ["visitors"],
-            "dimensions": ["time:hour"],
-            "include": { "time_labels": true },
-        }))?;
+        let mut total = StatsQuery::new(Period::Hours24, vec![Metric::Visitors]);
+        total.include.compare = Some(Compare::PreviousPeriod);
+        let mut series = StatsQuery::new(Period::Hours24, vec![Metric::Visitors]);
+        series.dimensions = vec![Dimension::Time(Interval::Hour)];
+        series.include.time_labels = true;
 
         let engine = QueryEngine::new(conn, now);
         let mut sparklines = serde_json::Map::new();
@@ -74,28 +81,23 @@ pub fn sparklines(conn: &Connection, log: &Logger, now: i64, hosts: &[QueryHost]
             let total = engine.query(host, &total, timezone)?;
             let hourly = engine.query(host, &series, timezone)?;
 
-            let row = &total["results"][0];
-            let hours: Vec<Value> = hourly["meta"]["time_label_result_indices"]
-                .as_array()
-                .map(|indices| {
-                    indices
-                        .iter()
-                        .map(|index| match index.as_u64() {
-                            Some(i) => hourly["results"][i as usize]["metrics"][0].clone(),
-                            None => json!(0),
-                        })
-                        .collect()
+            let row = total.results.first();
+            let hours = hourly
+                .meta
+                .time_label_result_indices
+                .unwrap_or_default()
+                .into_iter()
+                .map(|index| match index {
+                    Some(i) => hourly.results[i].metrics[0],
+                    None => Some(Number(0.0)),
                 })
-                .unwrap_or_default();
-
-            sparklines.insert(
-                host.hostname.clone(),
-                json!({
-                    "visitors": if row["metrics"][0].is_null() { json!(0) } else { row["metrics"][0].clone() },
-                    "change": row["comparison"]["change"][0].clone(),
-                    "hours": hours,
-                }),
-            );
+                .collect();
+            let sparkline = Sparkline {
+                visitors: row.and_then(|row| row.metrics[0]).unwrap_or(Number(0.0)),
+                change: row.and_then(|row| row.comparison.as_ref()?.change.as_ref()?[0]),
+                hours,
+            };
+            sparklines.insert(host.hostname.clone(), json!(sparkline));
         }
         Ok(json!({ "sparklines": sparklines }))
     })
@@ -121,16 +123,15 @@ pub fn suggestions(
         let period = params.get("period").map(String::as_str).unwrap_or("");
         let date_range = if period == "custom" {
             json!([params.get("from"), params.get("to")])
-        } else if PERIODS.contains(&period) {
-            json!(period)
         } else {
-            json!("28d")
+            json!(Period::parse(period).unwrap_or(Period::Days(28)).name())
         };
         let filters: Value = match params.get("filters").filter(|f| !f.is_empty()) {
             Some(raw) => serde_json::from_str(raw).map_err(|e| QueryError(e.to_string()))?,
             None => json!([]),
         };
 
+        // Validated as the query form is, since it is the same question.
         let query = parse_stats_query(&json!({
             "date_range": date_range,
             "relative_date": params.get("date").filter(|d| !d.is_empty()),
@@ -142,17 +143,17 @@ pub fn suggestions(
     })
 }
 
-fn answer(log: &Logger, run: impl FnOnce() -> Result<Value, StatsError>) -> WorkerResponse {
+fn answer<T: Serialize>(log: &Logger, run: impl FnOnce() -> Result<T, StatsError>) -> WorkerResponse {
+    let failed = |error: &dyn std::fmt::Display| {
+        log.error("analytics_query_failed", fields! { "err_msg" => error.to_string() });
+        WorkerResponse::new(500, "application/json", json!({ "error": "The analytics query failed. The server log has the details." }).to_string())
+    };
     match run() {
-        Ok(body) => WorkerResponse::new(200, "application/json", body.to_string()),
+        Ok(body) => match serde_json::to_string(&body) {
+            Ok(body) => WorkerResponse::new(200, "application/json", body),
+            Err(error) => failed(&error),
+        },
         Err(StatsError::Query(error)) => WorkerResponse::new(400, "application/json", json!({ "error": error.0 }).to_string()),
-        Err(StatsError::Internal(error)) => {
-            log.error("analytics_query_failed", fields! { "err_msg" => error.to_string() });
-            WorkerResponse::new(
-                500,
-                "application/json",
-                json!({ "error": "The analytics query failed. The server log has the details." }).to_string(),
-            )
-        }
+        Err(StatsError::Internal(error)) => failed(&error),
     }
 }

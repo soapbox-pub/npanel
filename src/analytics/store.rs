@@ -16,9 +16,19 @@ use rusqlite::{params, Connection};
 use super::sessions::{Session, SessionAttributes};
 
 /// What an event was. Stored as a number, since there are only three answers.
-pub const KIND_PAGEVIEW: i64 = 0;
-pub const KIND_ENGAGEMENT: i64 = 1;
-pub const KIND_CUSTOM: i64 = 2;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i64)]
+pub enum EventKind {
+    Pageview = 0,
+    Engagement = 1,
+    Custom = 2,
+}
+
+impl rusqlite::ToSql for EventKind {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok((*self as i64).into())
+    }
+}
 
 /// One event, as it is stored.
 #[derive(Clone, Debug)]
@@ -26,7 +36,7 @@ pub struct EventRow {
     pub host_id: i64,
     /// Epoch seconds.
     pub timestamp: i64,
-    pub kind: i64,
+    pub kind: EventKind,
     pub session_id: i64,
     pub user_id: i64,
     pub pathname: String,

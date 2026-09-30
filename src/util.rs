@@ -3,7 +3,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use serde_json::Value;
 
 /// Now, in epoch seconds.
 pub fn now() -> i64 {
@@ -15,21 +14,6 @@ pub fn random_hex(n: usize) -> String {
     let mut bytes = vec![0u8; n];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
-}
-
-/// A number as JavaScript would print it: an integer when it is one, so `50`
-/// rather than `50.0` in a JSON response.
-pub fn js_number(value: f64) -> Value {
-    if value.is_finite() && value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
-        Value::from(value as i64)
-    } else {
-        serde_json::Number::from_f64(value).map(Value::Number).unwrap_or(Value::Null)
-    }
-}
-
-/// `Math.round`: halves round towards positive infinity.
-pub fn js_round(value: f64) -> f64 {
-    (value + 0.5).floor()
 }
 
 /// Percent-decode a URL path the way `decodeURIComponent` does, or `None` when
@@ -129,14 +113,6 @@ mod tests {
         assert_eq!(strip_prefix_ci("NOSTR:npub", "nostr:"), "npub");
         assert_eq!(strip_prefix_ci("nostr€x", "nostr:"), "nostr€x");
         assert_eq!(strip_prefix_ci("nos", "nostr:"), "nos");
-    }
-
-    #[test]
-    fn numbers() {
-        assert_eq!(js_number(50.0).to_string(), "50");
-        assert_eq!(js_number(33.33).to_string(), "33.33");
-        assert_eq!(js_round(2.5), 3.0);
-        assert_eq!(js_round(-2.5), -2.0);
     }
 
     #[test]

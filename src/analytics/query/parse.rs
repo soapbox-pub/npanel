@@ -6,52 +6,195 @@
 //! Validated the way Plausible's `Dashboard.QueryParser` validates it, with
 //! errors that say what was wrong, since that is what the dashboard shows.
 
+use chrono::NaiveDate;
 use serde_json::Value;
 
-use super::period::{Compare, DateRange, Interval, PERIODS};
-use super::zone::{is_civil_date, CivilDate};
+use super::period::{Compare, DateRange, Interval, Period};
+use super::zone::parse_date;
 
-pub const METRICS: [&str; 10] = [
-    "visitors",
-    "visits",
-    "pageviews",
-    "views_per_visit",
-    "bounce_rate",
-    "visit_duration",
-    "time_on_page",
-    "scroll_depth",
-    "percentage",
-    "exit_rate",
-];
+/// What a query can measure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Metric {
+    Visitors,
+    Visits,
+    Pageviews,
+    ViewsPerVisit,
+    BounceRate,
+    VisitDuration,
+    TimeOnPage,
+    ScrollDepth,
+    Percentage,
+    ExitRate,
+}
 
-/// Dimensions that describe a visit, by what the event that began it said.
-pub const VISIT_DIMENSIONS: [&str; 21] = [
-    "visit:source",
-    "visit:referrer",
-    "visit:channel",
-    "visit:utm_medium",
-    "visit:utm_source",
-    "visit:utm_campaign",
-    "visit:utm_content",
-    "visit:utm_term",
-    "visit:country",
-    "visit:country_name",
-    "visit:region",
-    "visit:region_name",
-    "visit:city",
-    "visit:city_name",
-    "visit:device",
-    "visit:browser",
-    "visit:browser_version",
-    "visit:os",
-    "visit:os_version",
-    "visit:entry_page",
-    "visit:exit_page",
-];
+impl Metric {
+    const ALL: [Metric; 10] = [
+        Metric::Visitors,
+        Metric::Visits,
+        Metric::Pageviews,
+        Metric::ViewsPerVisit,
+        Metric::BounceRate,
+        Metric::VisitDuration,
+        Metric::TimeOnPage,
+        Metric::ScrollDepth,
+        Metric::Percentage,
+        Metric::ExitRate,
+    ];
 
-pub const TIME_DIMENSIONS: [&str; 5] = ["time:minute", "time:hour", "time:day", "time:week", "time:month"];
+    pub fn name(self) -> &'static str {
+        match self {
+            Metric::Visitors => "visitors",
+            Metric::Visits => "visits",
+            Metric::Pageviews => "pageviews",
+            Metric::ViewsPerVisit => "views_per_visit",
+            Metric::BounceRate => "bounce_rate",
+            Metric::VisitDuration => "visit_duration",
+            Metric::TimeOnPage => "time_on_page",
+            Metric::ScrollDepth => "scroll_depth",
+            Metric::Percentage => "percentage",
+            Metric::ExitRate => "exit_rate",
+        }
+    }
 
-const OPERATORS: [&str; 4] = ["is", "is_not", "contains", "contains_not"];
+    fn parse(name: &str) -> Option<Metric> {
+        Metric::ALL.into_iter().find(|m| m.name() == name)
+    }
+}
+
+/// What describes a visit, by what the event that began it said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisitDimension {
+    Source,
+    Referrer,
+    Channel,
+    UtmMedium,
+    UtmSource,
+    UtmCampaign,
+    UtmContent,
+    UtmTerm,
+    Country,
+    CountryName,
+    Region,
+    RegionName,
+    City,
+    CityName,
+    Device,
+    Browser,
+    BrowserVersion,
+    Os,
+    OsVersion,
+    EntryPage,
+    ExitPage,
+}
+
+impl VisitDimension {
+    const ALL: [VisitDimension; 21] = [
+        VisitDimension::Source,
+        VisitDimension::Referrer,
+        VisitDimension::Channel,
+        VisitDimension::UtmMedium,
+        VisitDimension::UtmSource,
+        VisitDimension::UtmCampaign,
+        VisitDimension::UtmContent,
+        VisitDimension::UtmTerm,
+        VisitDimension::Country,
+        VisitDimension::CountryName,
+        VisitDimension::Region,
+        VisitDimension::RegionName,
+        VisitDimension::City,
+        VisitDimension::CityName,
+        VisitDimension::Device,
+        VisitDimension::Browser,
+        VisitDimension::BrowserVersion,
+        VisitDimension::Os,
+        VisitDimension::OsVersion,
+        VisitDimension::EntryPage,
+        VisitDimension::ExitPage,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            VisitDimension::Source => "visit:source",
+            VisitDimension::Referrer => "visit:referrer",
+            VisitDimension::Channel => "visit:channel",
+            VisitDimension::UtmMedium => "visit:utm_medium",
+            VisitDimension::UtmSource => "visit:utm_source",
+            VisitDimension::UtmCampaign => "visit:utm_campaign",
+            VisitDimension::UtmContent => "visit:utm_content",
+            VisitDimension::UtmTerm => "visit:utm_term",
+            VisitDimension::Country => "visit:country",
+            VisitDimension::CountryName => "visit:country_name",
+            VisitDimension::Region => "visit:region",
+            VisitDimension::RegionName => "visit:region_name",
+            VisitDimension::City => "visit:city",
+            VisitDimension::CityName => "visit:city_name",
+            VisitDimension::Device => "visit:device",
+            VisitDimension::Browser => "visit:browser",
+            VisitDimension::BrowserVersion => "visit:browser_version",
+            VisitDimension::Os => "visit:os",
+            VisitDimension::OsVersion => "visit:os_version",
+            VisitDimension::EntryPage => "visit:entry_page",
+            VisitDimension::ExitPage => "visit:exit_page",
+        }
+    }
+}
+
+/// What a query can break its answer down by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dimension {
+    Page,
+    Visit(VisitDimension),
+    Time(Interval),
+}
+
+impl Dimension {
+    pub fn name(self) -> String {
+        match self {
+            Dimension::Page => "event:page".into(),
+            Dimension::Visit(visit) => visit.name().into(),
+            Dimension::Time(interval) => format!("time:{}", interval.name()),
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Dimension> {
+        if name == "event:page" {
+            return Some(Dimension::Page);
+        }
+        if let Some(interval) = name.strip_prefix("time:") {
+            return Interval::ALL.into_iter().find(|i| i.name() == interval).map(Dimension::Time);
+        }
+        VisitDimension::ALL.into_iter().find(|v| v.name() == name).map(Dimension::Visit)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operator {
+    Is,
+    IsNot,
+    Contains,
+    ContainsNot,
+}
+
+impl Operator {
+    fn parse(name: &str) -> Option<Operator> {
+        Some(match name {
+            "is" => Operator::Is,
+            "is_not" => Operator::IsNot,
+            "contains" => Operator::Contains,
+            "contains_not" => Operator::ContainsNot,
+            _ => return None,
+        })
+    }
+
+    /// Whether the clauses are matched exactly rather than as substrings.
+    pub fn exact(self) -> bool {
+        matches!(self, Operator::Is | Operator::IsNot)
+    }
+
+    pub fn negated(self) -> bool {
+        matches!(self, Operator::IsNot | Operator::ContainsNot)
+    }
+}
 
 /// A query that can't be answered, with the sentence the dashboard shows.
 #[derive(Debug)]
@@ -69,13 +212,41 @@ fn err<T>(message: impl Into<String>) -> Result<T, QueryError> {
     Err(QueryError(message.into()))
 }
 
+/// What a filter can be on: a page, or an attribute of a visit. Time is
+/// the date range's business.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Subject {
+    Page,
+    Visit(VisitDimension),
+}
+
+/// A condition on what a query counts.
 #[derive(Clone, Debug)]
 pub struct Filter {
-    pub operator: String,
-    pub dimension: String,
+    pub operator: Operator,
+    pub subject: Subject,
     pub clauses: Vec<String>,
     pub case_sensitive: bool,
 }
+
+/// What a query's rows are ordered by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sort {
+    Metric(Metric),
+    Dimension(Dimension),
+}
+
+impl Sort {
+    pub fn name(self) -> String {
+        match self {
+            Sort::Metric(metric) => metric.name().into(),
+            Sort::Dimension(dimension) => dimension.name(),
+        }
+    }
+}
+
+/// One ordering, and whether it is ascending.
+pub type Order = (Sort, bool);
 
 #[derive(Clone, Debug, Default)]
 pub struct Include {
@@ -84,6 +255,7 @@ pub struct Include {
     pub time_labels: bool,
     pub partial_time_labels: bool,
     pub compare: Option<Compare>,
+    /// As sent, for echoing back.
     pub compare_raw: Value,
     pub compare_match_day_of_week: bool,
     pub empty_metrics: bool,
@@ -93,31 +265,49 @@ pub struct Include {
 #[derive(Clone, Debug)]
 pub struct StatsQuery {
     pub date_range: DateRange,
-    pub relative_date: Option<CivilDate>,
-    pub metrics: Vec<String>,
-    pub dimensions: Vec<String>,
+    pub relative_date: Option<NaiveDate>,
+    pub metrics: Vec<Metric>,
+    pub dimensions: Vec<Dimension>,
     pub filters: Vec<Filter>,
     /// As sent, for echoing back.
     pub raw_filters: Vec<Value>,
-    pub order_by: Option<Vec<(String, String)>>,
+    pub order_by: Option<Vec<Order>>,
     pub pagination: Option<(i64, i64)>,
     pub include: Include,
 }
 
 impl StatsQuery {
+    /// A query over a period for some metrics, and nothing else.
+    pub fn new(period: Period, metrics: Vec<Metric>) -> StatsQuery {
+        StatsQuery {
+            date_range: DateRange::Period(period),
+            relative_date: None,
+            metrics,
+            dimensions: Vec::new(),
+            filters: Vec::new(),
+            raw_filters: Vec::new(),
+            order_by: None,
+            pagination: None,
+            include: Include::default(),
+        }
+    }
+
     /// The interval a query's time dimension asks for, if it has one.
     pub fn interval(&self) -> Option<Interval> {
-        self.dimensions.iter().find_map(|d| d.strip_prefix("time:")).and_then(Interval::parse)
+        self.dimensions.iter().find_map(|d| match d {
+            Dimension::Time(interval) => Some(*interval),
+            _ => None,
+        })
     }
 
     /// Whether the question is about pages: a page dimension or filter.
     pub fn about_pages(&self) -> bool {
-        self.dimensions.iter().any(|d| d == "event:page") || self.filters.iter().any(|f| f.dimension == "event:page")
+        self.dimensions.contains(&Dimension::Page) || self.filters.iter().any(|f| f.subject == Subject::Page)
     }
-}
 
-fn is_dimension(value: &str) -> bool {
-    value == "event:page" || VISIT_DIMENSIONS.contains(&value) || TIME_DIMENSIONS.contains(&value)
+    pub fn has(&self, metric: Metric) -> bool {
+        self.metrics.contains(&metric)
+    }
 }
 
 fn show(value: &Value) -> String {
@@ -135,10 +325,7 @@ pub fn parse_stats_query(body: &Value) -> Result<StatsQuery, QueryError> {
 
     let metrics = list(input.get("metrics"), "metrics")?
         .iter()
-        .map(|m| match m.as_str() {
-            Some(name) if METRICS.contains(&name) => Ok(name.to_string()),
-            _ => err(format!("Unknown metric '{}'.", show(m))),
-        })
+        .map(|m| m.as_str().and_then(Metric::parse).ok_or_else(|| QueryError(format!("Unknown metric '{}'.", show(m)))))
         .collect::<Result<Vec<_>, _>>()?;
     if metrics.is_empty() {
         return err("At least one metric is required.");
@@ -146,12 +333,9 @@ pub fn parse_stats_query(body: &Value) -> Result<StatsQuery, QueryError> {
 
     let dimensions = list(Some(input.get("dimensions").unwrap_or(&Value::Array(vec![]))), "dimensions")?
         .iter()
-        .map(|d| match d.as_str() {
-            Some(name) if is_dimension(name) => Ok(name.to_string()),
-            _ => err(format!("Invalid dimension '{}'.", show(d))),
-        })
+        .map(|d| d.as_str().and_then(Dimension::parse).ok_or_else(|| QueryError(format!("Invalid dimension '{}'.", show(d)))))
         .collect::<Result<Vec<_>, _>>()?;
-    if dimensions.iter().filter(|d| d.starts_with("time:")).count() > 1 {
+    if dimensions.iter().filter(|d| matches!(d, Dimension::Time(_))).count() > 1 {
         return err("Only one time dimension is allowed.");
     }
 
@@ -181,27 +365,34 @@ fn list<'a>(value: Option<&'a Value>, field: &str) -> Result<&'a Vec<Value>, Que
     }
 }
 
-fn parse_date_range(value: Option<&Value>) -> Result<DateRange, QueryError> {
-    match value {
-        Some(Value::String(period)) if PERIODS.contains(&period.as_str()) => Ok(DateRange::Period(period.clone())),
-        Some(Value::Array(pair)) if pair.len() == 2 => match (pair[0].as_str(), pair[1].as_str()) {
-            (Some(first), Some(last)) if is_civil_date(first) && is_civil_date(last) => {
-                if first > last {
-                    return err("A custom date range has to start before it ends.");
-                }
-                Ok(DateRange::Custom(first.into(), last.into()))
-            }
-            _ => err(format!("Invalid date_range '{}'.", Value::Array(pair.clone()))),
-        },
-        other => err(format!("Invalid date_range '{}'.", other.map_or("undefined".into(), |v| v.to_string()))),
+/// Two dates, as a query sends a custom range.
+fn date_pair(pair: &[Value]) -> Option<(NaiveDate, NaiveDate)> {
+    match pair {
+        [first, last] => Some((parse_date(first.as_str()?)?, parse_date(last.as_str()?)?)),
+        _ => None,
     }
 }
 
-fn parse_relative_date(value: Option<&Value>) -> Result<Option<CivilDate>, QueryError> {
+fn parse_date_range(value: Option<&Value>) -> Result<DateRange, QueryError> {
+    let invalid = || err(format!("Invalid date_range '{}'.", value.map_or("undefined".into(), |v| v.to_string())));
+    match value {
+        Some(Value::String(period)) => Period::parse(period).map(DateRange::Period).map_or_else(invalid, Ok),
+        Some(Value::Array(pair)) => match date_pair(pair) {
+            Some((first, last)) if first > last => err("A custom date range has to start before it ends."),
+            Some((first, last)) => Ok(DateRange::Custom(first, last)),
+            None => invalid(),
+        },
+        _ => invalid(),
+    }
+}
+
+fn parse_relative_date(value: Option<&Value>) -> Result<Option<NaiveDate>, QueryError> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(date)) if is_civil_date(date) => Ok(Some(date.clone())),
-        Some(other) => err(format!("Failed to convert '{}' to date.", show(other))),
+        Some(other) => match other.as_str().and_then(parse_date) {
+            Some(date) => Ok(Some(date)),
+            None => err(format!("Failed to convert '{}' to date.", show(other))),
+        },
     }
 }
 
@@ -212,20 +403,21 @@ fn parse_filter(value: &Value) -> Result<Filter, QueryError> {
         return invalid();
     }
 
-    let operator = parts[0].as_str().filter(|o| OPERATORS.contains(o));
-    let Some(operator) = operator else {
+    let Some(operator) = parts[0].as_str().and_then(Operator::parse) else {
         return err(format!("Unsupported filter operator '{}'.", show(&parts[0])));
     };
-    let dimension = parts[1].as_str().filter(|d| *d == "event:page" || VISIT_DIMENSIONS.contains(d));
-    let Some(dimension) = dimension else {
-        return err(format!("Invalid filter dimension '{}'.", show(&parts[1])));
+    let subject = match parts[1].as_str().and_then(Dimension::parse) {
+        Some(Dimension::Page) => Subject::Page,
+        Some(Dimension::Visit(visit)) => Subject::Visit(visit),
+        _ => return err(format!("Invalid filter dimension '{}'.", show(&parts[1]))),
     };
     let Value::Array(clauses) = &parts[2] else { return invalid() };
     let clauses = clauses
         .iter()
         .map(|c| match c {
             Value::String(s) => Some(s.clone()),
-            Value::Number(n) => Some(crate::util::js_number(n.as_f64().unwrap_or(0.0)).to_string()),
+            // The dashboard sends a city as its GeoNames id.
+            Value::Number(n) => Some(n.to_string()),
             _ => None,
         })
         .collect::<Option<Vec<_>>>();
@@ -236,10 +428,10 @@ fn parse_filter(value: &Value) -> Result<Filter, QueryError> {
         _ => true,
     };
 
-    Ok(Filter { operator: operator.into(), dimension: dimension.into(), clauses, case_sensitive })
+    Ok(Filter { operator, subject, clauses, case_sensitive })
 }
 
-fn parse_order_by(value: Option<&Value>, metrics: &[String], dimensions: &[String]) -> Result<Option<Vec<(String, String)>>, QueryError> {
+fn parse_order_by(value: Option<&Value>, metrics: &[Metric], dimensions: &[Dimension]) -> Result<Option<Vec<Order>>, QueryError> {
     let Some(value) = value.filter(|v| !v.is_null()) else {
         return Ok(None);
     };
@@ -247,15 +439,21 @@ fn parse_order_by(value: Option<&Value>, metrics: &[String], dimensions: &[Strin
         .iter()
         .map(|entry| {
             let pair = entry.as_array().filter(|p| p.len() == 2);
-            let (Some(name), Some(direction)) =
-                (pair.and_then(|p| p[0].as_str()), pair.and_then(|p| p[1].as_str()).filter(|d| *d == "asc" || *d == "desc"))
-            else {
+            let name = pair.and_then(|p| p[0].as_str());
+            let ascending = pair.and_then(|p| match p[1].as_str() {
+                Some("asc") => Some(true),
+                Some("desc") => Some(false),
+                _ => None,
+            });
+            let (Some(name), Some(ascending)) = (name, ascending) else {
                 return err(format!("Invalid order_by entry '{entry}'."));
             };
-            if !metrics.iter().any(|m| m == name) && !dimensions.iter().any(|d| d == name) {
-                return err(format!("Invalid order_by entry '{entry}'. Entry is not a queried metric or dimension."));
-            }
-            Ok((name.to_string(), direction.to_string()))
+            let sort = match (Metric::parse(name), Dimension::parse(name)) {
+                (Some(metric), _) if metrics.contains(&metric) => Sort::Metric(metric),
+                (_, Some(dimension)) if dimensions.contains(&dimension) => Sort::Dimension(dimension),
+                _ => return err(format!("Invalid order_by entry '{entry}'. Entry is not a queried metric or dimension.")),
+            };
+            Ok((sort, ascending))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
@@ -293,9 +491,7 @@ fn parse_include(value: Option<&Value>) -> Result<Include, QueryError> {
         Value::Null => None,
         Value::String(s) if s == "previous_period" => Some(Compare::PreviousPeriod),
         Value::String(s) if s == "year_over_year" => Some(Compare::YearOverYear),
-        Value::Array(pair) if pair.len() == 2 && pair.iter().all(|d| d.as_str().is_some_and(is_civil_date)) => {
-            Some(Compare::Custom(pair[0].as_str().unwrap().into(), pair[1].as_str().unwrap().into()))
-        }
+        Value::Array(pair) if date_pair(pair).is_some() => date_pair(pair).map(|(first, last)| Compare::Custom(first, last)),
         other => return err(format!("Invalid include.compare '{other}'.")),
     };
 
@@ -315,34 +511,31 @@ fn parse_include(value: Option<&Value>) -> Result<Include, QueryError> {
 /// The combinations Plausible refuses, refused the same way.
 fn validate(query: &StatsQuery) -> Result<(), QueryError> {
     let pages = query.about_pages();
-    let non_time_dimension = query.dimensions.iter().any(|d| !d.starts_with("time:"));
-    let has = |metric: &str| query.metrics.iter().any(|m| m == metric);
+    let non_time_dimension = query.dimensions.iter().any(|d| !matches!(d, Dimension::Time(_)));
 
-    if has("views_per_visit") && (non_time_dimension || pages) {
+    if query.has(Metric::ViewsPerVisit) && (non_time_dimension || pages) {
         return err("Metric `views_per_visit` cannot be queried with a filter on `event:page` or with a dimension other than time.");
     }
-    for metric in ["time_on_page", "scroll_depth"] {
-        if has(metric) && !pages {
-            return err(format!("Metric `{metric}` can only be queried with event:page filters or dimensions."));
+    for metric in [Metric::TimeOnPage, Metric::ScrollDepth] {
+        if query.has(metric) && !pages {
+            return err(format!("Metric `{}` can only be queried with event:page filters or dimensions.", metric.name()));
         }
     }
-    if has("exit_rate") && !query.dimensions.iter().any(|d| d == "visit:exit_page") {
+    if query.has(Metric::ExitRate) && !query.dimensions.contains(&Dimension::Visit(VisitDimension::ExitPage)) {
         return err("Metric `exit_rate` requires a `visit:exit_page` dimension.");
     }
 
-    let period = match &query.date_range {
-        DateRange::Period(p) => Some(p.as_str()),
+    let period = match query.date_range {
+        DateRange::Period(period) => Some(period),
         DateRange::Custom(..) => None,
     };
-    if query.include.compare.is_some() && matches!(period, Some("realtime" | "realtime_30m" | "all")) {
+    if query.include.compare.is_some() && matches!(period, Some(Period::Realtime | Period::Realtime30m | Period::All)) {
         return err("Comparisons are not available for this period.");
     }
-    if query.dimensions.iter().any(|d| d == "time:minute") {
-        if let Some(period) = period {
-            if !["realtime", "realtime_30m", "day", "24h"].contains(&period) {
-                return err("The minute interval is only available for periods of a day or less.");
-            }
-        }
+    if query.dimensions.contains(&Dimension::Time(Interval::Minute))
+        && period.is_some_and(|p| !matches!(p, Period::Realtime | Period::Realtime30m | Period::Day | Period::Hours24))
+    {
+        return err("The minute interval is only available for periods of a day or less.");
     }
 
     Ok(())
@@ -368,6 +561,10 @@ mod tests {
         assert_eq!(q.pagination, Some((9, 0)));
         assert!(!q.filters[0].case_sensitive);
         assert_eq!(q.include.compare, Some(Compare::PreviousPeriod));
+        assert_eq!(q.order_by, Some(vec![(Sort::Metric(Metric::Visitors), false)]));
+        for dimension in VisitDimension::ALL.map(Dimension::Visit).into_iter().chain([Dimension::Page]).chain(Interval::ALL.map(Dimension::Time)) {
+            assert_eq!(Dimension::parse(&dimension.name()), Some(dimension));
+        }
     }
 
     #[test]
@@ -379,5 +576,6 @@ mod tests {
         assert!(e(json!({"date_range": "28d", "metrics": ["time_on_page"]})).contains("event:page"));
         assert!(e(json!({"date_range": "all", "metrics": ["visitors"], "include": {"compare": "previous_period"}})).contains("Comparisons"));
         assert!(e(json!({"date_range": "7d", "metrics": ["visitors"], "dimensions": ["time:minute"]})).contains("minute interval"));
+        assert!(e(json!({"date_range": "7d", "metrics": ["visitors"], "filters": [["is", "time:day", ["x"]]]})).contains("filter dimension"));
     }
 }

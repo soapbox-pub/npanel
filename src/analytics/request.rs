@@ -57,7 +57,11 @@ pub fn parse_event_request(body: &str) -> Result<EventRequest, RequestErrors> {
     let get = |short: &str, long: &str| fields.get(short).filter(|v| !v.is_null()).or_else(|| fields.get(long)).filter(|v| !v.is_null());
 
     let name = match get("n", "name") {
-        Some(Value::Number(n)) if n.as_f64().is_some_and(|f| f.fract() == 0.0) => Some(js_number_string(n)),
+        // A whole number is a name too, written without a fraction: a
+        // float that is whole displays as one.
+        Some(Value::Number(n)) if n.as_f64().is_some_and(|f| f.fract() == 0.0) => {
+            Some(n.as_i64().map_or_else(|| n.as_f64().unwrap_or_default().to_string(), |i| i.to_string()))
+        }
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
         _ => None,
     };
@@ -110,14 +114,6 @@ pub fn parse_event_request(body: &str) -> Result<EventRequest, RequestErrors> {
         engagement_time,
         scroll_depth,
     })
-}
-
-/// A JSON integer as `String(n)` prints it.
-fn js_number_string(n: &serde_json::Number) -> String {
-    match n.as_i64() {
-        Some(i) => i.to_string(),
-        None => crate::util::js_number(n.as_f64().unwrap_or(0.0)).to_string(),
-    }
 }
 
 fn parse_url(value: Option<&Value>, error: &mut impl FnMut(&str, String)) -> Option<url::Url> {

@@ -20,16 +20,18 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+use chrono::NaiveDateTime;
 use chrono_tz::Tz;
 use indexmap::IndexMap;
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
-use serde_json::{json, Map, Value};
+use serde::{Serialize, Serializer};
+use serde_json::Value;
 
-use super::parse::{Filter, QueryError, StatsQuery};
+use super::parse::{Dimension, Filter, Metric, Order, QueryError, Sort, StatsQuery, Subject, VisitDimension};
 use super::period::*;
 use super::zone::{iso_in_zone, offset_segments, parse_zone, zoned_date};
-use crate::util::{js_number, js_round};
+use crate::analytics::store::EventKind;
 
 /// A site the analytics thread knows, as the answer names it.
 #[derive(Clone, Debug)]
@@ -59,15 +61,177 @@ impl From<rusqlite::Error> for StatsError {
 
 type Result<T> = std::result::Result<T, StatsError>;
 
-#[derive(Clone, Debug)]
-pub struct Row {
-    pub dimensions: Vec<Value>,
-    pub metrics: Vec<Option<f64>>,
+/// A number as Plausible's responses write it: whole numbers without a
+/// fraction, since the dashboard shows `50` rather than `50.0`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Number(pub f64);
+
+impl Serialize for Number {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let Number(value) = *self;
+        if value.is_finite() && value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+            serializer.serialize_i64(value as i64)
+        } else {
+            serializer.serialize_f64(value)
+        }
+    }
 }
 
-/// What one grouped query returns per group, before metrics are finished.
-type Group = HashMap<String, Option<f64>>;
-type Groups = IndexMap<String, (Vec<Value>, Group)>;
+fn numbers(values: &[Option<f64>]) -> Vec<Option<Number>> {
+    values.iter().map(|value| value.map(Number)).collect()
+}
+
+/// A group's dimension values, which are text — or, where SQL found none,
+/// null.
+type Key = Vec<Option<String>>;
+
+#[derive(Clone, Debug)]
+struct Row {
+    dimensions: Key,
+    metrics: Vec<Option<f64>>,
+}
+
+/// What a grouped query counts per group, before metrics are finished. Each
+/// query fills in the columns it selects.
+#[derive(Clone, Debug, Default)]
+struct Aggregates {
+    visitors: Option<f64>,
+    visits: Option<f64>,
+    pageviews: Option<f64>,
+    bounces: Option<f64>,
+    bounce_visits: Option<f64>,
+    duration: Option<f64>,
+    engaged_time: Option<f64>,
+    engaged_visits: Option<f64>,
+    /// The sum of each visit's deepest scroll.
+    total: Option<f64>,
+}
+
+impl Aggregates {
+    fn column(&mut self, name: &str) -> Option<&mut Option<f64>> {
+        Some(match name {
+            "visitors" => &mut self.visitors,
+            "visits" => &mut self.visits,
+            "pageviews" => &mut self.pageviews,
+            "bounces" => &mut self.bounces,
+            "bounce_visits" => &mut self.bounce_visits,
+            "duration" => &mut self.duration,
+            "engaged_time" => &mut self.engaged_time,
+            "engaged_visits" => &mut self.engaged_visits,
+            "total" => &mut self.total,
+            _ => return None,
+        })
+    }
+}
+
+type Groups = IndexMap<Key, Aggregates>;
+
+/// One row of an answer.
+#[derive(Serialize)]
+pub struct ResultRow {
+    pub dimensions: Key,
+    pub metrics: Vec<Option<Number>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparedRow>,
+}
+
+/// A row of the range compared against, and how each metric changed.
+#[derive(Serialize)]
+pub struct ComparedRow {
+    pub dimensions: Key,
+    pub metrics: Vec<Option<Number>>,
+    pub change: Option<Vec<Option<Number>>>,
+}
+
+/// Everything about an answer that isn't its rows. Fields are in the order
+/// Plausible's keys sort in, which is the order it sends them.
+#[derive(Serialize, Default)]
+pub struct Meta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_partial_time_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_time_label_result_indices: Option<Vec<Option<usize>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_time_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_metrics: Option<Vec<Option<Number>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imports_included: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial_time_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub present_index: Option<Option<usize>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_label_result_indices: Option<Vec<Option<usize>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_labels: Option<Vec<String>>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// The query as it was run, in the shape Plausible echoes it back.
+#[derive(Serialize)]
+pub struct Echo {
+    site_id: String,
+    metrics: Vec<&'static str>,
+    date_range: [String; 2],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comparison_date_range: Option<[String; 2]>,
+    filters: Vec<Value>,
+    dimensions: Vec<String>,
+    order_by: Vec<[String; 2]>,
+    include: EchoInclude,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pagination: Option<Pagination>,
+}
+
+#[derive(Serialize)]
+struct EchoInclude {
+    #[serde(skip_serializing_if = "is_false")]
+    imports: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    imports_meta: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    time_labels: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    time_label_result_indices: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    partial_time_labels: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compare: Option<Value>,
+    #[serde(skip_serializing_if = "is_false")]
+    compare_match_day_of_week: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    empty_metrics: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    present_index: bool,
+    trim_relative_date_range: bool,
+}
+
+#[derive(Serialize)]
+struct Pagination {
+    limit: i64,
+    offset: i64,
+}
+
+/// An answer, in Plausible's response shape.
+#[derive(Serialize)]
+pub struct QueryResult {
+    pub results: Vec<ResultRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison_results: Option<Vec<ComparedRow>>,
+    pub meta: Meta,
+    pub query: Echo,
+}
+
+/// A filter suggestion: what to filter by, and what to show for it.
+#[derive(Serialize)]
+pub struct Suggestion {
+    value: String,
+    label: String,
+}
 
 /// How events reach the visit they belong to, spelled out rather than left to
 /// the planner, which gets it catastrophically wrong: events are scanned by
@@ -88,31 +252,69 @@ fn not_set(column: &str, blank: &str) -> String {
 
 /// Each visit dimension as an expression over `sessions s`, with the blank
 /// values spelled the way Plausible spells them.
-fn visit_sql(dimension: &str) -> String {
+fn visit_sql(dimension: VisitDimension) -> String {
+    use VisitDimension::*;
     match dimension {
-        "visit:source" => not_set("s.source", "Direct / None"),
-        "visit:referrer" => not_set("s.referrer", "Direct / None"),
-        "visit:channel" => not_set("s.channel", "Direct"),
-        "visit:utm_medium" => not_set("s.utm_medium", "(not set)"),
-        "visit:utm_source" => not_set("s.utm_source", "(not set)"),
-        "visit:utm_campaign" => not_set("s.utm_campaign", "(not set)"),
-        "visit:utm_content" => not_set("s.utm_content", "(not set)"),
-        "visit:utm_term" => not_set("s.utm_term", "(not set)"),
-        "visit:country" | "visit:country_name" => "s.country".into(),
+        Source => not_set("s.source", "Direct / None"),
+        Referrer => not_set("s.referrer", "Direct / None"),
+        Channel => not_set("s.channel", "Direct"),
+        UtmMedium => not_set("s.utm_medium", "(not set)"),
+        UtmSource => not_set("s.utm_source", "(not set)"),
+        UtmCampaign => not_set("s.utm_campaign", "(not set)"),
+        UtmContent => not_set("s.utm_content", "(not set)"),
+        UtmTerm => not_set("s.utm_term", "(not set)"),
+        Country | CountryName => "s.country".into(),
         // Regions and cities are known by name here rather than by ISO code
         // or GeoNames id, which DB-IP's free database doesn't carry.
-        "visit:region" => "CASE WHEN s.region = '' THEN '' ELSE s.country || '-' || s.region END".into(),
-        "visit:region_name" => "s.region".into(),
-        "visit:city" => "CASE WHEN s.city = '' THEN '' ELSE s.country || '-' || s.region || '-' || s.city END".into(),
-        "visit:city_name" => "s.city".into(),
-        "visit:device" => not_set("s.device", "(not set)"),
-        "visit:browser" => not_set("s.browser", "(not set)"),
-        "visit:browser_version" => not_set("s.browser_version", "(not set)"),
-        "visit:os" => not_set("s.os", "(not set)"),
-        "visit:os_version" => not_set("s.os_version", "(not set)"),
-        "visit:entry_page" => "s.entry_page".into(),
-        "visit:exit_page" => "s.exit_page".into(),
-        _ => "''".into(),
+        Region => "CASE WHEN s.region = '' THEN '' ELSE s.country || '-' || s.region END".into(),
+        RegionName => "s.region".into(),
+        City => "CASE WHEN s.city = '' THEN '' ELSE s.country || '-' || s.region || '-' || s.city END".into(),
+        CityName => "s.city".into(),
+        Device => not_set("s.device", "(not set)"),
+        Browser => not_set("s.browser", "(not set)"),
+        BrowserVersion => not_set("s.browser_version", "(not set)"),
+        Os => not_set("s.os", "(not set)"),
+        OsVersion => not_set("s.os_version", "(not set)"),
+        EntryPage => "s.entry_page".into(),
+        ExitPage => "s.exit_page".into(),
+    }
+}
+
+/// What a filter tests, as an expression over `events e` joined to
+/// `sessions s`.
+fn subject_sql(subject: Subject) -> String {
+    match subject {
+        Subject::Page => "e.pathname".into(),
+        Subject::Visit(visit) => visit_sql(visit),
+    }
+}
+
+/// Whether a metric is counted from visits rather than from events. Which
+/// side visitors and visits come from follows the question: pageviews when it
+/// is about pages, visits otherwise.
+fn from_sessions(metric: Metric, pages: bool) -> bool {
+    use Metric::*;
+    match metric {
+        BounceRate | VisitDuration | ViewsPerVisit => true,
+        Visitors | Visits | Percentage | ExitRate => !pages,
+        Pageviews | TimeOnPage | ScrollDepth => false,
+    }
+}
+
+fn from_events(metric: Metric, pages: bool) -> bool {
+    use Metric::*;
+    match metric {
+        Pageviews | TimeOnPage => true,
+        Visitors | Visits | Percentage => pages,
+        BounceRate | VisitDuration | ViewsPerVisit | ExitRate | ScrollDepth => false,
+    }
+}
+
+/// What a metric reads as where there is nothing to measure.
+fn empty_value(metric: Metric) -> Option<f64> {
+    match metric {
+        Metric::VisitDuration | Metric::ExitRate | Metric::ScrollDepth | Metric::TimeOnPage => None,
+        _ => Some(0.0),
     }
 }
 
@@ -133,9 +335,17 @@ struct Scope<'a> {
     range: TimeRange,
     tz: Tz,
     interval: Option<Interval>,
-    labels: Vec<String>,
-    dimensions: Vec<String>,
+    buckets: &'a [NaiveDateTime],
+    dimensions: Vec<Dimension>,
     filters: &'a [Filter],
+}
+
+impl Scope<'_> {
+    /// Whether any dimension or filter is about the visit, so events have to
+    /// be joined to their visits.
+    fn joins_visits(&self) -> bool {
+        self.dimensions.iter().any(|d| matches!(d, Dimension::Visit(_))) || self.filters.iter().any(|f| matches!(f.subject, Subject::Visit(_)))
+    }
 }
 
 fn country_names() -> &'static HashMap<String, String> {
@@ -154,7 +364,7 @@ impl<'c> QueryEngine<'c> {
     }
 
     /// Answer one dashboard query for one site, in Plausible's response shape.
-    pub fn query(&self, host: &QueryHost, query: &StatsQuery, timezone: &str) -> Result<Value> {
+    pub fn query(&self, host: &QueryHost, query: &StatsQuery, timezone: &str) -> Result<QueryResult> {
         let tz = parse_zone(timezone);
         let now = self.now;
         let ctx = self.context(host, query, tz)?;
@@ -162,23 +372,25 @@ impl<'c> QueryEngine<'c> {
         let compare = query.include.compare.as_ref();
 
         let range = main_range(&query.date_range, &ctx, compare);
-        let labels = match interval {
-            Some(interval) => bounded_labels(interval, range, tz, now)?,
+        let buckets = match interval {
+            Some(interval) => bounded_buckets(interval, range, tz, now)?,
             None => Vec::new(),
         };
+        let labels = bucket_labels(interval, &buckets);
         let order_by = query.order_by.clone().unwrap_or_else(|| default_order(query));
 
-        let all = sort_rows(self.rows(query, &self.scope(host, query, range, tz, labels.clone()))?, query, &order_by);
+        let all = sort_rows(self.rows(query, &self.scope(host, query, range, tz, &buckets))?, query, &order_by);
         let (limit, offset) = query.pagination.unwrap_or((10_000, 0));
         let results: Vec<Row> = all.into_iter().skip(offset as usize).take(limit as usize).collect();
-        let mut result_json: Vec<Value> = results.iter().map(row_json).collect();
+        let mut result_rows: Vec<ResultRow> =
+            results.iter().map(|row| ResultRow { dimensions: row.dimensions.clone(), metrics: numbers(&row.metrics), comparison: None }).collect();
 
-        let mut meta = Map::new();
+        let mut meta = Meta::default();
         if query.include.imports || query.include.imports_meta {
-            meta.insert("imports_included".into(), Value::Bool(false));
+            meta.imports_included = Some(false);
         }
         if query.include.empty_metrics {
-            meta.insert("empty_metrics".into(), query.metrics.iter().map(|m| metric_json(empty_value(m))).collect());
+            meta.empty_metrics = Some(query.metrics.iter().map(|m| empty_value(*m).map(Number)).collect());
         }
 
         let mut comparison = None;
@@ -187,103 +399,97 @@ impl<'c> QueryEngine<'c> {
         if let Some(compare) = compare {
             let comparison_range = comparison_range(&query.date_range, range, compare, query.include.compare_match_day_of_week, &ctx);
             comparison = Some(comparison_range);
-            let comparison_labels = match interval {
-                Some(interval) => bounded_labels(interval, comparison_range, tz, now)?,
+            let comparison_buckets = match interval {
+                Some(interval) => bounded_buckets(interval, comparison_range, tz, now)?,
                 None => Vec::new(),
             };
-            let compared = self.rows(query, &self.scope(host, query, comparison_range, tz, comparison_labels.clone()))?;
+            let comparison_labels = bucket_labels(interval, &comparison_buckets);
+            let compared = self.rows(query, &self.scope(host, query, comparison_range, tz, &comparison_buckets))?;
 
             if let (Some(interval), 1) = (interval, query.dimensions.len()) {
                 // A time series: two lists, each only its non-empty buckets,
                 // with each comparison bucket's change measured against the
                 // bucket it lines up with.
-                let by_label: HashMap<String, &Vec<Option<f64>>> =
-                    results.iter().map(|row| (value_string(&row.dimensions[0]), &row.metrics)).collect();
-                let line_up: HashMap<&String, &String> = comparison_labels.iter().zip(labels.iter()).collect();
+                let by_label: HashMap<&str, &Vec<Option<f64>>> =
+                    results.iter().filter_map(|row| Some((row.dimensions[0].as_deref()?, &row.metrics))).collect();
+                let line_up: HashMap<&str, &str> = comparison_labels.iter().map(String::as_str).zip(labels.iter().map(String::as_str)).collect();
 
                 let sorted = sort_rows(compared, query, &order_by);
-                let list: Vec<Value> = sorted
+                let list = sorted
                     .iter()
                     .map(|row| {
-                        let main = line_up.get(&value_string(&row.dimensions[0])).and_then(|label| by_label.get(*label));
-                        let mut object = row_object(row);
-                        object.insert(
-                            "change".into(),
-                            main.map_or(Value::Null, |main| changes_json(&query.metrics, &row.metrics, main)),
-                        );
-                        Value::Object(object)
+                        let main = row.dimensions[0].as_deref().and_then(|label| line_up.get(label)).and_then(|label| by_label.get(label));
+                        ComparedRow {
+                            dimensions: row.dimensions.clone(),
+                            metrics: numbers(&row.metrics),
+                            change: main.map(|main| changes(&query.metrics, &row.metrics, main)),
+                        }
                     })
                     .collect();
 
                 if query.include.time_labels {
-                    meta.insert("comparison_time_labels".into(), json!(comparison_labels));
-                    meta.insert("comparison_time_label_result_indices".into(), result_indices(&comparison_labels, &sorted));
+                    meta.comparison_time_label_result_indices = Some(result_indices(&comparison_labels, &sorted));
                     if query.include.partial_time_labels {
-                        meta.insert(
-                            "comparison_partial_time_labels".into(),
-                            json!(partial_time_labels(&comparison_labels, interval, comparison_range, tz, now)),
-                        );
+                        let partial = partial_buckets(&comparison_buckets, interval, comparison_range, tz, now);
+                        meta.comparison_partial_time_labels = Some(partial.into_iter().map(|b| interval.label(b)).collect());
                     }
+                    meta.comparison_time_labels = Some(comparison_labels);
                 }
                 comparison_results = Some(list);
             } else {
-                let by_key: HashMap<String, &Vec<Option<f64>>> = compared.iter().map(|row| (key(&row.dimensions), &row.metrics)).collect();
-                for (row, out) in results.iter().zip(result_json.iter_mut()) {
-                    let empty: Vec<Option<f64>> = query.metrics.iter().map(|m| empty_value(m)).collect();
-                    let metrics = by_key.get(&key(&row.dimensions)).copied().unwrap_or(&empty);
-                    out["comparison"] = json!({
-                        "dimensions": row.dimensions,
-                        "metrics": metrics.iter().map(|m| metric_json(*m)).collect::<Vec<_>>(),
-                        "change": changes_json(&query.metrics, metrics, &row.metrics),
+                let by_key: HashMap<&Key, &Vec<Option<f64>>> = compared.iter().map(|row| (&row.dimensions, &row.metrics)).collect();
+                let empty: Vec<Option<f64>> = query.metrics.iter().map(|m| empty_value(*m)).collect();
+                for (row, out) in results.iter().zip(result_rows.iter_mut()) {
+                    let metrics = by_key.get(&row.dimensions).copied().unwrap_or(&empty);
+                    out.comparison = Some(ComparedRow {
+                        dimensions: row.dimensions.clone(),
+                        metrics: numbers(metrics),
+                        change: Some(changes(&query.metrics, metrics, &row.metrics)),
                     });
                 }
             }
         }
 
         if let (Some(interval), true) = (interval, query.include.time_labels) {
-            meta.insert("time_labels".into(), json!(labels));
-            meta.insert("time_label_result_indices".into(), result_indices(&labels, &results));
+            meta.time_label_result_indices = Some(result_indices(&labels, &results));
             if query.include.present_index {
-                meta.insert("present_index".into(), json!(present_index(&labels, interval, range, tz, now)));
+                meta.present_index = Some(present_index(&buckets, interval, range, tz, now));
             }
             if query.include.partial_time_labels {
-                meta.insert("partial_time_labels".into(), json!(partial_time_labels(&labels, interval, range, tz, now)));
+                meta.partial_time_labels = Some(partial_buckets(&buckets, interval, range, tz, now).into_iter().map(|b| interval.label(b)).collect());
             }
+            meta.time_labels = Some(labels);
         }
 
-        let mut response = Map::new();
-        response.insert("results".into(), Value::Array(result_json));
-        if let Some(list) = comparison_results {
-            response.insert("comparison_results".into(), Value::Array(list));
-        }
-        meta.sort_keys();
-        response.insert("meta".into(), Value::Object(meta));
-        response.insert("query".into(), echo(host, query, range, comparison, &order_by, tz, timezone));
-
-        Ok(Value::Object(response))
+        Ok(QueryResult {
+            results: result_rows,
+            comparison_results,
+            meta,
+            query: echo(host, query, range, comparison, &order_by, tz, timezone),
+        })
     }
 
     /// Visitors seen on a site in the last five minutes.
     pub fn current_visitors(&self, host: &QueryHost) -> Result<i64> {
         Ok(self.conn.query_row(
-            "SELECT COUNT(DISTINCT user_id) FROM events WHERE host_id = ? AND timestamp >= ? AND kind <> 1",
-            rusqlite::params![host.id, self.now - 5 * 60],
+            "SELECT COUNT(DISTINCT user_id) FROM events WHERE host_id = ? AND timestamp >= ? AND kind <> ?",
+            rusqlite::params![host.id, self.now - 5 * 60, EventKind::Engagement],
             |row| row.get(0),
         )?)
     }
 
     /// Values of one dimension a filter could match, most visited first.
-    pub fn suggestions(&self, host: &QueryHost, dimension: &str, mut query: StatsQuery, search: &str, timezone: &str) -> Result<Value> {
+    pub fn suggestions(&self, host: &QueryHost, dimension: Dimension, mut query: StatsQuery, search: &str, timezone: &str) -> Result<Vec<Suggestion>> {
         let tz = parse_zone(timezone);
         let labelled = match dimension {
-            "visit:country" => Some("visit:country_name"),
-            "visit:region" => Some("visit:region_name"),
-            "visit:city" => Some("visit:city_name"),
+            Dimension::Visit(VisitDimension::Country) => Some(VisitDimension::CountryName),
+            Dimension::Visit(VisitDimension::Region) => Some(VisitDimension::RegionName),
+            Dimension::Visit(VisitDimension::City) => Some(VisitDimension::CityName),
             _ => None,
         };
-        query.metrics = vec!["visitors".into()];
-        query.dimensions = std::iter::once(dimension.to_string()).chain(labelled.map(str::to_string)).collect();
-        query.order_by = Some(vec![("visitors".into(), "desc".into())]);
+        query.metrics = vec![Metric::Visitors];
+        query.dimensions = std::iter::once(dimension).chain(labelled.map(Dimension::Visit)).collect();
+        query.order_by = Some(vec![(Sort::Metric(Metric::Visitors), false)]);
         query.pagination = None;
         query.include = Default::default();
 
@@ -291,152 +497,126 @@ impl<'c> QueryEngine<'c> {
         let range = main_range(&query.date_range, &ctx, None);
         let needle = search.trim().to_lowercase();
 
-        let rows = sort_rows(self.rows(&query, &self.scope(host, &query, range, tz, Vec::new()))?, &query, query.order_by.as_ref().unwrap());
-        let options: Vec<Value> = rows
-            .iter()
-            .map(|row| (value_string(&row.dimensions[0]), value_string(row.dimensions.last().unwrap_or(&Value::Null))))
+        let order = query.order_by.clone().unwrap_or_default();
+        let rows = sort_rows(self.rows(&query, &self.scope(host, &query, range, tz, &[]))?, &query, &order);
+        Ok(rows
+            .into_iter()
+            .filter_map(|mut row| {
+                let label = row.dimensions.pop().flatten()?;
+                let value = row.dimensions.into_iter().next().flatten().unwrap_or_else(|| label.clone());
+                Some((value, label))
+            })
             .filter(|(value, label)| !value.is_empty() && !label.is_empty())
             .filter(|(_, label)| needle.is_empty() || label.to_lowercase().contains(&needle))
             .take(25)
-            .map(|(value, label)| json!({ "value": value, "label": label }))
-            .collect();
-        Ok(Value::Array(options))
+            .map(|(value, label)| Suggestion { value, label })
+            .collect())
     }
 
     fn context(&self, host: &QueryHost, query: &StatsQuery, tz: Tz) -> Result<PeriodContext> {
-        let mut ctx = PeriodContext {
-            tz,
-            now: self.now,
-            relative_date: query.relative_date.clone().unwrap_or_else(|| zoned_date(self.now, tz)),
-            stats_start: None,
-        };
-        if query.date_range == DateRange::Period("all".into()) {
+        let mut ctx = PeriodContext { tz, now: self.now, relative_date: query.relative_date.unwrap_or_else(|| zoned_date(self.now, tz)), stats_start: None };
+        if query.date_range == DateRange::Period(Period::All) {
             let start: Option<i64> = self.conn.query_row("SELECT MIN(start) FROM sessions WHERE host_id = ?", [host.id], |r| r.get(0))?;
             ctx.stats_start = start.map(|start| zoned_date(start, tz));
         }
         Ok(ctx)
     }
 
-    fn scope<'a>(&self, host: &'a QueryHost, query: &'a StatsQuery, range: TimeRange, tz: Tz, labels: Vec<String>) -> Scope<'a> {
-        Scope { host, range, tz, interval: query.interval(), labels, dimensions: query.dimensions.clone(), filters: &query.filters }
+    fn scope<'a>(&self, host: &'a QueryHost, query: &'a StatsQuery, range: TimeRange, tz: Tz, buckets: &'a [NaiveDateTime]) -> Scope<'a> {
+        Scope { host, range, tz, interval: query.interval(), buckets, dimensions: query.dimensions.clone(), filters: &query.filters }
     }
 
     /// Every group the query produces over one range, metrics finished.
     fn rows(&self, query: &StatsQuery, scope: &Scope) -> Result<Vec<Row>> {
         let metrics = &query.metrics;
-        let pages = scope.dimensions.iter().any(|d| d == "event:page") || scope.filters.iter().any(|f| f.dimension == "event:page");
+        let pages = scope.dimensions.contains(&Dimension::Page) || scope.filters.iter().any(|f| f.subject == Subject::Page);
 
-        // Which side each metric is counted on. Visitors and visits follow the
-        // question: pageviews when it is about pages, visits otherwise.
-        let session_metrics: &[&str] = if pages {
-            &["bounce_rate", "visit_duration", "views_per_visit"]
-        } else {
-            &["visitors", "visits", "percentage", "bounce_rate", "visit_duration", "views_per_visit", "exit_rate"]
-        };
-        let event_metrics: &[&str] =
-            if pages { &["visitors", "visits", "percentage", "pageviews", "time_on_page"] } else { &["pageviews", "time_on_page"] };
+        let wants_sessions = metrics.iter().any(|m| from_sessions(*m, pages));
+        let wants_events = metrics.iter().any(|m| from_events(*m, pages));
+        let has = |metric: Metric| metrics.contains(&metric);
 
-        let wants = |set: &[&str]| metrics.iter().any(|m| set.contains(&m.as_str()));
-        let wants_sessions = wants(session_metrics);
-        let wants_events = wants(event_metrics);
-        let wants_scroll = metrics.iter().any(|m| m == "scroll_depth");
-        let has = |m: &str| metrics.iter().any(|x| x == m);
-
-        let events = if wants_events { self.event_groups(scope, has("time_on_page"))? } else { Groups::new() };
+        let events = if wants_events { self.event_groups(scope, has(Metric::TimeOnPage))? } else { Groups::new() };
         let sessions = if wants_sessions { self.session_groups(scope)? } else { Groups::new() };
-        let scroll = if wants_scroll { self.scroll_groups(scope)? } else { Groups::new() };
+        let scroll = if has(Metric::ScrollDepth) { self.scroll_groups(scope)? } else { Groups::new() };
 
         // The visitors whose share each row is, counted the same way as the rows.
-        let total = if has("percentage") {
-            let whole = Scope { dimensions: Vec::new(), labels: scope.labels.clone(), ..*scope };
+        let total = if has(Metric::Percentage) {
+            let whole = Scope { dimensions: Vec::new(), ..*scope };
             let groups = if pages { self.event_groups(&whole, false)? } else { self.session_groups(&whole)? };
-            Some(groups.get(&key(&[])).and_then(|(_, g)| g.get("visitors").copied().flatten()).unwrap_or(0.0))
+            Some(groups.get(&Key::new()).and_then(|g| g.visitors).unwrap_or(0.0))
         } else {
             None
         };
 
         // Exits are visits; exit rate is those over the pageviews of the page
         // left from.
-        let pageviews_by_page = if has("exit_rate") {
-            Some(self.event_groups(&Scope { dimensions: vec!["event:page".into()], labels: scope.labels.clone(), ..*scope }, false)?)
-        } else {
-            None
-        };
+        let pageviews_by_page =
+            if has(Metric::ExitRate) { Some(self.event_groups(&Scope { dimensions: vec![Dimension::Page], ..*scope }, false)?) } else { None };
 
         // A page report is a report of pageviews: an entry page nobody viewed
         // in the range is not a row. Anything else is every group either side
         // saw.
-        let mut keys: IndexMap<String, Vec<Value>> = IndexMap::new();
-        for (k, (dims, _)) in events.iter() {
-            keys.entry(k.clone()).or_insert_with(|| dims.clone());
-        }
+        let mut keys: Vec<&Key> = events.keys().collect();
         if !pages {
-            for (k, (dims, _)) in sessions.iter() {
-                keys.entry(k.clone()).or_insert_with(|| dims.clone());
-            }
+            keys.extend(sessions.keys().filter(|k| !events.contains_key(*k)));
         }
         if pages && !wants_events {
-            for (k, (dims, _)) in scroll.iter() {
-                keys.entry(k.clone()).or_insert_with(|| dims.clone());
-            }
+            keys.extend(scroll.keys().filter(|k| !events.contains_key(*k)));
         }
-        if scope.dimensions.is_empty() {
-            keys.entry(key(&[])).or_default();
+        let whole = Key::new();
+        if scope.dimensions.is_empty() && keys.is_empty() {
+            keys.push(&whole);
         }
 
-        let empty = Group::new();
-        let get = |g: &Group, name: &str| g.get(name).copied().flatten();
+        let empty = Aggregates::default();
         let mut rows = Vec::with_capacity(keys.len());
 
-        for (k, dims) in &keys {
-            let e = events.get(k).map(|(_, g)| g).unwrap_or(&empty);
-            let s = sessions.get(k).map(|(_, g)| g).unwrap_or(&empty);
+        for key in keys {
+            let e = events.get(key).unwrap_or(&empty);
+            let s = sessions.get(key).unwrap_or(&empty);
             let side = if pages { e } else { s };
 
             // Engagement pings are read only for time on page, and a page they
             // alone mention was not viewed in the range.
-            if pages && has("time_on_page") && events.contains_key(k) && get(e, "visitors").unwrap_or(0.0) <= 0.0 {
+            if pages && has(Metric::TimeOnPage) && events.contains_key(key) && e.visitors.unwrap_or(0.0) <= 0.0 {
                 continue;
             }
 
             let values = metrics
                 .iter()
-                .map(|metric| match metric.as_str() {
-                    "visitors" => Some(get(side, "visitors").unwrap_or(0.0)),
-                    "visits" => Some(get(side, "visits").unwrap_or(0.0)),
-                    "pageviews" => Some(get(e, "pageviews").unwrap_or(0.0)),
-                    "views_per_visit" => Some(match get(s, "visits").filter(|v| *v != 0.0) {
-                        Some(visits) => round(get(s, "pageviews").unwrap_or(0.0) / visits, 2),
+                .map(|metric| match metric {
+                    Metric::Visitors => Some(side.visitors.unwrap_or(0.0)),
+                    Metric::Visits => Some(side.visits.unwrap_or(0.0)),
+                    Metric::Pageviews => Some(e.pageviews.unwrap_or(0.0)),
+                    Metric::ViewsPerVisit => Some(match s.visits.filter(|v| *v != 0.0) {
+                        Some(visits) => round(s.pageviews.unwrap_or(0.0) / visits, 2),
                         None => 0.0,
                     }),
-                    "bounce_rate" => Some(match get(s, "bounce_visits").filter(|v| *v != 0.0) {
-                        Some(visits) => js_round(get(s, "bounces").unwrap_or(0.0) * 100.0 / visits),
+                    Metric::BounceRate => Some(match s.bounce_visits.filter(|v| *v != 0.0) {
+                        Some(visits) => (s.bounces.unwrap_or(0.0) * 100.0 / visits).round(),
                         None => 0.0,
                     }),
-                    "visit_duration" => Some(match get(s, "visits").filter(|v| *v != 0.0) {
-                        Some(visits) => js_round(get(s, "duration").unwrap_or(0.0) / visits),
+                    Metric::VisitDuration => Some(match s.visits.filter(|v| *v != 0.0) {
+                        Some(visits) => (s.duration.unwrap_or(0.0) / visits).round(),
                         None => 0.0,
                     }),
-                    "time_on_page" => get(e, "engaged_visits")
-                        .filter(|v| *v != 0.0)
-                        .map(|visits| js_round(get(e, "engaged_time").unwrap_or(0.0) / 1000.0 / visits)),
-                    "scroll_depth" => scroll.get(k).and_then(|(_, depth)| {
-                        get(depth, "visits").filter(|v| *v != 0.0).map(|visits| js_round(get(depth, "total").unwrap_or(0.0) / visits))
-                    }),
-                    "percentage" => match total {
-                        Some(total) if total != 0.0 => Some(round(get(side, "visitors").unwrap_or(0.0) * 100.0 / total, 2)),
+                    Metric::TimeOnPage => e.engaged_visits.filter(|v| *v != 0.0).map(|visits| (e.engaged_time.unwrap_or(0.0) / 1000.0 / visits).round()),
+                    Metric::ScrollDepth => {
+                        scroll.get(key).and_then(|depth| depth.visits.filter(|v| *v != 0.0).map(|visits| (depth.total.unwrap_or(0.0) / visits).round()))
+                    }
+                    Metric::Percentage => match total {
+                        Some(total) if total != 0.0 => Some(round(side.visitors.unwrap_or(0.0) * 100.0 / total, 2)),
                         _ => None,
                     },
-                    "exit_rate" => {
-                        let page = key(&[dims.first().cloned().unwrap_or(Value::Null)]);
-                        let viewed = pageviews_by_page.as_ref().and_then(|g| g.get(&page)).and_then(|(_, g)| get(g, "pageviews"));
-                        viewed.filter(|v| *v != 0.0).map(|viewed| round(get(s, "visits").unwrap_or(0.0) * 100.0 / viewed, 1))
+                    Metric::ExitRate => {
+                        let page = vec![key.first().cloned().flatten()];
+                        let viewed = pageviews_by_page.as_ref().and_then(|g| g.get(&page)).and_then(|g| g.pageviews);
+                        viewed.filter(|v| *v != 0.0).map(|viewed| round(s.visits.unwrap_or(0.0) * 100.0 / viewed, 1))
                     }
-                    _ => None,
                 })
                 .collect();
 
-            let dimensions = dims.iter().zip(&scope.dimensions).map(|(value, dimension)| present(dimension, value)).collect();
+            let dimensions = key.iter().zip(&scope.dimensions).map(|(value, dimension)| present(*dimension, value)).collect();
             rows.push(Row { dimensions, metrics: values });
         }
 
@@ -447,9 +627,9 @@ impl<'c> QueryEngine<'c> {
     /// visit's attributes are asked about.
     fn event_groups(&self, scope: &Scope, engagement: bool) -> Result<Groups> {
         let mut params = Params::default();
-        let join_visits = scope.dimensions.iter().any(|d| d.starts_with("visit:")) || scope.filters.iter().any(|f| f.dimension.starts_with("visit:"));
+        let join_visits = scope.joins_visits();
 
-        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| event_dimension(d, scope)).collect();
+        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| event_dimension(*d, scope)).collect();
         let mut conditions = vec![
             format!("e.host_id = {}", params.add(scope.host.id)),
             format!("e.timestamp BETWEEN {} AND {}", params.add(scope.range.first), params.add(scope.range.last)),
@@ -457,29 +637,31 @@ impl<'c> QueryEngine<'c> {
         if join_visits {
             conditions.extend(VISITS_ON.iter().map(|c| c.to_string()));
         }
+        let (pageview, engaged) = (EventKind::Pageview as i64, EventKind::Engagement as i64);
         if !engagement {
-            conditions.push("e.kind <> 1".into());
+            conditions.push(format!("e.kind <> {engaged}"));
         }
         for filter in scope.filters {
-            let expression = if filter.dimension == "event:page" { "e.pathname".to_string() } else { visit_sql(&filter.dimension) };
-            conditions.push(filter_sql(filter, &expression, &mut params));
+            conditions.push(filter_sql(filter, &subject_sql(filter.subject), &mut params));
         }
 
         // Engagement rows are only read for time on page, and everything else
         // has to step around them when they are.
-        let counted = |column: &str| if engagement { format!("CASE WHEN e.kind <> 1 THEN {column} END") } else { column.to_string() };
+        let counted = |column: &str| if engagement { format!("CASE WHEN e.kind <> {engaged} THEN {column} END") } else { column.to_string() };
 
         let sql = format!(
-            "SELECT {} COUNT(DISTINCT {}) AS visitors, COUNT(DISTINCT {}) AS visits, SUM(e.kind = 0) AS pageviews {}
+            "SELECT {} COUNT(DISTINCT {}) AS visitors, COUNT(DISTINCT {}) AS visits, SUM(e.kind = {pageview}) AS pageviews {}
              FROM events e {} WHERE {} {}",
             select(&dimensions),
             counted("e.user_id"),
             counted("e.session_id"),
             if engagement {
-                ", SUM(CASE WHEN e.kind = 1 THEN e.engagement_time ELSE 0 END) AS engaged_time,
-                   COUNT(DISTINCT CASE WHEN e.kind = 1 THEN e.session_id END) AS engaged_visits"
+                format!(
+                    ", SUM(CASE WHEN e.kind = {engaged} THEN e.engagement_time ELSE 0 END) AS engaged_time,
+                       COUNT(DISTINCT CASE WHEN e.kind = {engaged} THEN e.session_id END) AS engaged_visits"
+                )
             } else {
-                ""
+                String::new()
             },
             if join_visits { VISITS_JOIN } else { "" },
             conditions.join(" AND "),
@@ -496,20 +678,18 @@ impl<'c> QueryEngine<'c> {
         let smear = matches!(scope.interval, Some(Interval::Hour | Interval::Minute));
 
         let mut buckets = String::new();
-        if smear {
-            let spans = bucket_spans(&scope.labels, scope.interval.unwrap(), scope.tz);
+        if let (true, Some(interval)) = (smear, scope.interval) {
+            let spans = bucket_spans(scope.buckets, interval, scope.tz);
             if spans.is_empty() {
                 return Ok(Groups::new());
             }
-            let values: Vec<String> = spans
-                .into_iter()
-                .map(|(label, lo, hi)| format!("({}, {}, {})", params.add(label), params.add(lo), params.add(hi)))
-                .collect();
+            let values: Vec<String> =
+                spans.into_iter().map(|(label, lo, hi)| format!("({}, {}, {})", params.add(label), params.add(lo), params.add(hi))).collect();
             buckets = format!("WITH buckets (label, lo, hi) AS (VALUES {})", values.join(", "));
         }
 
-        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| session_dimension(d, scope)).collect();
-        let page_filters: Vec<&Filter> = scope.filters.iter().filter(|f| f.dimension == "event:page").collect();
+        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| session_dimension(*d, scope)).collect();
+        let page_filters: Vec<&Filter> = scope.filters.iter().filter(|f| f.subject == Subject::Page).collect();
 
         // A page filter narrows visits to those that saw the page, and the
         // bounce rate to those that landed on it. Written out in the order the
@@ -529,8 +709,8 @@ impl<'c> QueryEngine<'c> {
             format!("s.start BETWEEN {} AND {}", params.add(scope.range.first - LONGEST_VISIT), params.add(scope.range.last)),
             format!("s.timestamp >= {}", params.add(scope.range.first)),
         ];
-        for filter in scope.filters.iter().filter(|f| f.dimension != "event:page") {
-            conditions.push(filter_sql(filter, &visit_sql(&filter.dimension), &mut params));
+        for filter in scope.filters.iter().filter(|f| f.subject != Subject::Page) {
+            conditions.push(filter_sql(filter, &subject_sql(filter.subject), &mut params));
         }
         if !page_filters.is_empty() {
             let host = params.add(scope.host.id);
@@ -538,7 +718,8 @@ impl<'c> QueryEngine<'c> {
             let pages = page_filters.iter().map(|f| filter_sql(f, "e.pathname", &mut params)).collect::<Vec<_>>().join(" AND ");
             conditions.push(format!(
                 "s.session_id IN (SELECT e.session_id FROM events e WHERE e.host_id = {host}
-                   AND e.timestamp BETWEEN {first} AND {last} AND e.kind <> 1 AND {pages})"
+                   AND e.timestamp BETWEEN {first} AND {last} AND e.kind <> {} AND {pages})",
+                EventKind::Engagement as i64
             ));
         }
 
@@ -561,9 +742,9 @@ impl<'c> QueryEngine<'c> {
     /// Each group's average of the deepest each visit scrolled.
     fn scroll_groups(&self, scope: &Scope) -> Result<Groups> {
         let mut params = Params::default();
-        let join_visits = scope.dimensions.iter().any(|d| d.starts_with("visit:")) || scope.filters.iter().any(|f| f.dimension.starts_with("visit:"));
+        let join_visits = scope.joins_visits();
 
-        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| event_dimension(d, scope)).collect();
+        let dimensions: Vec<String> = scope.dimensions.iter().map(|d| event_dimension(*d, scope)).collect();
         let mut conditions = vec![
             format!("e.host_id = {}", params.add(scope.host.id)),
             format!("e.timestamp BETWEEN {} AND {}", params.add(scope.range.first), params.add(scope.range.last)),
@@ -571,11 +752,10 @@ impl<'c> QueryEngine<'c> {
         if join_visits {
             conditions.extend(VISITS_ON.iter().map(|c| c.to_string()));
         }
-        conditions.push("e.kind = 1".into());
+        conditions.push(format!("e.kind = {}", EventKind::Engagement as i64));
         conditions.push("e.scroll_depth <= 100".into());
         for filter in scope.filters {
-            let expression = if filter.dimension == "event:page" { "e.pathname".to_string() } else { visit_sql(&filter.dimension) };
-            conditions.push(filter_sql(filter, &expression, &mut params));
+            conditions.push(filter_sql(filter, &subject_sql(filter.subject), &mut params));
         }
 
         let inner: Vec<String> = dimensions.iter().enumerate().map(|(i, e)| format!("{e} AS d{i}")).collect();
@@ -605,66 +785,54 @@ impl<'c> QueryEngine<'c> {
         let mut groups = Groups::new();
 
         while let Some(row) = rows.next()? {
-            let mut values = Vec::with_capacity(dimensions);
-            let mut metrics = Group::new();
+            let mut key = Key::with_capacity(dimensions);
+            let mut aggregates = Aggregates::default();
             for (index, name) in names.iter().enumerate() {
                 let value: SqlValue = row.get(index)?;
                 if index < dimensions {
-                    values.push(match value {
-                        SqlValue::Null => Value::Null,
-                        SqlValue::Integer(i) => Value::from(i),
-                        SqlValue::Real(f) => js_number(f),
-                        SqlValue::Text(t) => Value::String(t),
-                        SqlValue::Blob(_) => Value::Null,
+                    key.push(match value {
+                        SqlValue::Text(text) => Some(text),
+                        SqlValue::Integer(i) => Some(i.to_string()),
+                        SqlValue::Real(f) => Some(f.to_string()),
+                        SqlValue::Null | SqlValue::Blob(_) => None,
                     });
-                } else {
-                    metrics.insert(
-                        name.clone(),
-                        match value {
-                            SqlValue::Integer(i) => Some(i as f64),
-                            SqlValue::Real(f) => Some(f),
-                            SqlValue::Text(t) => t.parse().ok(),
-                            _ => None,
-                        },
-                    );
+                } else if let Some(column) = aggregates.column(name) {
+                    *column = match value {
+                        SqlValue::Integer(i) => Some(i as f64),
+                        SqlValue::Real(f) => Some(f),
+                        _ => None,
+                    };
                 }
             }
-            groups.insert(key(&values), (values, metrics));
+            groups.insert(key, aggregates);
         }
 
         Ok(groups)
     }
 }
 
-fn event_dimension(dimension: &str, scope: &Scope) -> String {
-    if dimension == "event:page" {
-        "e.pathname".into()
-    } else if dimension.starts_with("time:") {
-        time_bucket("e.timestamp", scope)
-    } else {
-        visit_sql(dimension)
+fn event_dimension(dimension: Dimension, scope: &Scope) -> String {
+    match dimension {
+        Dimension::Page => "e.pathname".into(),
+        Dimension::Time(_) => time_bucket("e.timestamp", scope),
+        Dimension::Visit(visit) => visit_sql(visit),
     }
 }
 
-fn session_dimension(dimension: &str, scope: &Scope) -> String {
-    // A page broken down by visit-level metrics is the page visits entered on.
-    if dimension == "event:page" {
-        "s.entry_page".into()
-    } else if dimension.starts_with("time:") {
-        if matches!(scope.interval, Some(Interval::Hour | Interval::Minute)) {
-            "b.label".into()
-        } else {
-            // By when the visit was last active, within the range.
-            time_bucket(&format!("MIN(s.timestamp, {})", scope.range.last), scope)
-        }
-    } else {
-        visit_sql(dimension)
+fn session_dimension(dimension: Dimension, scope: &Scope) -> String {
+    match dimension {
+        // A page broken down by visit-level metrics is the page visits entered on.
+        Dimension::Page => "s.entry_page".into(),
+        Dimension::Time(Interval::Hour | Interval::Minute) => "b.label".into(),
+        // By when the visit was last active, within the range.
+        Dimension::Time(_) => time_bucket(&format!("MIN(s.timestamp, {})", scope.range.last), scope),
+        Dimension::Visit(visit) => visit_sql(visit),
     }
 }
 
-/// Labels for a range, refusing one that would have too many buckets. Counted
-/// from the shortest an interval can be, so this errs towards refusing.
-fn bounded_labels(interval: Interval, range: TimeRange, tz: Tz, now: i64) -> Result<Vec<String>> {
+/// A range's buckets, refusing one that would have too many. Counted from the
+/// shortest an interval can be, so this errs towards refusing.
+fn bounded_buckets(interval: Interval, range: TimeRange, tz: Tz, now: i64) -> Result<Vec<NaiveDateTime>> {
     let shortest = match interval {
         Interval::Minute => 60,
         Interval::Hour => 3600,
@@ -673,13 +841,13 @@ fn bounded_labels(interval: Interval, range: TimeRange, tz: Tz, now: i64) -> Res
         Interval::Month => 28 * 86_400,
     };
     if (range.last - range.first) / shortest > MAX_TIME_BUCKETS {
-        return Err(QueryError(format!(
-            "That range is too long to show by the {}. Pick a shorter range or a longer interval.",
-            interval.name()
-        ))
-        .into());
+        return Err(QueryError(format!("That range is too long to show by the {}. Pick a shorter range or a longer interval.", interval.name())).into());
     }
-    Ok(time_labels(interval, range, tz, now))
+    Ok(time_buckets(interval, range, tz, now))
+}
+
+fn bucket_labels(interval: Option<Interval>, buckets: &[NaiveDateTime]) -> Vec<String> {
+    interval.map_or_else(Vec::new, |interval| buckets.iter().map(|b| interval.label(*b)).collect())
 }
 
 /// The SQL for the bucket an instant falls in, as its label. SQLite has no
@@ -688,12 +856,12 @@ fn bounded_labels(interval: Interval, range: TimeRange, tz: Tz, now: i64) -> Res
 /// a range can straddle a daylight-saving change.
 fn time_bucket(column: &str, scope: &Scope) -> String {
     let segments = offset_segments(scope.range.first - LONGEST_VISIT, scope.range.last + LONGEST_VISIT, scope.tz);
-    let offset = if segments.len() == 1 {
-        segments[0].1.to_string()
-    } else {
-        let whens: Vec<String> =
-            segments.windows(2).map(|pair| format!("WHEN {column} < {} THEN {}", pair[1].0, pair[0].1)).collect();
-        format!("CASE {} ELSE {} END", whens.join(" "), segments.last().unwrap().1)
+    let offset = match segments.as_slice() {
+        [(_, only)] => only.to_string(),
+        _ => {
+            let whens: Vec<String> = segments.windows(2).map(|pair| format!("WHEN {column} < {} THEN {}", pair[1].0, pair[0].1)).collect();
+            format!("CASE {} ELSE {} END", whens.join(" "), segments.last().expect("segments").1)
+        }
     };
     let local = format!("({column} + {offset})");
 
@@ -706,7 +874,7 @@ fn time_bucket(column: &str, scope: &Scope) -> String {
             let (first, _) = date_range(scope.range, scope.tz);
             format!("MAX(date({local}, 'unixepoch', '-6 days', 'weekday 1'), '{first}')")
         }
-        _ => format!("strftime('%Y-%m-01', {local}, 'unixepoch')"),
+        Some(Interval::Month) | None => format!("strftime('%Y-%m-01', {local}, 'unixepoch')"),
     }
 }
 
@@ -714,44 +882,39 @@ fn time_bucket(column: &str, scope: &Scope) -> String {
 fn filter_sql(filter: &Filter, expression: &str, params: &mut Params) -> String {
     let lower = !filter.case_sensitive;
     let subject = if lower { format!("LOWER({expression})") } else { expression.to_string() };
-    let clauses: Vec<String> = filter.clauses.iter().map(|c| clause_value(&filter.dimension, c)).collect();
+    let clauses: Vec<&str> = filter.clauses.iter().map(|c| clause_value(filter.subject, c)).collect();
     let mut value = |clause: &str| params.add(if lower { clause.to_lowercase() } else { clause.to_string() });
 
-    let condition = if filter.operator == "is" || filter.operator == "is_not" {
+    let condition = if filter.operator.exact() {
         format!("{subject} IN ({})", clauses.iter().map(|c| value(c)).collect::<Vec<_>>().join(", "))
     } else {
         format!("({})", clauses.iter().map(|c| format!("INSTR({subject}, {}) > 0", value(c))).collect::<Vec<_>>().join(" OR "))
     };
 
-    if filter.operator == "is" || filter.operator == "contains" {
-        condition
-    } else {
+    if filter.operator.negated() {
         format!("NOT {condition}")
+    } else {
+        condition
     }
 }
 
 /// A filter value as it is stored. Plausible's dashboard spells "no country"
 /// as two NUL bytes, and "no city" as the GeoNames id 0.
-fn clause_value(dimension: &str, clause: &str) -> String {
-    if dimension == "visit:country" && (clause == "\0\0" || clause == "ZZ") {
-        return String::new();
+fn clause_value(subject: Subject, clause: &str) -> &str {
+    match (subject, clause) {
+        (Subject::Visit(VisitDimension::Country), "\0\0" | "ZZ") | (Subject::Visit(VisitDimension::City), "0") => "",
+        _ => clause,
     }
-    if dimension == "visit:city" && clause == "0" {
-        return String::new();
-    }
-    clause.to_string()
 }
 
 /// A dimension value as the response carries it.
-fn present(dimension: &str, value: &Value) -> Value {
-    if dimension == "visit:country_name" {
-        if let Value::String(code) = value {
-            if !code.is_empty() {
-                return Value::String(country_names().get(code).cloned().unwrap_or_else(|| code.clone()));
-            }
+fn present(dimension: Dimension, value: &Option<String>) -> Option<String> {
+    match (dimension, value) {
+        (Dimension::Visit(VisitDimension::CountryName), Some(code)) if !code.is_empty() => {
+            Some(country_names().get(code).cloned().unwrap_or_else(|| code.clone()))
         }
+        _ => value.clone(),
     }
-    value.clone()
 }
 
 fn select(dimensions: &[String]) -> String {
@@ -766,70 +929,46 @@ fn group_by(count: usize) -> String {
     }
 }
 
-fn key(values: &[Value]) -> String {
-    serde_json::to_string(values).unwrap_or_default()
-}
-
-fn value_string(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.clone(),
-        Value::Null => "null".into(),
-        other => other.to_string(),
-    }
-}
-
+/// `value` rounded to `places` decimals, halves away from zero.
 fn round(value: f64, places: i32) -> f64 {
     let factor = 10f64.powi(places);
-    js_round(value * factor) / factor
-}
-
-fn metric_json(value: Option<f64>) -> Value {
-    value.map_or(Value::Null, js_number)
-}
-
-fn row_object(row: &Row) -> Map<String, Value> {
-    let mut object = Map::new();
-    object.insert("dimensions".into(), Value::Array(row.dimensions.clone()));
-    object.insert("metrics".into(), row.metrics.iter().map(|m| metric_json(*m)).collect());
-    object
-}
-
-fn row_json(row: &Row) -> Value {
-    Value::Object(row_object(row))
-}
-
-/// What a metric reads as where there is nothing to measure.
-fn empty_value(metric: &str) -> Option<f64> {
-    match metric {
-        "visit_duration" | "exit_rate" | "scroll_depth" | "time_on_page" => None,
-        _ => Some(0.0),
-    }
+    (value * factor).round() / factor
 }
 
 /// Plausible's order when a query names none: by time, then by the first
 /// metric, largest first.
-fn default_order(query: &StatsQuery) -> Vec<(String, String)> {
-    let by_metric = (query.metrics[0].clone(), "desc".to_string());
-    match query.dimensions.iter().find(|d| d.starts_with("time:")) {
-        Some(time) => vec![(time.clone(), "asc".into()), by_metric],
+fn default_order(query: &StatsQuery) -> Vec<Order> {
+    let by_metric = (Sort::Metric(query.metrics[0]), false);
+    match query.dimensions.iter().find(|d| matches!(d, Dimension::Time(_))) {
+        Some(time) => vec![(Sort::Dimension(*time), true), by_metric],
         None => vec![by_metric],
     }
 }
 
-fn sort_rows(mut rows: Vec<Row>, query: &StatsQuery, order_by: &[(String, String)]) -> Vec<Row> {
-    let positions: Vec<(Option<usize>, Option<usize>, bool)> = order_by
+fn sort_rows(mut rows: Vec<Row>, query: &StatsQuery, order_by: &[Order]) -> Vec<Row> {
+    enum Column {
+        Metric(usize),
+        Dimension(usize),
+    }
+    let columns: Vec<(Option<Column>, bool)> = order_by
         .iter()
-        .map(|(name, direction)| {
-            (query.metrics.iter().position(|m| m == name), query.dimensions.iter().position(|d| d == name), direction == "asc")
+        .map(|(sort, ascending)| {
+            let column = match sort {
+                Sort::Metric(metric) => query.metrics.iter().position(|m| m == metric).map(Column::Metric),
+                Sort::Dimension(dimension) => query.dimensions.iter().position(|d| d == dimension).map(Column::Dimension),
+            };
+            (column, *ascending)
         })
         .collect();
 
     rows.sort_by(|a, b| {
-        for (metric, dimension, ascending) in &positions {
-            let order = match (metric, dimension) {
-                (Some(i), _) => compare_numbers(a.metrics[*i], b.metrics[*i]),
-                (None, Some(i)) => compare_values(&a.dimensions[*i], &b.dimensions[*i]),
-                _ => Ordering::Equal,
+        for (column, ascending) in &columns {
+            let order = match column {
+                Some(Column::Metric(i)) => compare_numbers(a.metrics[*i], b.metrics[*i]),
+                // Nulls sort below everything, and text bytewise, which is how
+                // Plausible's ClickHouse orders them.
+                Some(Column::Dimension(i)) => a.dimensions[*i].cmp(&b.dimensions[*i]),
+                None => Ordering::Equal,
             };
             if order != Ordering::Equal {
                 return if *ascending { order } else { order.reverse() };
@@ -840,112 +979,72 @@ fn sort_rows(mut rows: Vec<Row>, query: &StatsQuery, order_by: &[(String, String
     rows
 }
 
+/// Absent numbers sort below everything.
 fn compare_numbers(a: Option<f64>, b: Option<f64>) -> Ordering {
     match (a, b) {
         (None, None) => Ordering::Equal,
         (None, _) => Ordering::Less,
         (_, None) => Ordering::Greater,
-        (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
-    }
-}
-
-/// Nulls sort below everything, numbers numerically, strings bytewise — which
-/// is how Plausible's ClickHouse orders them.
-fn compare_values(a: &Value, b: &Value) -> Ordering {
-    match (a, b) {
-        (Value::Null, Value::Null) => Ordering::Equal,
-        (Value::Null, _) => Ordering::Less,
-        (_, Value::Null) => Ordering::Greater,
-        (Value::Number(a), Value::Number(b)) => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
-        _ => value_string(a).cmp(&value_string(b)),
+        (Some(a), Some(b)) => a.total_cmp(&b),
     }
 }
 
 /// How each metric changed, Plausible's way: bounce rate by points, exit rate
 /// by points to one decimal, everything else by percent.
-fn changes_json(metrics: &[String], before: &[Option<f64>], after: &[Option<f64>]) -> Value {
+fn changes(metrics: &[Metric], before: &[Option<f64>], after: &[Option<f64>]) -> Vec<Option<Number>> {
     metrics
         .iter()
         .enumerate()
         .map(|(i, metric)| {
             let (Some(old), Some(new)) = (before[i], after[i]) else {
-                return Value::Null;
+                return None;
             };
-            match metric.as_str() {
-                "bounce_rate" => {
-                    if old > 0.0 {
-                        js_number(new - old)
+            let change = match metric {
+                Metric::BounceRate => (old > 0.0).then_some(new - old)?,
+                Metric::ExitRate => round(new - old, 1),
+                _ if old == 0.0 => {
+                    if new > 0.0 {
+                        100.0
                     } else {
-                        Value::Null
+                        0.0
                     }
                 }
-                "exit_rate" => js_number(round(new - old, 1)),
-                _ if old == 0.0 => js_number(if new > 0.0 { 100.0 } else { 0.0 }),
-                _ => js_number(js_round((new - old) / old * 100.0)),
-            }
+                _ => ((new - old) / old * 100.0).round(),
+            };
+            Some(Number(change))
         })
         .collect()
 }
 
-fn result_indices(labels: &[String], rows: &[Row]) -> Value {
-    let index: HashMap<String, usize> = rows.iter().enumerate().map(|(i, row)| (value_string(&row.dimensions[0]), i)).collect();
-    labels.iter().map(|label| index.get(label).map_or(Value::Null, |i| Value::from(*i))).collect()
+/// For each label, the row that bucket's answer is in, if any.
+fn result_indices(labels: &[String], rows: &[Row]) -> Vec<Option<usize>> {
+    let index: HashMap<&str, usize> = rows.iter().enumerate().filter_map(|(i, row)| Some((row.dimensions[0].as_deref()?, i))).collect();
+    labels.iter().map(|label| index.get(label.as_str()).copied()).collect()
 }
 
-/// The query as it was run, in the shape Plausible echoes it back.
-fn echo(
-    host: &QueryHost,
-    query: &StatsQuery,
-    range: TimeRange,
-    comparison: Option<TimeRange>,
-    order_by: &[(String, String)],
-    tz: Tz,
-    timezone: &str,
-) -> Value {
+fn echo(host: &QueryHost, query: &StatsQuery, range: TimeRange, comparison: Option<TimeRange>, order_by: &[Order], tz: Tz, timezone: &str) -> Echo {
     let i = &query.include;
-    let mut include = Map::new();
-    let flags = [
-        ("imports", i.imports),
-        ("imports_meta", i.imports_meta),
-        ("time_labels", i.time_labels),
-        ("time_label_result_indices", i.time_labels),
-        ("partial_time_labels", i.partial_time_labels),
-    ];
-    for (name, value) in flags {
-        if value {
-            include.insert(name.into(), Value::Bool(true));
-        }
+    let iso = |range: TimeRange| [iso_in_zone(range.first, tz, timezone), iso_in_zone(range.last, tz, timezone)];
+    Echo {
+        site_id: host.hostname.clone(),
+        metrics: query.metrics.iter().map(|m| m.name()).collect(),
+        date_range: iso(range),
+        comparison_date_range: comparison.map(iso),
+        filters: query.raw_filters.clone(),
+        dimensions: query.dimensions.iter().map(|d| d.name()).collect(),
+        order_by: order_by.iter().map(|(sort, ascending)| [sort.name(), if *ascending { "asc" } else { "desc" }.into()]).collect(),
+        include: EchoInclude {
+            imports: i.imports,
+            imports_meta: i.imports_meta,
+            time_labels: i.time_labels,
+            time_label_result_indices: i.time_labels,
+            partial_time_labels: i.partial_time_labels,
+            compare: i.compare.is_some().then(|| i.compare_raw.clone()),
+            compare_match_day_of_week: i.compare_match_day_of_week,
+            empty_metrics: i.empty_metrics,
+            present_index: i.present_index,
+            trim_relative_date_range: true,
+        },
+        pagination: query.pagination.map(|(limit, offset)| Pagination { limit, offset }),
     }
-    if i.compare.is_some() {
-        include.insert("compare".into(), i.compare_raw.clone());
-    }
-    for (name, value) in [
-        ("compare_match_day_of_week", i.compare_match_day_of_week),
-        ("empty_metrics", i.empty_metrics),
-        ("present_index", i.present_index),
-    ] {
-        if value {
-            include.insert(name.into(), Value::Bool(true));
-        }
-    }
-    include.insert("trim_relative_date_range".into(), Value::Bool(true));
-
-    let mut echoed = Map::new();
-    echoed.insert("site_id".into(), json!(host.hostname));
-    echoed.insert("metrics".into(), json!(query.metrics));
-    echoed.insert("date_range".into(), json!([iso_in_zone(range.first, tz, timezone), iso_in_zone(range.last, tz, timezone)]));
-    if let Some(comparison) = comparison {
-        echoed.insert(
-            "comparison_date_range".into(),
-            json!([iso_in_zone(comparison.first, tz, timezone), iso_in_zone(comparison.last, tz, timezone)]),
-        );
-    }
-    echoed.insert("filters".into(), Value::Array(query.raw_filters.clone()));
-    echoed.insert("dimensions".into(), json!(query.dimensions));
-    echoed.insert("order_by".into(), order_by.iter().map(|(a, b)| json!([a, b])).collect());
-    echoed.insert("include".into(), Value::Object(include));
-    if let Some((limit, offset)) = query.pagination {
-        echoed.insert("pagination".into(), json!({ "limit": limit, "offset": offset }));
-    }
-    Value::Object(echoed)
 }
