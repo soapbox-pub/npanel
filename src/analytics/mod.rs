@@ -1,12 +1,11 @@
-//! npanel's Plausible server, on a thread and a port of its own.
+//! npanel's Plausible server, on a thread of its own.
 //!
 //! Serving sites is always the first priority, so nothing about counting
 //! visits runs on the threads that serve them: not the parsing, not the
 //! user-agent and location lookups, not the writes, and not the dashboard's
-//! queries. Events arrive on `ANALYTICS_PORT`, which the proxy routes
-//! `/.npanel/api/event` to on every site; an event that reaches the main
-//! listener instead — every visit over Tor — is read there and handed across
-//! whole, a few hundred bytes.
+//! queries. Events arrive at `/.npanel/api/event` on every site, on whichever
+//! listener serves it; each is read there and handed across whole, a few
+//! hundred bytes.
 //!
 //! The analytics runtime owns its database file and its caches. If it dies it
 //! is started again with backoff, and sites go on being served either way.
@@ -25,14 +24,14 @@ pub mod tracker;
 pub mod user_agent;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::IpAddr;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use http::{header, HeaderMap, Method, Request, Response, StatusCode};
+use http::{header, HeaderMap, Method, Request, Response};
 use http_body_util::BodyExt;
 use parking_lot::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -43,15 +42,13 @@ use self::query::engine::QueryHost;
 use self::salts::Salts;
 use self::sessions::{SessionCache, SESSION_TIMEOUT};
 use self::store::AnalyticsStore;
-use self::tracker::EVENT_PATH;
 use self::user_agent::UserAgents;
 use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::settings::Settings;
 
-/// The largest event accepted, on either listener. A real one is a few
-/// hundred bytes.
+/// The largest event accepted. A real one is a few hundred bytes.
 pub const MAX_EVENT_BODY: usize = 64 * 1024;
 
 /// How often buffered events are written.
@@ -99,8 +96,6 @@ impl WorkerResponse {
 }
 
 pub struct AnalyticsConfig {
-    pub port: u16,
-    pub address: std::net::IpAddr,
     /// Where `analytics.sqlite3` and the location database live.
     pub data_dir: PathBuf,
     /// Whether the location database may be downloaded. Off only in tests.
@@ -133,7 +128,7 @@ pub struct Analytics {
 }
 
 impl Analytics {
-    /// Start the analytics runtime. Returns at once; until it is listening,
+    /// Start the analytics runtime. Returns at once; until it is ready,
     /// everything asked of it is answered `503`.
     pub fn start(db: Db, settings: Arc<Settings>, log: Logger, config: AnalyticsConfig) -> Analytics {
         let shared = Arc::new(Shared {
@@ -203,12 +198,16 @@ impl Analytics {
         refresh_hosts(&self.shared).await;
     }
 
-    /// Record an event that reached the main listener rather than the
-    /// analytics port: a visit over Tor, or a proxy that doesn't route the
-    /// path. Read only up to the limit the analytics port enforces, because
-    /// here it is read by anyone who can reach an onion.
-    pub async fn forward_event(&self, request: Request<Body>) -> Response<Body> {
-        let cors = [("access-control-allow-origin", "*")];
+    /// Record an event, read on the listener that received it and handed to
+    /// the analytics runtime. `peer` is the connection's address, which only
+    /// counts when the proxy didn't name the visitor; a listener whose peer
+    /// is never the visitor — Tor's — passes `None`.
+    pub async fn forward_event(&self, request: Request<Body>, peer: Option<IpAddr>) -> Response<Body> {
+        let cors = [
+            ("access-control-allow-origin", "*"),
+            ("access-control-allow-methods", "POST, OPTIONS"),
+            ("access-control-allow-headers", "content-type"),
+        ];
         let (parts, body) = request.into_parts();
 
         let body = if parts.method == Method::POST {
@@ -229,7 +228,8 @@ impl Analytics {
         let shared = self.shared.clone();
         let headers = parts.headers;
         let method = parts.method;
-        let task = worker.runtime.spawn(async move { receive(&shared, &method, &headers, body, "").await });
+        let peer = peer.map(|ip| ip.to_string()).unwrap_or_default();
+        let task = worker.runtime.spawn(async move { receive(&shared, &method, &headers, body, &peer).await });
         let response = match tokio::time::timeout(EVENT_TIMEOUT, task).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) => WorkerResponse::failure(503, "Analytics restarted before answering. Try again in a moment."),
@@ -319,9 +319,6 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     }
     let session_count = sessions.len();
 
-    let listener = crate::server::bind(SocketAddr::new(shared.config.address, shared.config.port)).await?;
-    let port = listener.local_addr()?.port();
-
     let worker = Arc::new(Worker {
         runtime: tokio::runtime::Handle::current(),
         ingest: Mutex::new(Ingest { store, sessions, salts: Salts::default(), user_agents: UserAgents::default(), geo: geo.clone() }),
@@ -353,19 +350,9 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
         })
     };
 
-    log.info("analytics_started", fields! { "port" => port, "sessions" => session_count });
+    log.info("analytics_started", fields! { "sessions" => session_count });
 
-    let handler_shared = shared.clone();
-    crate::server::serve(
-        listener,
-        move |request, remote| {
-            let shared = handler_shared.clone();
-            async move { handle(&shared, request, remote).await }
-        },
-        stop.clone(),
-        log,
-    )
-    .await;
+    stop.cancelled().await;
 
     flusher.abort();
     sweeper.abort();
@@ -373,37 +360,6 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     let w = worker.clone();
     tokio::task::spawn_blocking(move || flush(&w, &log)).await?;
     Ok(())
-}
-
-/// The analytics port: the event endpoint, and nothing else.
-async fn handle(shared: &Arc<Shared>, request: Request<Body>, remote: SocketAddr) -> Response<Body> {
-    let cors = [
-        ("access-control-allow-origin", "*"),
-        ("access-control-allow-methods", "POST, OPTIONS"),
-        ("access-control-allow-headers", "content-type"),
-    ];
-
-    // Both spellings: a proxy may strip the prefix on the way in, or not.
-    let path = request.uri().path();
-    if path != "/api/event" && path != EVENT_PATH {
-        return Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-            .body(Body::from("Not found."))
-            .expect("response");
-    }
-
-    let (parts, body) = request.into_parts();
-    let body = if parts.method == Method::POST {
-        match read_capped(&parts.headers, body, MAX_EVENT_BODY).await {
-            Some(body) => body,
-            None => return WorkerResponse::new(413, "text/plain; charset=utf-8", "Payload Too Large".into()).into_response(&cors),
-        }
-    } else {
-        String::new()
-    };
-
-    receive(shared, &parts.method, &parts.headers, body, &remote.ip().to_string()).await.into_response(&cors)
 }
 
 /// Answer one request for the event endpoint, however it arrived. The tracker

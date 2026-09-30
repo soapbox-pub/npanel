@@ -22,7 +22,7 @@ its own, it keeps local storage in sync with Nostr.
                     │
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
-   proxy: /.npanel/api/event on any site ──► analytics thread :3002 ──► analytics.sqlite3
+   /.npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
 ```
 
 ## Request routing
@@ -657,16 +657,19 @@ the path is neutral because `plausible` and `analytics` are exactly what
 blocklists look for. See [the builds section](#builds) — the pages are rewritten
 once, when the host is built, and served like every other stored file.
 
-**Isolation.** Events are received and recorded on a runtime of their own,
-on a thread of its own, with its own port, `ANALYTICS_PORT`, which the proxy
-routes that one path to on every site (`src/analytics/mod.rs`). Serving sites
-is always the first priority, so nothing about counting visits runs on the
-threads that serve them: not the parsing, not the user-agent and location
-lookups, not the writes, and not the dashboard's queries. An event that reaches
-the main listener instead — every visit over Tor, since those never pass
-through the proxy — is read there, capped at the same size, and handed across
-whole. The runtime owns its database file and its caches outright; if it dies,
-it releases its port and another is started with backoff.
+**Isolation.** Events are recorded on a runtime of their own, on a thread of
+its own (`src/analytics/mod.rs`). Serving sites is always the first priority,
+so nothing about counting visits runs on the threads that serve them: not the
+parsing, not the user-agent and location lookups, not the writes, and not the
+dashboard's queries. The listener that receives an event — the public one, or
+Tor's — reads its body, capped at 64 KiB, and hands it across whole. The
+runtime owns its database file and its caches outright; if it dies, another is
+started with backoff, and sites go on being served either way.
+
+It once had a port of its own too, a holdover from the TypeScript npanel, where
+Bun could only run a server on another thread by opening a listener there.
+Handing a few hundred bytes across runtimes costs nothing a second socket
+would save, so there is no longer a route for the proxy to configure.
 
 **Ingestion** follows Plausible's closely enough that anything written against
 its `POST /api/event` works here: the same fields and limits, the same

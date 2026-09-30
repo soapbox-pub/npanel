@@ -117,12 +117,12 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         },
     }));
 
-    // npanel's Plausible server, on a thread and a port of its own.
+    // npanel's Plausible server, on a thread of its own.
     let analytics = Arc::new(Analytics::start(
         db.clone(),
         settings.clone(),
         log,
-        AnalyticsConfig { port: config.analytics_port, address: config.bind_address, data_dir: config.data_dir.clone(), download_geo: true },
+        AnalyticsConfig { data_dir: config.data_dir.clone(), download_geo: true },
     ));
 
     let site_csp = Arc::new(site_csp::SiteCsp::new(db.clone(), blobs.clone(), log));
@@ -187,9 +187,9 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     });
     let main_server = tokio::spawn(server::serve(
         listener,
-        move |request, _| {
+        move |request, remote| {
             let app = app.clone();
-            async move { app.handle(request).await }
+            async move { app.handle(request, remote.ip()).await }
         },
         shutdown.clone(),
         log,
@@ -201,7 +201,6 @@ async fn run(config: Config, log: Logger) -> Result<()> {
             "bind_address" => config.bind_address.to_string(),
             "port" => config.port,
             "tls_check_port" => config.tls_check_port,
-            "analytics_port" => config.analytics_port,
             "dashboard_host" => config.dashboard_host.as_str(),
             "data_dir" => config.data_dir.display().to_string(),
         },

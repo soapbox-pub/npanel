@@ -10,6 +10,7 @@
 //! (a build is immutable), and the blob itself is a kept memory mapping.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -177,13 +178,14 @@ impl SiteServer {
     }
 
     /// Serve one request for a site, as it reached the listener `origin`
-    /// describes.
-    pub async fn serve(&self, request: Request<Body>, origin: RequestOrigin) -> Reply {
+    /// describes. `peer` is the connection's address where it may stand in
+    /// for the visitor's; only analytics reads it.
+    pub async fn serve(&self, request: Request<Body>, origin: RequestOrigin, peer: Option<IpAddr>) -> Reply {
         // The one path that isn't the site's, on any site: npanel's own event
         // endpoint, which the tracker in every counting site's build reports
         // to. Ahead of everything, preflights included.
         if request.uri().path() == EVENT_PATH {
-            return self.deps.analytics.forward_event(request).await;
+            return self.deps.analytics.forward_event(request, peer).await;
         }
 
         if request.method() == Method::OPTIONS && request.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {

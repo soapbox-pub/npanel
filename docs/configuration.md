@@ -4,7 +4,7 @@ npanel splits configuration in two.
 
 **Environment variables** cover things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are seven of them, and they require a restart.
+set wrong. There are six of them, and they require a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
@@ -16,7 +16,7 @@ Copy `.env.example` to `.env` and edit it. npanel loads `.env` from its working
 directory at startup, without overriding anything already set in the environment.
 
 On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
-compose, which passes them to the containers; the image fixes the other five.
+compose, which passes them to the containers; the image fixes the other four.
 See [deployment](deployment.md#docker-compose).
 
 ### `PORT`
@@ -37,9 +37,8 @@ without authentication. Exposed directly, either of those is a hole.
 Set `0.0.0.0` when the proxy runs on another machine or in another container,
 and firewall the port to it.
 
-Every listener binds here: the public one on `PORT`, certificate
-authorization on [`TLS_CHECK_PORT`](#tls_check_port), and analytics events on
-[`ANALYTICS_PORT`](#analytics_port).
+Both listeners bind here: the public one on `PORT`, and certificate
+authorization on [`TLS_CHECK_PORT`](#tls_check_port).
 
 The Docker image sets `0.0.0.0` for the reason above — a container's loopback is
 reachable by nothing else, not even the proxy beside it — and `compose.yaml`
@@ -62,25 +61,6 @@ the sites that need them.
 
 Nothing else is served there, and it must be reachable only by the proxy. See
 [deployment](deployment.md#5-tls-with-caddy).
-
-### `ANALYTICS_PORT`
-
-Default `3002`. The port npanel's analytics thread receives visit events on, on
-the same address as `PORT`. Must be a valid port, and must differ from `PORT`
-and `TLS_CHECK_PORT`, or startup fails.
-
-Every site that counts visits reports to `/.npanel/api/event` on its own
-origin, and the proxy sends that one path here rather than to `PORT`. That is
-the point of the separate port: recording a visit happens on a thread and a
-listener of its own, so it never queues behind serving a page, and a burst of
-events can't slow a site down. Without the route everything still works —
-events reaching `PORT` are handed to the thread — but through the listener that
-serves sites, which is the thing this port exists to spare. Visits over Tor always take that
-path, since they never pass through the proxy.
-
-If the port can't be bound, the thread retries with backoff and logs
-`analytics_thread_exited`; sites go on being served either way. See
-[deployment](deployment.md#5-tls-with-caddy) for the route.
 
 ### `DASHBOARD_HOST`
 

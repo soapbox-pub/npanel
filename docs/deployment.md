@@ -57,8 +57,8 @@ docker compose up -d
 Compose reads `DASHBOARD_HOST` from `.env` and gives it to both containers —
 npanel to route on, Caddy as the name of the dashboard's site. It refuses to
 start without it. The other variables in that file don't apply, because the
-image fixes them: `PORT` is 3000, `TLS_CHECK_PORT` is 3001, `ANALYTICS_PORT` is
-3002, `BIND_ADDRESS` is `0.0.0.0`, and `DATA_DIR` is `/data` on a named volume. `LOG_LEVEL` is honoured
+image fixes them: `PORT` is 3000, `TLS_CHECK_PORT` is 3001,
+`BIND_ADDRESS` is `0.0.0.0`, and `DATA_DIR` is `/data` on a named volume. `LOG_LEVEL` is honoured
 if you set it.
 
 `0.0.0.0` looks like the opposite of the advice in
@@ -85,9 +85,8 @@ docker compose logs -f npanel | jq
 ```
 
 Certificates work exactly as [section 5](#5-tls-with-caddy) describes — the
-mounted `Caddyfile` is the same sample file, with `NPANEL_UPSTREAM`,
-`NPANEL_TLS_CHECK` and `NPANEL_ANALYTICS` pointing at the container instead of
-at loopback.
+mounted `Caddyfile` is the same sample file, with `NPANEL_UPSTREAM` and
+`NPANEL_TLS_CHECK` pointing at the container instead of at loopback.
 
 ### Using your own proxy
 
@@ -101,7 +100,6 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
       - "127.0.0.1:3001:3001" # only if your proxy asks about certificates
-      - "127.0.0.1:3002:3002" # analytics events; see below
 ```
 
 Leave the second line out unless the proxy does on-demand TLS. Nothing else
@@ -267,21 +265,19 @@ https:// {
 	tls {
 		on_demand
 	}
-	reverse_proxy /.npanel/api/event {$NPANEL_ANALYTICS:127.0.0.1:3002}
 	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }
 ```
 
-The first `reverse_proxy` sends analytics events to npanel's analytics thread on
-[`ANALYTICS_PORT`](configuration.md#analytics_port). Every site that counts
-visits reports to that path on its own origin, and routing it here keeps
-recording a visit entirely off the thread that serves pages. Caddy matches the
-more specific path first, so the order of the two lines doesn't matter. Leave
-it out and events still count, handed across from the listener that serves
-sites instead — which works, and is exactly the load the separate port exists
-to avoid on a busy gateway. The proxy must set `X-Forwarded-For` to the visitor's address,
-which Caddy does; it is how visitors are told apart and placed, and is never
-stored.
+Analytics events need no route of their own. Every site that counts visits
+reports to `/.npanel/api/event` on its own origin, and npanel hands each one to
+its analytics thread from the listener that received it. The proxy must set
+`X-Forwarded-For` to the visitor's address, which Caddy does; it is how
+visitors are told apart and placed, and is never stored.
+
+An older Caddyfile has a `reverse_proxy /.npanel/api/event` line pointing at a
+third port, `3002`. Take it out when you upgrade: nothing listens there any
+more, and every event would fail with a `502`.
 
 The site block has no `encode`, and shouldn't. npanel compresses a site's files
 once, when it downloads them, and picks the copy each visitor can read — so

@@ -5,6 +5,7 @@
 //! proxy needs to answer requests that carry no hostname to route on, so it
 //! listens on its own port instead — see `tls_check.rs`.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -23,12 +24,12 @@ pub struct App {
 }
 
 impl App {
-    pub async fn handle(&self, request: Request<Body>) -> Response<Body> {
+    pub async fn handle(&self, request: Request<Body>, peer: IpAddr) -> Response<Body> {
         let hostname = request_hostname(request.headers().get(header::HOST).and_then(|v| v.to_str().ok()));
 
         if hostname != self.dashboard_host {
             let scheme = request_scheme(request.headers());
-            return self.site.serve(request, RequestOrigin { hostname, scheme }).await;
+            return self.site.serve(request, RequestOrigin { hostname, scheme }, Some(peer)).await;
         }
 
         let path = request.uri().path();

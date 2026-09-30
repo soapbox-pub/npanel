@@ -13,7 +13,7 @@ use anyhow::{bail, Result};
 
 use crate::log::LogLevel;
 
-/// The seven variables, resolved and validated.
+/// The six variables, resolved and validated.
 #[derive(Clone, Debug)]
 pub struct Config {
     /// Port the HTTP server listens on.
@@ -26,8 +26,6 @@ pub struct Config {
     pub bind_address: IpAddr,
     /// Port serving certificate authorization for the reverse proxy.
     pub tls_check_port: u16,
-    /// Port the analytics thread receives events on.
-    pub analytics_port: u16,
     /// Hostname serving the dashboard and JSON API. Requests with any other
     /// `Host` header are served as nsites.
     pub dashboard_host: String,
@@ -65,15 +63,6 @@ impl Config {
             bail!("TLS_CHECK_PORT must be different from PORT.");
         }
 
-        let analytics_port = match get("ANALYTICS_PORT") {
-            None => 3002,
-            Some(value) => parse_port(&value)
-                .ok_or_else(|| anyhow::anyhow!("ANALYTICS_PORT must be a valid port number (1-65535)."))?,
-        };
-        if analytics_port == port || analytics_port == tls_check_port {
-            bail!("ANALYTICS_PORT must be different from PORT and TLS_CHECK_PORT.");
-        }
-
         let Some(dashboard_host) = get("DASHBOARD_HOST") else {
             bail!("DASHBOARD_HOST must be set, eg panel.example.com.");
         };
@@ -93,7 +82,7 @@ impl Config {
 
         let data_dir = absolute(Path::new(&get("DATA_DIR").unwrap_or_else(|| "./data".into())));
 
-        Ok(Self { port, bind_address, tls_check_port, analytics_port, dashboard_host, log_level, data_dir })
+        Ok(Self { port, bind_address, tls_check_port, dashboard_host, log_level, data_dir })
     }
 
     /// Path of the SQLite database file.
@@ -192,7 +181,6 @@ mod tests {
         let c = config(&[("DASHBOARD_HOST", "Panel.Example.com:443")]).unwrap();
         assert_eq!(c.port, 3000);
         assert_eq!(c.tls_check_port, 3001);
-        assert_eq!(c.analytics_port, 3002);
         assert_eq!(c.dashboard_host, "panel.example.com");
         assert_eq!(c.bind_address.to_string(), "127.0.0.1");
         assert_eq!(c.log_level, LogLevel::Info);
@@ -204,7 +192,6 @@ mod tests {
         assert!(config(&[("DASHBOARD_HOST", "https://x")]).is_err());
         assert!(config(&[("DASHBOARD_HOST", "x"), ("PORT", "0")]).is_err());
         assert!(config(&[("DASHBOARD_HOST", "x"), ("PORT", "3001")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("ANALYTICS_PORT", "3001")]).is_err());
         assert!(config(&[("DASHBOARD_HOST", "x"), ("BIND_ADDRESS", "localhost")]).is_err());
         assert!(config(&[("DASHBOARD_HOST", "x"), ("LOG_LEVEL", "loud")]).is_err());
     }

@@ -359,7 +359,8 @@ impl Actor {
                             .body(Body::from("Not found."))
                             .expect("response");
                     }
-                    site.serve(request, RequestOrigin { hostname, scheme: "http" }).await
+                    // The peer is Tor's own proxy, never the visitor.
+                    site.serve(request, RequestOrigin { hostname, scheme: "http" }, None).await
                 }
             },
             shutdown.clone(),

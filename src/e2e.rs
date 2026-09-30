@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::analytics::tracker::EVENT_PATH;
 use crate::analytics::{Analytics, AnalyticsConfig};
 use crate::app::App;
 use crate::auth::sign_nip98;
@@ -109,7 +110,7 @@ impl Gateway {
             builder = builder.header(*name, *value);
         }
         let request = builder.body(body.map_or(Body::empty(), |b| Body::from(b.to_string()))).unwrap();
-        let response = self.app.handle(request).await;
+        let response = self.app.handle(request, [127, 0, 0, 1].into()).await;
         let (parts, body) = response.into_parts();
         (parts.status, parts.headers, body.collect().await.unwrap().to_bytes().to_vec())
     }
@@ -146,7 +147,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         db.clone(),
         settings.clone(),
         log,
-        AnalyticsConfig { port: 0, address: [127, 0, 0, 1].into(), data_dir: dir.path().to_path_buf(), download_geo: false },
+        AnalyticsConfig { data_dir: dir.path().to_path_buf(), download_geo: false },
     ));
     let site_csp = Arc::new(crate::site_csp::SiteCsp::new(db.clone(), blobs.clone(), log));
     let site = Arc::new(SiteServer::new(SiteServerDeps {
@@ -343,6 +344,22 @@ async fn a_published_site_is_deployed_built_and_served() {
     let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
     assert_eq!(served, page.as_bytes());
 
+    // A counting site's events arrive on its own origin, on the same listener
+    // that serves it, and reach the analytics runtime.
+    let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "analytics": true }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let event = r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#;
+    eventually("the analytics runtime answering", async || {
+        gw.request("POST", "docs.example.com", EVENT_PATH, &[], Some(event)).await.0 == StatusCode::ACCEPTED
+    })
+    .await;
+    let (status, headers, _) = gw.request("OPTIONS", "docs.example.com", EVENT_PATH, &[("access-control-request-method", "POST")], None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers["access-control-allow-headers"], "content-type");
+    let (status, visitors) = gw.api("GET", "/api/hosts/docs.example.com/stats/current-visitors", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(visitors, 1);
+
     // Disabling the host takes it off the air.
     let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "enabled": false }))).await;
     assert_eq!(status, StatusCode::OK);
@@ -352,7 +369,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     // Every change was audited.
     let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
-    assert_eq!(actions, ["host.update", "env.delete", "env.set", "nip05.set", "host.create"]);
+    assert_eq!(actions, ["host.update", "host.update", "env.delete", "env.set", "nip05.set", "host.create"]);
 
     gw.deployer.stop().await;
     drop(gw.db);

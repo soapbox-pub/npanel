@@ -19,7 +19,7 @@ src/
   main.rs               entry point; wires everything together, and the CLI
   app.rs                Host-based routing: dashboard vs nsite
   server.rs             serving HTTP/1.1 on a listener
-  config.rs             the seven environment variables, and .env
+  config.rs             the six environment variables, and .env
   log.rs                one flat JSON object per line
   hostname.rs, psl.rs   hostname validation and root-domain rules
   net.rs                public-address checks, and the resolver downloads use
@@ -67,7 +67,7 @@ docs/                   deployment, configuration, architecture, api, developmen
   which runs on the blocking pool; CPU-heavy work (compression, user-agent
   parsing) goes through `spawn_blocking`. Don't hold a `parking_lot` guard
   across an `.await`.
-- Only seven things are environment variables. Everything else belongs in the
+- Only six things are environment variables. Everything else belongs in the
   `settings` table so admins can change it without a restart. Adding a setting:
   a field on `SettingsValues`, its key in `KEYS`, a default, a branch in
   `validate`, and a subscriber if anything reacts to it. Then surface it on the

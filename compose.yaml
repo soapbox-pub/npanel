@@ -21,7 +21,6 @@ services:
     expose:
       - "3000"
       - "3001"
-      - "3002"
     environment:
       # The public hostname of the dashboard. Required — it decides which
       # requests are the dashboard rather than an nsite, and NIP-98 logins are
@@ -76,7 +75,6 @@ services:
       # authorization answers on a second port.
       NPANEL_UPSTREAM: npanel:3000
       NPANEL_TLS_CHECK: npanel:3001
-      NPANEL_ANALYTICS: npanel:3002
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Certificates and ACME account keys. Losing this means re-issuing every
