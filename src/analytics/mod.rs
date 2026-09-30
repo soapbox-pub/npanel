@@ -452,8 +452,7 @@ async fn refresh_hosts(shared: &Arc<Shared>) {
     // analytics on never downloads a location database.
     if counting && shared.config.download_geo {
         if let Some(worker) = shared.worker.read().clone() {
-            let geo = worker.geo.clone();
-            worker.runtime.spawn(async move { geo.keep_updated() });
+            worker.geo.keep_updated(&worker.runtime);
         }
     }
 }

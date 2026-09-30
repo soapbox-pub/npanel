@@ -253,6 +253,12 @@ impl BlobStore {
         String::from_utf8_lossy(&self.read_bytes(sha256, max_bytes)).into_owned()
     }
 
+    /// A blob or copy an earlier [`BlobStore::open`] mapped and kept, found
+    /// without touching the disk — so without leaving a runtime thread.
+    pub fn mapped(&self, sha256: &str, encoding: Option<Encoding>) -> Option<Bytes> {
+        self.inner.mapped.lock().get(&(sha256.to_string(), encoding)).cloned()
+    }
+
     /// A blob, or one of its compressed copies, for a response body.
     ///
     /// Mapped rather than read: the bytes are the kernel's page cache, a
@@ -261,10 +267,10 @@ impl BlobStore {
     /// ever replaced by rename, never rewritten, so a mapping can't change
     /// under a reader.
     pub fn open(&self, sha256: &str, encoding: Option<Encoding>) -> Result<Bytes> {
-        let key = (sha256.to_string(), encoding);
-        if let Some(bytes) = self.inner.mapped.lock().get(&key) {
-            return Ok(bytes.clone());
+        if let Some(bytes) = self.mapped(sha256, encoding) {
+            return Ok(bytes);
         }
+        let key = (sha256.to_string(), encoding);
 
         let file = std::fs::File::open(self.file_path(sha256, encoding))?;
         let len = file.metadata()?.len();

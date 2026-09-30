@@ -465,7 +465,7 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "redirect_www": host.redirect_www,
         "spa": host.spa,
         "csp": host.csp,
-        "csp_policy": host.csp.then(|| declared.as_deref().unwrap_or(GATEWAY_CSP)),
+        "csp_policy": host.csp.then(|| declared.as_ref().and_then(|policy| policy.to_str().ok()).unwrap_or(GATEWAY_CSP)),
         "csp_source": if !host.csp { "off" } else if declared.is_some() { "site" } else { "gateway" },
         "seo": host.seo,
         "merge_deployments": host.merge_deployments,

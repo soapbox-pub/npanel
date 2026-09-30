@@ -69,9 +69,9 @@ pub fn request_scheme(headers: &HeaderMap) -> &'static str {
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
-        .map(|v| v.trim().to_lowercase());
-    match forwarded.as_deref() {
-        Some("http") => "http",
+        .map(str::trim);
+    match forwarded {
+        Some(scheme) if scheme.eq_ignore_ascii_case("http") => "http",
         _ => "https",
     }
 }

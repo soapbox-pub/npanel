@@ -3,6 +3,7 @@
 
 use std::num::NonZeroUsize;
 
+use http::HeaderValue;
 use parking_lot::Mutex;
 use rusqlite::OptionalExtension;
 
@@ -39,7 +40,8 @@ pub struct SiteCsp {
     db: Db,
     blobs: BlobStore,
     log: Logger,
-    cache: Mutex<lru::LruCache<i64, Option<String>>>,
+    /// Held as the header it is sent as, so a request only clones it.
+    cache: Mutex<lru::LruCache<i64, Option<HeaderValue>>>,
 }
 
 impl SiteCsp {
@@ -50,7 +52,7 @@ impl SiteCsp {
     /// The policy this build declares, or `None` if it declares none. A
     /// failed lookup is not cached: build ids are never reused, so a cached
     /// miss would pin the gateway's policy on the build for good.
-    pub async fn policy(&self, build_id: i64) -> anyhow::Result<Option<String>> {
+    pub async fn policy(&self, build_id: i64) -> anyhow::Result<Option<HeaderValue>> {
         if let Some(cached) = self.cache.lock().get(&build_id) {
             return Ok(cached.clone());
         }
@@ -63,12 +65,14 @@ impl SiteCsp {
                     .prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'")?
                     .query_row([build_id], |row| row.get(0))
                     .optional()?;
-                Ok(index.and_then(|sha256| extract_csp(&blobs.read_text(&sha256, MAX_HTML_BYTES))))
+                let policy = index.and_then(|sha256| extract_csp(&blobs.read_text(&sha256, MAX_HTML_BYTES)));
+                // Only printable ASCII gets this far, which is always a valid header.
+                Ok(policy.and_then(|policy| HeaderValue::from_str(&policy).ok()))
             })
             .await?;
 
         if let Some(policy) = &policy {
-            self.log.debug("site_csp_adopted", fields! { "build_id" => build_id, "policy" => policy.as_str() });
+            self.log.debug("site_csp_adopted", fields! { "build_id" => build_id, "policy" => policy.to_str().unwrap_or_default() });
         }
         self.cache.lock().put(build_id, policy.clone());
         Ok(policy)

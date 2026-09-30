@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Datelike;
 use parking_lot::RwLock;
 use serde::Deserialize;
 
@@ -101,14 +102,14 @@ impl Geo {
         }
     }
 
-    /// Keep the database current, from now on. Idempotent.
-    pub fn keep_updated(&self) {
+    /// Keep the database current, from now on, on `runtime`. Idempotent.
+    pub fn keep_updated(&self, runtime: &tokio::runtime::Handle) {
         let mut updating = self.inner.updating.lock();
         if updating.is_some() {
             return;
         }
         let geo = self.clone();
-        *updating = Some(tokio::spawn(async move {
+        *updating = Some(runtime.spawn(async move {
             loop {
                 geo.update().await;
                 tokio::time::sleep(CHECK_EVERY).await;
@@ -167,7 +168,8 @@ impl Geo {
             match self.download(&url).await {
                 Ok(true) => {
                     self.inner.log.info("geo_downloaded", fields! { "month" => candidate });
-                    self.load();
+                    let geo = self.clone();
+                    let _ = tokio::task::spawn_blocking(move || geo.load()).await;
                     return;
                 }
                 Ok(false) => continue,
@@ -180,10 +182,11 @@ impl Geo {
     }
 
     /// Fetch and unpack one month's file. `Ok(false)` when it isn't published.
+    ///
+    /// The body streams to a blocking task that decompresses it to disk, so
+    /// neither the unpacking nor the writes happen on a runtime thread, and
+    /// the file only takes its real name once it is whole.
     async fn download(&self, url: &str) -> anyhow::Result<bool> {
-        std::fs::create_dir_all(&self.inner.dir)?;
-        let tmp = self.inner.dir.join(format!("{FILE}.tmp"));
-
         let client = reqwest::Client::builder().timeout(Duration::from_secs(10 * 60)).build()?;
         let mut response = client.get(url).send().await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -193,25 +196,46 @@ impl Geo {
             anyhow::bail!("HTTP {}", response.status().as_u16());
         }
 
-        let result = async {
-            let mut out = flate2::write::GzDecoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?));
-            while let Some(chunk) = response.chunk().await? {
-                out.write_all(&chunk)?;
+        let dir = self.inner.dir.clone();
+        let tmp = dir.join(format!("{FILE}.tmp"));
+        let (chunks, mut received) = tokio::sync::mpsc::channel::<bytes::Bytes>(16);
+        let writer = tokio::task::spawn_blocking({
+            let tmp = tmp.clone();
+            move || {
+                std::fs::create_dir_all(&dir)?;
+                let mut out = flate2::write::GzDecoder::new(std::io::BufWriter::new(std::fs::File::create(&tmp)?));
+                while let Some(chunk) = received.blocking_recv() {
+                    out.write_all(&chunk)?;
+                }
+                out.finish()?.flush()?;
+                anyhow::Ok(())
             }
-            out.finish()?.flush()?;
-            std::fs::rename(&tmp, self.inner.dir.join(FILE))?;
+        });
+
+        let sent = async {
+            while let Some(chunk) = response.chunk().await? {
+                // The writer only goes away having failed, which it reports.
+                if chunks.send(chunk).await.is_err() {
+                    break;
+                }
+            }
             anyhow::Ok(())
         }
         .await;
+        drop(chunks);
+        let written = writer.await?;
 
+        let target = self.inner.dir.join(FILE);
+        let result = match sent.and(written) {
+            Ok(()) => tokio::fs::rename(&tmp, target).await.map_err(Into::into),
+            Err(error) => Err(error),
+        };
         if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = tokio::fs::remove_file(&tmp).await;
         }
         result.map(|()| true)
     }
 }
-
-use chrono::Datelike;
 
 #[cfg(test)]
 mod tests {

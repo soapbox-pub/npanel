@@ -36,7 +36,7 @@ use crate::nsite_address::encode_naddr;
 use crate::seo::canonical_link;
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
 use crate::sites::{find_host, resolve_site_path, ResolvedFile, ServedHost};
-use crate::util::{extname, http_date};
+use crate::util::{http_date, lowercase_extname};
 
 /// Where a request came from, as settled by the listener that accepted it.
 ///
@@ -75,7 +75,7 @@ pub struct CachedVersion {
     /// Immutable, so safe to key caches on.
     pub build_id: i64,
     /// The build's `Last-Modified`, formatted once instead of per response.
-    pub last_modified: String,
+    pub last_modified: HeaderValue,
 }
 
 /// What serving needs to know about a hostname, resolved in one place.
@@ -134,7 +134,7 @@ impl ServeCache {
 
         let version = build.map(|build| CachedVersion {
             build_id: build.id,
-            last_modified: http_date(build.last_modified),
+            last_modified: HeaderValue::from_str(&http_date(build.last_modified)).expect("an HTTP date is a valid header"),
         });
         let naddr = HeaderValue::from_str(&encode_naddr(&host.host.address())).unwrap_or(HeaderValue::from_static(""));
         let site = Arc::new(CachedSite { host, version, naddr });
@@ -225,10 +225,7 @@ impl SiteServer {
                 Some(version) => self.deps.site_csp.policy(version.build_id).await?,
                 None => None,
             };
-            let policy = declared.as_deref().unwrap_or(GATEWAY_CSP);
-            if let Ok(value) = HeaderValue::from_str(policy) {
-                headers.insert(header::CONTENT_SECURITY_POLICY, value);
-            }
+            headers.insert(header::CONTENT_SECURITY_POLICY, declared.unwrap_or(HeaderValue::from_static(GATEWAY_CSP)));
         }
 
         // Set on everything rather than only on what varied, because a cache
@@ -317,7 +314,7 @@ impl SiteServer {
             .header(header::CONTENT_TYPE, content_type(&file.path))
             .header(header::CACHE_CONTROL, cache_control(&file.path))
             .header(header::ETAG, &etag)
-            .header(header::LAST_MODIFIED, &version.last_modified)
+            .header(header::LAST_MODIFIED, version.last_modified.clone())
             .header(header::ACCEPT_RANGES, "bytes")
             // Which nsite this hostname is serving, in the one form a client
             // can paste anywhere.
@@ -402,15 +399,14 @@ impl SiteServer {
         Ok(builder.status(status).body(Body::from(body)).expect("response"))
     }
 
-    /// A blob's bytes for a response body. Kept mappings answer without a
-    /// system call; a new one is opened off the runtime threads.
-    async fn open(&self, sha256: &str, encoding: Option<Encoding>) -> std::io::Result<Bytes> {
-        let blobs = self.deps.blobs.clone();
-        let sha = sha256.to_string();
-        tokio::task::spawn_blocking(move || blobs.open(&sha, encoding))
-            .await
-            .map_err(std::io::Error::other)?
-            .map_err(|e| std::io::Error::other(e.to_string()))
+    /// A blob's bytes for a response body. A kept mapping answers right
+    /// here, with no system call; a new one is opened off the runtime threads.
+    async fn open(&self, sha256: &str, encoding: Option<Encoding>) -> anyhow::Result<Bytes> {
+        if let Some(bytes) = self.deps.blobs.mapped(sha256, encoding) {
+            return Ok(bytes);
+        }
+        let (blobs, sha) = (self.deps.blobs.clone(), sha256.to_string());
+        tokio::task::spawn_blocking(move || blobs.open(&sha, encoding)).await?
     }
 
     async fn resolve(&self, build_id: i64, path: &str, spa: bool) -> anyhow::Result<Option<ResolvedFile>> {
@@ -601,54 +597,67 @@ fn text(status: StatusCode, body: &'static str) -> Reply {
 /// stored gets it anyway rather than a 406.
 pub fn negotiate_encoding(header: Option<&str>, variants: &Variants) -> Option<Encoding> {
     let header = header.filter(|h| !h.is_empty())?;
-    let quality = parse_accept_encoding(header);
+    let accepted = parse_accept_encoding(header);
 
-    let mut candidates: Vec<(Encoding, u64, f64)> = Encoding::ALL
+    // The best quality, then the smallest; the first listed if both tie.
+    let (encoding, size, _) = Encoding::ALL
         .into_iter()
         .filter_map(|encoding| {
             let size = variants.get(encoding)?;
-            let q = quality.get(encoding.as_str()).or(quality.get("*")).copied().unwrap_or(0.0);
+            let q = accepted.quality(encoding).unwrap_or(0.0);
             (q > 0.0).then_some((encoding, size, q))
         })
-        .collect();
-
-    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)));
-    let (encoding, size, _) = *candidates.first()?;
+        .min_by(|a, b| b.2.total_cmp(&a.2).then(a.1.cmp(&b.1)))?;
 
     // A copy is only stored when it beat the blob, but serving one that
     // doesn't would be worse than pointless.
     (size < variants.identity).then_some(encoding)
 }
 
-/// Quality values by encoding name, lowercased, from an `Accept-Encoding`.
-fn parse_accept_encoding(header: &str) -> HashMap<String, f64> {
-    let mut quality = HashMap::new();
+/// The quality an `Accept-Encoding` gives each encoding npanel stores, and
+/// `*`, where it names them.
+#[derive(Default)]
+struct Accepted {
+    br: Option<f64>,
+    gzip: Option<f64>,
+    any: Option<f64>,
+}
+
+impl Accepted {
+    fn quality(&self, encoding: Encoding) -> Option<f64> {
+        let named = match encoding {
+            Encoding::Br => self.br,
+            Encoding::Gzip => self.gzip,
+        };
+        named.or(self.any)
+    }
+}
+
+fn parse_accept_encoding(header: &str) -> Accepted {
+    let mut accepted = Accepted::default();
 
     for entry in header.split(',') {
         let mut parts = entry.split(';');
-        let name = parts.next().unwrap_or("").trim().to_lowercase();
-        if name.is_empty() {
-            continue;
-        }
-        let q = parts.map(|p| p.trim().to_lowercase()).find(|p| p.starts_with("q="));
+        let name = parts.next().unwrap_or("").trim();
+        let q = parts.map(str::trim).find_map(|p| p.strip_prefix("q=").or_else(|| p.strip_prefix("Q=")));
         // A malformed q is treated as absent, as the header's grammar says.
         let value = match q {
             None => 1.0,
-            Some(q) => js_number(&q[2..]).unwrap_or(1.0).clamp(0.0, 1.0),
+            Some(q) => q.trim().parse::<f64>().ok().filter(|n| n.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0),
         };
-        quality.insert(name, value);
+        let slot = if name.eq_ignore_ascii_case("br") {
+            &mut accepted.br
+        } else if name.eq_ignore_ascii_case("gzip") {
+            &mut accepted.gzip
+        } else if name == "*" {
+            &mut accepted.any
+        } else {
+            continue;
+        };
+        *slot = Some(value);
     }
 
-    quality
-}
-
-/// `Number(text)` for the values a `q` parameter holds.
-fn js_number(text: &str) -> Option<f64> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Some(0.0);
-    }
-    text.parse::<f64>().ok().filter(|n| n.is_finite())
+    accepted
 }
 
 /// The `ETag` for one representation of a blob. Encodings need tags of their
@@ -704,7 +713,7 @@ pub fn parse_range(header: Option<&str>, size: u64) -> Range {
 
 /// How long a file may be cached, by what kind of file it is.
 pub fn cache_control(path: &str) -> &'static str {
-    match extname(path).to_lowercase().as_str() {
+    match &*lowercase_extname(path) {
         ".html" | ".htm" | ".xhtml" | ".json" | ".webmanifest" | ".xml" | ".txt" | ".md" => CACHE_CONTROL,
         _ => ASSET_CACHE_CONTROL,
     }
@@ -739,6 +748,8 @@ mod tests {
         assert_eq!(negotiate_encoding(None, &both), None);
         assert_eq!(negotiate_encoding(Some("br"), &variants(None, Some(10))), None);
         assert_eq!(negotiate_encoding(Some("br;q=abc"), &both), Some(Encoding::Br));
+        assert_eq!(negotiate_encoding(Some("GZIP;Q=1, BR;q=0.1"), &both), Some(Encoding::Gzip));
+        assert_eq!(negotiate_encoding(Some("br, gzip"), &variants(Some(200), Some(200))), Some(Encoding::Br));
     }
 
     #[test]

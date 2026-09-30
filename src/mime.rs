@@ -4,7 +4,7 @@
 //! tail of media types never shows up, and anything unknown streams fine as
 //! `application/octet-stream`.
 
-use crate::util::extname;
+use crate::util::lowercase_extname;
 
 fn lookup(extension: &str) -> Option<&'static str> {
     Some(match extension {
@@ -78,12 +78,12 @@ const COMPRESSIBLE_TYPES: [&str; 11] = [
 
 /// Content type for a site path, defaulting to a safe binary type.
 pub fn content_type(path: &str) -> &'static str {
-    lookup(&extname(path).to_lowercase()).unwrap_or("application/octet-stream")
+    lookup(&lowercase_extname(path)).unwrap_or("application/octet-stream")
 }
 
 /// Whether a path names an HTML document.
 pub fn is_html(path: &str) -> bool {
-    matches!(extname(path).to_ascii_lowercase().as_str(), ".html" | ".htm")
+    matches!(&*lowercase_extname(path), ".html" | ".htm")
 }
 
 /// Whether a file is worth storing compressed copies of.

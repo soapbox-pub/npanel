@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use axum::body::Body;
@@ -28,60 +29,55 @@ struct DashboardFile {
 }
 
 pub struct Dashboard {
+    inner: Arc<Inner>,
+    log: Logger,
+    warned: AtomicBool,
+}
+
+struct Inner {
     /// Where a built dashboard may be, best first.
     candidates: Vec<PathBuf>,
     /// The one found, once a request has found it.
-    root: parking_lot::RwLock<Option<PathBuf>>,
+    root: OnceLock<PathBuf>,
     origin: String,
-    log: Logger,
     /// File contents by path, reused until the file on disk changes. HTML is
     /// held already rewritten.
     cache: Mutex<HashMap<PathBuf, (SystemTime, u64, Bytes)>>,
-    warned: AtomicBool,
+}
+
+/// What a request found on disk.
+enum Found {
+    File(DashboardFile, Bytes),
+    NotBuilt,
+    Unreadable,
 }
 
 impl Dashboard {
     pub fn new(candidates: Vec<PathBuf>, dashboard_host: &str, log: Logger) -> Dashboard {
-        Dashboard {
-            candidates,
-            root: parking_lot::RwLock::new(None),
-            origin: origin_for(dashboard_host),
-            log,
-            cache: Mutex::new(HashMap::new()),
-            warned: AtomicBool::new(false),
-        }
-    }
-
-    /// The built dashboard's directory. Looked for until found, so building
-    /// the dashboard while npanel runs needs no restart.
-    fn root(&self) -> Option<PathBuf> {
-        if let Some(root) = self.root.read().as_ref() {
-            return Some(root.clone());
-        }
-        let found = self.candidates.iter().find(|dir| dir.join("index.html").is_file())?.clone();
-        *self.root.write() = Some(found.clone());
-        Some(found)
+        let inner = Inner { candidates, root: OnceLock::new(), origin: origin_for(dashboard_host), cache: Mutex::new(HashMap::new()) };
+        Dashboard { inner: Arc::new(inner), log, warned: AtomicBool::new(false) }
     }
 
     pub async fn serve(&self, request: &http::request::Parts) -> Response<Body> {
-        let path = crate::util::decode_path(request.uri.path());
-        let file = self.root().and_then(|root| self.find(&root, &path).or_else(|| self.find(&root, "/index.html")));
+        // Statting and reading files is blocking work, so it is done off the
+        // runtime threads even when the answer turns out to be cached.
+        let (inner, path) = (self.inner.clone(), crate::util::decode_path(request.uri.path()));
+        let found = tokio::task::spawn_blocking(move || inner.load(&path)).await.unwrap_or(Found::Unreadable);
 
-        let Some(file) = file else {
-            if !self.warned.swap(true, Ordering::Relaxed) {
-                let dirs = self.candidates.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(" ");
-                self.log.warn("dashboard_not_built", fields! { "dirs" => dirs });
+        let (file, body) = match found {
+            Found::File(file, body) => (file, body),
+            Found::Unreadable => return Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).expect("response"),
+            Found::NotBuilt => {
+                if !self.warned.swap(true, Ordering::Relaxed) {
+                    let dirs = self.inner.candidates.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(" ");
+                    self.log.warn("dashboard_not_built", fields! { "dirs" => dirs });
+                }
+                return Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(Body::from("The dashboard has not been built. Run `bun run build` in dashboard/."))
+                    .expect("response");
             }
-            return Response::builder()
-                .status(StatusCode::SERVICE_UNAVAILABLE)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("The dashboard has not been built. Run `bun run build` in dashboard/."))
-                .expect("response");
-        };
-
-        let body = match self.contents(&file) {
-            Ok(body) => body,
-            Err(_) => return Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).expect("response"),
         };
 
         let builder = Response::builder()
@@ -93,6 +89,29 @@ impl Dashboard {
             return builder.body(Body::empty()).expect("response");
         }
         builder.body(Body::from(body)).expect("response")
+    }
+}
+
+impl Inner {
+    /// The built dashboard's directory. Looked for until found, so building
+    /// the dashboard while npanel runs needs no restart.
+    fn root(&self) -> Option<&Path> {
+        if let Some(root) = self.root.get() {
+            return Some(root);
+        }
+        let found = self.candidates.iter().find(|dir| dir.join("index.html").is_file())?;
+        Some(self.root.get_or_init(|| found.clone()))
+    }
+
+    /// The file a URL path names, falling back to `index.html` for the SPA's
+    /// own routes.
+    fn load(&self, path: &str) -> Found {
+        let Some(root) = self.root() else { return Found::NotBuilt };
+        let Some(file) = self.find(root, path).or_else(|| self.find(root, "/index.html")) else { return Found::NotBuilt };
+        match self.contents(&file) {
+            Ok(body) => Found::File(file, body),
+            Err(_) => Found::Unreadable,
+        }
     }
 
     /// A file's bytes, with HTML rewritten, cached until the file changes.

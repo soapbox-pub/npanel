@@ -61,6 +61,17 @@ pub fn extname(path: &str) -> &str {
     }
 }
 
+/// [`extname`] in lowercase, which is how extensions are compared. Borrowed
+/// unless the path spells it otherwise, so the usual case allocates nothing.
+pub fn lowercase_extname(path: &str) -> std::borrow::Cow<'_, str> {
+    let extension = extname(path);
+    if extension.bytes().any(|b| b.is_ascii_uppercase()) {
+        extension.to_ascii_lowercase().into()
+    } else {
+        extension.into()
+    }
+}
+
 /// Format epoch seconds as an HTTP date, like `Date.toUTCString`.
 pub fn http_date(epoch: i64) -> String {
     chrono::DateTime::from_timestamp(epoch, 0)

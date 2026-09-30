@@ -12,13 +12,14 @@
 //! Every step also writes to the `deploy_log` table, which the dashboard shows
 //! per version — a failed deploy explains itself without touching the server.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use futures_util::FutureExt;
+use futures_util::stream::FuturesUnordered;
+use futures_util::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
 use tokio::sync::{watch, Notify};
@@ -622,23 +623,44 @@ impl SyncWorker {
 
         // Bytes of this version already on disk. Blobs other sites share count
         // too: the limit is on how big a version is, not on what it costs to add.
-        let mut missing = Vec::new();
-        let mut stored: u64 = 0;
-        for sha256 in &hashes {
-            match deps.blobs.size(sha256) {
-                None => missing.push(sha256.clone()),
-                Some(size) => {
-                    stored += size;
-                    let sha = sha256.clone();
-                    self.db(move |conn| Ok(record_blob(conn, &sha, size)?)).await?;
-                    // Already on disk, but not necessarily compressed.
-                    if compressible.contains(sha256) {
-                        self.compress(event_id, sha256).await;
+        // Looked up and recorded in one pass on the blocking pool, since a
+        // version already on disk can be tens of thousands of stats.
+        let (blobs, all) = (deps.blobs.clone(), hashes.clone());
+        let (present, missing, stored) = self
+            .db(move |conn| {
+                let (mut present, mut missing, mut stored) = (Vec::new(), Vec::new(), 0u64);
+                let tx = conn.transaction()?;
+                for sha256 in all {
+                    match blobs.size(&sha256) {
+                        None => missing.push(sha256),
+                        Some(size) => {
+                            record_blob(&tx, &sha256, size)?;
+                            stored += size;
+                            present.push(sha256);
+                        }
                     }
-                    self.record_variants(sha256).await?;
+                }
+                tx.commit()?;
+                Ok((present, missing, stored))
+            })
+            .await?;
+
+        // Already on disk, but not necessarily compressed.
+        for sha256 in present.iter().filter(|sha| compressible.contains(*sha)) {
+            self.compress(event_id, sha256).await;
+        }
+        let blobs = deps.blobs.clone();
+        self.db(move |conn| {
+            let tx = conn.transaction()?;
+            for sha256 in &present {
+                if let Some(variants) = blobs.variants(sha256) {
+                    record_variant_sizes(&tx, sha256, variants)?;
                 }
             }
-        }
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
 
         self.set_progress(event_id, (hashes.len() - missing.len()) as i64).await?;
 
@@ -716,31 +738,31 @@ impl SyncWorker {
         budget: u64,
     ) -> (Vec<String>, usize, u64) {
         let max_file_size = self.deps().settings.get().max_file_size as u64;
-        let workers = BLOB_CONCURRENCY.min(missing.len());
-        let queue = Mutex::new(VecDeque::from(missing));
-        let failed = Mutex::new(Vec::new());
-        let bytes = std::sync::atomic::AtomicU64::new(0);
-        let ready = std::sync::atomic::AtomicI64::new(already);
+        let mut queue = missing.into_iter();
+        let mut downloading = FuturesUnordered::new();
+        let (mut failed, mut bytes, mut ready) = (Vec::new(), 0u64, already);
 
-        let worker = || async {
-            while self.running() && bytes.load(std::sync::atomic::Ordering::SeqCst) <= budget {
-                let Some(sha256) = queue.lock().pop_front() else { return };
+        loop {
+            while downloading.len() < BLOB_CONCURRENCY && self.running() && bytes <= budget {
+                let Some(sha256) = queue.next() else { break };
                 let compress = compressible.contains(&sha256);
-                match self.download_blob(event_id, &sha256, servers, max_file_size, compress).await {
-                    Some(size) => {
-                        bytes.fetch_add(size, std::sync::atomic::Ordering::SeqCst);
-                        let count = ready.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                        let _ = self.set_progress(event_id, count).await;
-                    }
-                    None => failed.lock().push(sha256),
-                }
+                downloading.push(async move {
+                    let size = self.download_blob(event_id, &sha256, servers, max_file_size, compress).await;
+                    (sha256, size)
+                });
             }
-        };
+            let Some((sha256, size)) = downloading.next().await else { break };
+            match size {
+                Some(size) => {
+                    bytes += size;
+                    ready += 1;
+                    let _ = self.set_progress(event_id, ready).await;
+                }
+                None => failed.push(sha256),
+            }
+        }
 
-        futures_util::future::join_all((0..workers).map(|_| worker())).await;
-
-        let abandoned = queue.lock().len();
-        (failed.into_inner(), abandoned, bytes.into_inner())
+        (failed, queue.count(), bytes)
     }
 
     /// Try each server in turn for one blob. Returns its size, or `None` if no
@@ -752,14 +774,25 @@ impl SyncWorker {
             let url = blob_url(server, sha256);
             match self.deps().blobs.download(&url, sha256, max_size, &cancel).await {
                 Ok(size) => {
-                    let sha = sha256.to_string();
-                    let _ = self.db(move |conn| Ok(record_blob(conn, &sha, size)?)).await;
                     self.deploy_log(event_id, "debug", "blob_downloaded", fields! { "sha256" => sha256, "server" => server.as_str(), "size" => size })
                         .await;
                     if compress {
                         self.compress(event_id, sha256).await;
                     }
-                    let _ = self.record_variants(sha256).await;
+                    // Recorded with whichever copies it now has, in one trip.
+                    let (blobs, sha) = (self.deps().blobs.clone(), sha256.to_string());
+                    let recorded = self
+                        .db(move |conn| {
+                            record_blob(conn, &sha, size)?;
+                            if let Some(variants) = blobs.variants(&sha) {
+                                record_variant_sizes(conn, &sha, variants)?;
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    if let Err(error) = recorded {
+                        self.deps().log.error("blob_record_failed", with_err(fields! { "sha256" => sha256 }, error));
+                    }
                     return Some(size);
                 }
                 Err(error) => {
@@ -802,15 +835,6 @@ impl SyncWorker {
         let fields = fields! { "sha256" => sha256, "err_msg" => message };
         self.deploy_log(event_id, "warn", "blob_compress_failed", fields.clone()).await;
         self.deps().log.warn("blob_compress_failed", fields);
-    }
-
-    /// Record which compressed copies a blob has, read back from the disk.
-    async fn record_variants(&self, sha256: &str) -> Result<()> {
-        let Some(variants) = self.deps().blobs.variants(sha256) else {
-            return Ok(());
-        };
-        let sha = sha256.to_string();
-        self.db(move |conn| Ok(record_variant_sizes(conn, &sha, variants)?)).await
     }
 
     async fn set_progress(&self, event_id: &str, files_ready: i64) -> Result<()> {
