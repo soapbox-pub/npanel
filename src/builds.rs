@@ -16,6 +16,7 @@
 //! complete.
 
 use std::collections::{HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,10 +24,10 @@ use anyhow::{anyhow, Result};
 use base64::Engine;
 use futures_util::FutureExt;
 use indexmap::IndexMap;
-use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256, Sha384};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use crate::analytics::tracker::{tracker_script, tracker_sha256, TRACKER_PATH};
 use crate::blobs::BlobStore;
@@ -110,16 +111,11 @@ pub struct HostBuilderDeps {
     pub retry_backoff: Duration,
 }
 
-#[derive(Default)]
-struct Queue {
-    pending: HashSet<i64>,
-    /// Whether every host is waiting, which startup or a bulk change asks for.
-    everything: bool,
-    pumping: bool,
-    stopped: bool,
-    /// Attempts spent on one build, while it is being retried.
-    attempts: HashMap<String, u32>,
-    retries: Vec<tokio::task::JoinHandle<()>>,
+enum Command {
+    /// Reconcile these hosts, or every host. Carries the request's number, so
+    /// [`HostBuilder::when_idle`] can tell when it has been worked through.
+    Reconcile(Option<Vec<i64>>, u64),
+    Stop(oneshot::Sender<()>),
 }
 
 #[derive(Clone)]
@@ -129,14 +125,20 @@ pub struct HostBuilder {
 
 struct Inner {
     deps: HostBuilderDeps,
-    queue: Mutex<Queue>,
-    /// Whether the queue is being worked, for [`HostBuilder::when_idle`].
-    busy: watch::Sender<bool>,
+    commands: mpsc::UnboundedSender<Command>,
+    /// The number of the latest request, and of the latest one worked through.
+    requested: watch::Sender<u64>,
+    completed: watch::Sender<u64>,
 }
 
 impl HostBuilder {
+    /// A builder, with the task that works its queue.
     pub fn new(deps: HostBuilderDeps) -> HostBuilder {
-        HostBuilder { inner: Arc::new(Inner { deps, queue: Mutex::new(Queue::default()), busy: watch::channel(false).0 }) }
+        let (commands, received) = mpsc::unbounded_channel();
+        let inner = Inner { deps, commands, requested: watch::Sender::new(0), completed: watch::Sender::new(0) };
+        let builder = HostBuilder { inner: Arc::new(inner) };
+        tokio::spawn(Queue::new(builder.clone(), received).run());
+        builder
     }
 
     /// Clear the debris of an interrupted run and reconcile every host.
@@ -150,38 +152,24 @@ impl HostBuilder {
         Ok(())
     }
 
-    /// Stop building. Resolves once any build in progress has settled.
+    /// Stop building. Resolves once any build in progress has settled; retries
+    /// still waiting are dropped, and anything asked after is ignored.
     pub async fn stop(&self) {
-        {
-            let mut queue = self.inner.queue.lock();
-            queue.stopped = true;
-            for retry in queue.retries.drain(..) {
-                retry.abort();
-            }
+        let (done, stopped) = oneshot::channel();
+        if self.inner.commands.send(Command::Stop(done)).is_ok() {
+            let _ = stopped.await;
         }
-        self.when_idle().await;
     }
 
     /// Reconcile some hosts, or all of them. Returns immediately; the previous
     /// build serves until the new one is complete.
     pub fn hosts_changed(&self, host_ids: Option<&[i64]>) {
-        let start = {
-            let mut queue = self.inner.queue.lock();
-            if queue.stopped {
-                return;
-            }
-            match host_ids {
-                Some(ids) => queue.pending.extend(ids),
-                None => queue.everything = true,
-            }
-            !std::mem::replace(&mut queue.pumping, true)
-        };
-
-        if start {
-            self.inner.busy.send_replace(true);
-            let builder = self.clone();
-            tokio::spawn(async move { builder.pump().await });
-        }
+        let mut number = 0;
+        self.inner.requested.send_modify(|requested| {
+            *requested += 1;
+            number = *requested;
+        });
+        let _ = self.inner.commands.send(Command::Reconcile(host_ids.map(<[i64]>::to_vec), number));
     }
 
     /// Reconcile every host serving a site, because one of its versions changed.
@@ -208,101 +196,230 @@ impl HostBuilder {
         }
     }
 
-    /// Resolves once nothing is waiting to be built.
+    /// Resolves once everything asked of the builder so far has been worked
+    /// through — not the retries that may follow, which wait out a backoff.
+    #[cfg(test)]
     pub async fn when_idle(&self) {
-        let mut busy = self.inner.busy.subscribe();
-        let _ = busy.wait_for(|busy| !busy).await;
+        let asked = *self.inner.requested.borrow();
+        let mut completed = self.inner.completed.subscribe();
+        // An error means the queue is gone, so there is nothing to wait for.
+        let _ = completed.wait_for(|completed| *completed >= asked).await;
+    }
+}
+
+/// The builder's queue, and the one task that works it. Owning its state
+/// outright is what lets a request never be lost between checking the queue
+/// and going to sleep: both happen here, one after the other.
+struct Queue {
+    builder: HostBuilder,
+    commands: mpsc::UnboundedReceiver<Command>,
+    pending: HashSet<i64>,
+    /// Whether every host is waiting, which startup or a bulk change asks for.
+    everything: bool,
+    /// The number of the latest request taken off the channel.
+    absorbed: u64,
+    /// Attempts spent on one build, while it is being retried.
+    attempts: HashMap<String, u32>,
+    /// Hosts to reconcile again once their backoff is over.
+    retries: Vec<(Instant, i64)>,
+    stopping: Option<oneshot::Sender<()>>,
+}
+
+impl Queue {
+    fn new(builder: HostBuilder, commands: mpsc::UnboundedReceiver<Command>) -> Queue {
+        Queue {
+            builder,
+            commands,
+            pending: HashSet::new(),
+            everything: false,
+            absorbed: 0,
+            attempts: HashMap::new(),
+            retries: Vec::new(),
+            stopping: None,
+        }
     }
 
-    async fn pump(&self) {
-        loop {
-            let ids = {
-                let mut queue = self.inner.queue.lock();
-                if queue.stopped {
-                    None
-                } else if queue.everything {
-                    queue.everything = false;
-                    queue.pending.clear();
-                    Some(None)
-                } else if !queue.pending.is_empty() {
-                    Some(Some(queue.pending.drain().collect::<Vec<_>>()))
-                } else {
-                    // Settled under the lock, so a trigger arriving now starts
-                    // a new pump rather than finding this one still running.
-                    queue.pumping = false;
-                    None
-                }
-            };
+    fn deps(&self) -> &HostBuilderDeps {
+        &self.builder.inner.deps
+    }
 
-            let ids = match ids {
-                None => break,
-                Some(Some(ids)) => ids,
-                Some(None) => self
-                    .inner
-                    .deps
+    fn apply(&mut self, command: Command) {
+        match command {
+            Command::Reconcile(Some(ids), number) => {
+                self.pending.extend(ids);
+                self.absorbed = self.absorbed.max(number);
+            }
+            Command::Reconcile(None, number) => {
+                self.everything = true;
+                self.absorbed = self.absorbed.max(number);
+            }
+            Command::Stop(done) => self.stopping = Some(done),
+        }
+    }
+
+    /// Take whatever has been asked since last looked. Whether to go on.
+    fn absorb(&mut self) -> bool {
+        while let Ok(command) = self.commands.try_recv() {
+            self.apply(command);
+        }
+        self.stopping.is_none()
+    }
+
+    async fn run(mut self) {
+        loop {
+            if !self.absorb() {
+                break;
+            }
+            let now = Instant::now();
+            let (due, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.retries).into_iter().partition(|(at, _)| *at <= now);
+            self.retries = waiting;
+            self.pending.extend(due.into_iter().map(|(_, id)| id));
+
+            let ids = if std::mem::take(&mut self.everything) {
+                self.pending.clear();
+                let all = self
+                    .deps()
                     .db
                     .call(|conn| Ok(conn.prepare("SELECT id FROM hosts")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?))
-                    .await
-                    .unwrap_or_else(|error| {
-                        self.inner.deps.log.error("build_lookup_failed", with_err(fields! {}, error));
-                        Vec::new()
-                    }),
+                    .await;
+                all.unwrap_or_else(|error| {
+                    self.deps().log.error("build_lookup_failed", with_err(fields! {}, error));
+                    Vec::new()
+                })
+            } else {
+                self.pending.drain().collect()
             };
 
+            if ids.is_empty() {
+                self.builder.inner.completed.send_replace(self.absorbed);
+                let soonest = self.retries.iter().map(|(at, _)| *at).min();
+                tokio::select! {
+                    command = self.commands.recv() => match command {
+                        Some(command) => self.apply(command),
+                        None => break,
+                    },
+                    _ = sleep_until(soonest) => {}
+                }
+                continue;
+            }
+
             for id in ids {
-                if self.inner.queue.lock().stopped {
+                if !self.absorb() {
                     break;
                 }
                 // A panic building one host must not strand the queue.
-                let _ = std::panic::AssertUnwindSafe(self.reconcile(id)).catch_unwind().await;
+                if AssertUnwindSafe(self.reconcile(id)).catch_unwind().await.is_err() {
+                    self.deps().log.error("build_panicked", fields! { "host_id" => id });
+                }
             }
         }
 
-        self.inner.queue.lock().pumping = false;
-        self.inner.busy.send_replace(false);
+        self.builder.inner.completed.send_replace(self.absorbed);
+        if let Some(done) = self.stopping.take() {
+            let _ = done.send(());
+        }
     }
 
     /// Make one host's builds match what it should be serving. Never fails: a
     /// host whose build fails is logged and retried, and must not stop the
     /// hosts queued behind it.
-    async fn reconcile(&self, host_id: i64) {
-        let deps = &self.inner.deps;
-
-        let targets = match self.targets(host_id).await {
+    async fn reconcile(&mut self, host_id: i64) {
+        let targets = match self.builder.targets(host_id).await {
             Ok(targets) => targets,
             Err(error) => {
-                deps.log.error("build_plan_failed", with_err(fields! { "host_id" => host_id }, error));
+                self.deps().log.error("build_plan_failed", with_err(fields! { "host_id" => host_id }, error));
                 return;
             }
         };
 
         for target in targets {
-            if self.inner.queue.lock().stopped {
+            if !self.absorb() {
                 return;
             }
 
             let (id, kind) = (host_id, target.kind);
-            let current = match deps.db.call(move |conn| Ok(current_build(conn, id, kind)?)).await {
+            let current = match self.deps().db.call(move |conn| Ok(current_build(conn, id, kind)?)).await {
                 Ok(current) => current,
                 Err(error) => {
-                    deps.log.error("build_plan_failed", with_err(fields! { "host_id" => host_id }, error));
+                    self.deps().log.error("build_plan_failed", with_err(fields! { "host_id" => host_id }, error));
                     continue;
                 }
             };
             if current.is_some_and(|build| build.fingerprint == target.fingerprint) {
-                self.inner.queue.lock().attempts.remove(&target.attempt_key());
+                self.attempts.remove(&target.attempt_key());
                 continue;
             }
 
-            match self.build(&target).await {
+            match self.builder.build(&target).await {
                 Ok(()) => {
-                    self.inner.queue.lock().attempts.remove(&target.attempt_key());
+                    self.attempts.remove(&target.attempt_key());
                 }
                 Err(error) => self.fail(&target, error).await,
             }
         }
     }
 
+    /// Record a failed build, and retry it if any attempts are left — counted
+    /// per run, as deploys are.
+    async fn fail(&mut self, target: &BuildTarget, error: anyhow::Error) {
+        let key = target.attempt_key();
+        let limit = self.deps().settings.get().deploy_attempts as u32;
+
+        let attempt = self.attempts.get(&key).copied().unwrap_or(0) + 1;
+        let again = attempt < limit && self.stopping.is_none();
+        if again {
+            self.attempts.insert(key, attempt);
+        } else {
+            self.attempts.remove(&key);
+        }
+
+        let deps = self.deps();
+        let fields = fields! { "hostname" => target.origin.hostname.as_str(), "kind" => target.kind.as_str(), "attempt" => attempt };
+        deps.log.error("build_failed", with_err(fields.clone(), &error));
+
+        let (event_id, host_id, kind, message) = (target.event.event_id.clone(), target.host.id, target.kind, error.to_string());
+        let recorded = deps
+            .db
+            .call(move |conn| {
+                let mut f = fields;
+                f.push(("err_msg", message.into()));
+                write_deploy_log(conn, &event_id, "error", "build_failed", f)?;
+                // One failure explains itself; the ones before it would only repeat it.
+                let latest: Option<i64> = conn
+                    .query_row(
+                        "SELECT id FROM host_builds WHERE host_id = ? AND kind = ? AND status = 'failed' ORDER BY id DESC LIMIT 1",
+                        params![host_id, kind.as_str()],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(latest) = latest {
+                    conn.execute(
+                        "DELETE FROM host_builds WHERE host_id = ? AND kind = ? AND status = 'failed' AND id < ?",
+                        params![host_id, kind.as_str(), latest],
+                    )?;
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(error) = recorded {
+            deps.log.error("build_record_failed", with_err(fields! { "host_id" => host_id }, error));
+        }
+
+        if again {
+            let backoff = deps.retry_backoff * 2u32.pow(attempt - 1);
+            self.retries.push((Instant::now() + backoff, host_id));
+        }
+    }
+}
+
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+impl HostBuilder {
     /// What a host's builds should be made of.
     ///
     /// A disabled host is left with whatever builds it has: it serves nothing,
@@ -471,68 +588,6 @@ impl HostBuilder {
             .await?;
 
         Ok(())
-    }
-
-    /// Record a failed build, and retry it if any attempts are left — counted
-    /// per run, as deploys are.
-    async fn fail(&self, target: &BuildTarget, error: anyhow::Error) {
-        let deps = &self.inner.deps;
-        let key = target.attempt_key();
-        let limit = deps.settings.get().deploy_attempts as u32;
-
-        let (attempt, again) = {
-            let mut queue = self.inner.queue.lock();
-            let attempt = queue.attempts.get(&key).copied().unwrap_or(0) + 1;
-            let again = attempt < limit && !queue.stopped;
-            if again {
-                queue.attempts.insert(key.clone(), attempt);
-            } else {
-                queue.attempts.remove(&key);
-            }
-            (attempt, again)
-        };
-
-        let fields = fields! { "hostname" => target.origin.hostname.as_str(), "kind" => target.kind.as_str(), "attempt" => attempt };
-        deps.log.error("build_failed", with_err(fields.clone(), &error));
-
-        let (event_id, host_id, kind, message) = (target.event.event_id.clone(), target.host.id, target.kind, error.to_string());
-        let _ = deps
-            .db
-            .call(move |conn| {
-                let mut f = fields;
-                f.push(("err_msg", message.into()));
-                write_deploy_log(conn, &event_id, "error", "build_failed", f)?;
-                // One failure explains itself; the ones before it would only repeat it.
-                let latest: Option<i64> = conn
-                    .query_row(
-                        "SELECT id FROM host_builds WHERE host_id = ? AND kind = ? AND status = 'failed' ORDER BY id DESC LIMIT 1",
-                        params![host_id, kind.as_str()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if let Some(latest) = latest {
-                    conn.execute(
-                        "DELETE FROM host_builds WHERE host_id = ? AND kind = ? AND status = 'failed' AND id < ?",
-                        params![host_id, kind.as_str(), latest],
-                    )?;
-                }
-                Ok(())
-            })
-            .await;
-
-        if !again {
-            return;
-        }
-
-        let backoff = deps.retry_backoff * 2u32.pow(attempt - 1);
-        let builder = self.clone();
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(backoff).await;
-            builder.hosts_changed(Some(&[host_id]));
-        });
-        let mut queue = self.inner.queue.lock();
-        queue.retries.retain(|retry| !retry.is_finished());
-        queue.retries.push(handle);
     }
 }
 
