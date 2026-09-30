@@ -47,10 +47,12 @@ impl SiteCsp {
         Self { db, blobs, log, cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED).unwrap())) }
     }
 
-    /// The policy this build declares, or `None` if it declares none.
-    pub async fn policy(&self, build_id: i64) -> Option<String> {
+    /// The policy this build declares, or `None` if it declares none. A
+    /// failed lookup is not cached: build ids are never reused, so a cached
+    /// miss would pin the gateway's policy on the build for good.
+    pub async fn policy(&self, build_id: i64) -> anyhow::Result<Option<String>> {
         if let Some(cached) = self.cache.lock().get(&build_id) {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
         let blobs = self.blobs.clone();
@@ -63,18 +65,20 @@ impl SiteCsp {
                     .optional()?;
                 Ok(index.and_then(|sha256| extract_csp(&blobs.read_text(&sha256, MAX_HTML_BYTES))))
             })
-            .await
-            .unwrap_or(None);
+            .await?;
 
         if let Some(policy) = &policy {
             self.log.debug("site_csp_adopted", fields! { "build_id" => build_id, "policy" => policy.as_str() });
         }
         self.cache.lock().put(build_id, policy.clone());
-        policy
+        Ok(policy)
     }
 }
 
 /// The enforcing Content Security Policy an HTML document declares.
+///
+/// Only tags in `<head>` count, as only those count to a browser — and only
+/// those are the ones `inject` widens for npanel's own scripts.
 ///
 /// Every matching `<meta http-equiv>` is taken, joined into the
 /// comma-separated list the header defines, because a browser enforces each
@@ -82,7 +86,7 @@ impl SiteCsp {
 /// the site asked only to be told about must not become the one it is held to.
 pub fn extract_csp(html: &str) -> Option<String> {
     let document = scraper::Html::parse_document(html);
-    let selector = scraper::Selector::parse("meta").ok()?;
+    let selector = scraper::Selector::parse("head meta").ok()?;
     let mut policies = Vec::new();
 
     for element in document.select(&selector) {
@@ -131,5 +135,6 @@ mod tests {
         assert_eq!(extract_csp("<meta http-equiv=\"content-security-policy\" content=\"a\nb\">"), None);
         let long = format!(r#"<meta http-equiv="content-security-policy" content="{}">"#, "a".repeat(9000));
         assert_eq!(extract_csp(&long), None);
+        assert_eq!(extract_csp(r#"<head></head><body><div><meta http-equiv="content-security-policy" content="a"></div></body>"#), None);
     }
 }

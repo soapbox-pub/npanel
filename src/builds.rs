@@ -199,7 +199,10 @@ impl HostBuilder {
                     .collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                self.inner.deps.log.error("build_lookup_failed", with_err(fields! {}, error));
+                Vec::new()
+            });
 
         if !ids.is_empty() {
             self.hosts_changed(Some(&ids));
@@ -241,7 +244,10 @@ impl HostBuilder {
                     .db
                     .call(|conn| Ok(conn.prepare("SELECT id FROM hosts")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?))
                     .await
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|error| {
+                        self.inner.deps.log.error("build_lookup_failed", with_err(fields! {}, error));
+                        Vec::new()
+                    }),
             };
 
             for id in ids {
@@ -277,7 +283,13 @@ impl HostBuilder {
             }
 
             let (id, kind) = (host_id, target.kind);
-            let current = deps.db.call(move |conn| Ok(current_build(conn, id, kind)?)).await.ok().flatten();
+            let current = match deps.db.call(move |conn| Ok(current_build(conn, id, kind)?)).await {
+                Ok(current) => current,
+                Err(error) => {
+                    deps.log.error("build_plan_failed", with_err(fields! { "host_id" => host_id }, error));
+                    continue;
+                }
+            };
             if current.is_some_and(|build| build.fingerprint == target.fingerprint) {
                 self.inner.queue.lock().attempts.remove(&target.attempt_key());
                 continue;

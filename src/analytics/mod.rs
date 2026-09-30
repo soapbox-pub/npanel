@@ -280,18 +280,18 @@ impl Analytics {
                     let w = worker.clone();
                     let _ = tokio::task::spawn_blocking(move || flush(&w, &log)).await;
                 }
-                worker.reads.call(move |conn| Ok(run(conn, &log))).await
+                worker.reads.call_within(QUERY_TIMEOUT, move |conn| Ok(run(conn, &log))).await
             }
         });
 
-        match tokio::time::timeout(QUERY_TIMEOUT, task).await {
-            Ok(Ok(Ok(response))) => response,
-            Ok(Ok(Err(error))) => {
+        match task.await {
+            Ok(Ok(Some(response))) => response,
+            Ok(Ok(None)) => WorkerResponse::failure(504, "Analytics took too long to answer. Try a shorter date range."),
+            Ok(Err(error)) => {
                 log.error("analytics_query_failed", crate::log::err_fields(error));
                 WorkerResponse::failure(500, "The analytics query failed. The server log has the details.")
             }
-            Ok(Err(_)) => WorkerResponse::failure(503, "Analytics restarted before answering. Try again in a moment."),
-            Err(_) => WorkerResponse::failure(504, "Analytics took too long to answer. Try a shorter date range."),
+            Err(_) => WorkerResponse::failure(503, "Analytics restarted before answering. Try again in a moment."),
         }
     }
 }

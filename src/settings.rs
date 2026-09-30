@@ -149,6 +149,9 @@ pub struct Settings {
     log: Option<Logger>,
     cache: RwLock<Arc<SettingsValues>>,
     changes: broadcast::Sender<Changed>,
+    /// Held across a whole update, so two saves at once can't each start
+    /// from the same snapshot and have the later one drop the other's change.
+    writing: tokio::sync::Mutex<()>,
 }
 
 impl Settings {
@@ -201,7 +204,7 @@ impl Settings {
         })?;
 
         let (changes, _) = broadcast::channel(64);
-        Ok(Arc::new(Settings { db: db.clone(), log, cache: RwLock::new(Arc::new(values)), changes }))
+        Ok(Arc::new(Settings { db: db.clone(), log, cache: RwLock::new(Arc::new(values)), changes, writing: tokio::sync::Mutex::new(()) }))
     }
 
     /// A snapshot of every setting.
@@ -220,6 +223,7 @@ impl Settings {
     /// Every key is validated before anything is written, so a bad value
     /// leaves the settings exactly as they were.
     pub async fn update(&self, patch: &Map<String, Value>, actor: &str) -> Result<Vec<&'static str>, String> {
+        let _writing = self.writing.lock().await;
         let current = self.get();
         let mut next = (*current).clone();
         let mut changed: Vec<(&'static str, Value, Value)> = Vec::new();

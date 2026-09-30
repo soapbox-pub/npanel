@@ -5,6 +5,11 @@
 //! when the relay is down, and closes itself once nothing has been asked of it
 //! for a while — so a relay removed from the settings is simply never asked
 //! again and goes away on its own.
+//!
+//! A relay the admin didn't configure is one an author named, and is held to
+//! the rule blob downloads follow: public addresses only. The check is made on
+//! the addresses the connection is then opened to, not on a lookup of its own
+//! that a rebinding name could answer differently.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -85,14 +90,20 @@ pub struct Pool {
     inner: Arc<PoolInner>,
 }
 
+/// Whether a relay URL is one the admin configured, and so may be on any
+/// address. Asked at every connect, so a relay the admin removes is checked
+/// from its next connection on.
+pub type Trusted = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 struct PoolInner {
     relays: Mutex<HashMap<String, mpsc::UnboundedSender<Command>>>,
+    trusted: Trusted,
     log: Logger,
 }
 
 impl Pool {
-    pub fn new(log: Logger) -> Pool {
-        Pool { inner: Arc::new(PoolInner { relays: Mutex::new(HashMap::new()), log }) }
+    pub fn new(trusted: Trusted, log: Logger) -> Pool {
+        Pool { inner: Arc::new(PoolInner { relays: Mutex::new(HashMap::new()), trusted, log }) }
     }
 
     fn relay(&self, url: &str) -> mpsc::UnboundedSender<Command> {
@@ -102,7 +113,7 @@ impl Pool {
         }
         let (tx, rx) = mpsc::unbounded_channel();
         relays.insert(url.to_string(), tx.clone());
-        tokio::spawn(run_relay(url.to_string(), rx, self.inner.log));
+        tokio::spawn(run_relay(url.to_string(), rx, self.inner.trusted.clone(), self.inner.log));
         tx
     }
 
@@ -219,7 +230,7 @@ struct Subscription {
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// One relay's connection, for as long as anything is asked of it.
-async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, log: Logger) {
+async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, trusted: Trusted, log: Logger) {
     let mut subs: HashMap<String, Subscription> = HashMap::new();
     let mut socket: Option<Socket> = None;
     let mut backoff = BACKOFF_MIN;
@@ -229,7 +240,7 @@ async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, 
     loop {
         // Connect when there is something to ask and no wait in force.
         if socket.is_none() && !subs.is_empty() && retry_at.is_none_or(|at| Instant::now() >= at) {
-            match connect(&url).await {
+            match connect(&url, !trusted(&url)).await {
                 Ok(mut ws) => {
                     backoff = BACKOFF_MIN;
                     retry_at = None;
@@ -346,15 +357,44 @@ async fn next_message(socket: &mut Option<Socket>) -> Option<Result<Message, tok
     }
 }
 
-async fn connect(url: &str) -> Result<Socket, String> {
+async fn connect(url: &str, public_only: bool) -> Result<Socket, String> {
+    match tokio::time::timeout(CONNECT_TIMEOUT, open(url, public_only)).await {
+        Ok(result) => result,
+        Err(_) => Err("timed out".into()),
+    }
+}
+
+/// Resolve a relay's name, connect to one of its addresses, and speak
+/// WebSocket over that. The resolving is done here rather than left to the
+/// WebSocket client so that the addresses checked are the ones dialed.
+async fn open(url: &str, public_only: bool) -> Result<Socket, String> {
+    let parsed = url::Url::parse(url).map_err(|e| e.to_string())?;
+    let host = parsed.host_str().ok_or("no host")?;
+    let port = parsed.port_or_known_default().ok_or("no port")?;
+
+    let addresses = crate::net::resolve_all(host).await.map_err(|e| e.to_string())?;
+    if public_only && !addresses.iter().copied().all(crate::net::is_public_address) {
+        return Err(format!("{host} is not a public address"));
+    }
+
+    let mut last_error = String::from("no addresses");
+    let mut stream = None;
+    for address in addresses {
+        match tokio::net::TcpStream::connect((address, port)).await {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(error) => last_error = error.to_string(),
+        }
+    }
+    let stream = stream.ok_or(last_error)?;
+
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(16 << 20))
         .max_frame_size(Some(16 << 20));
-    match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async_with_config(url, Some(config), false)).await {
-        Ok(Ok((ws, _))) => Ok(ws),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(_) => Err("timed out".into()),
-    }
+    let (ws, _) = tokio_tungstenite::client_async_tls_with_config(url, stream, Some(config), None).await.map_err(|e| e.to_string())?;
+    Ok(ws)
 }
 
 async fn send_req(ws: &mut Socket, id: &str, filters: &[Filter]) -> bool {
@@ -416,12 +456,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_dead_relay_does_not_hold_up_a_query() {
-        let pool = Pool::new(Logger::new(crate::log::LogLevel::Error));
+        let pool = Pool::new(Arc::new(|_: &str| true), Logger::new(crate::log::LogLevel::Error));
         let started = std::time::Instant::now();
         let events = pool
             .query(vec![Filter::default()], &["wss://127.0.0.1:1".into()], Duration::from_secs(10), &CancellationToken::new())
             .await;
         assert!(events.is_empty());
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_relay_must_be_public() {
+        assert!(open("wss://127.0.0.1:1", true).await.unwrap_err().contains("not a public address"));
+        assert!(open("wss://localhost:1", true).await.unwrap_err().contains("not a public address"));
     }
 }

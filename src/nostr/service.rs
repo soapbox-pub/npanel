@@ -74,8 +74,9 @@ pub struct NostrService {
 
 impl NostrService {
     pub fn new(settings: Arc<Settings>, log: Logger) -> Self {
+        let configured = settings.clone();
         Self {
-            pool: Pool::new(log),
+            pool: Pool::new(Arc::new(move |url: &str| configured.get().relays.iter().any(|relay| relay == url)), log),
             settings,
             log,
             relay_lists: Mutex::new(HashMap::new()),
@@ -223,9 +224,11 @@ pub fn blob_url(server: &str, sha256: &str) -> String {
 /// `wss://` URLs on public addresses, at most [`MAX_AUTHOR_RELAYS`].
 ///
 /// The same rule blob downloads follow, for the same reason: the list is
-/// written by whoever publishes a site. Only the first few are resolved at
-/// all, since each check is a DNS lookup and the list can be as long as its
-/// author likes.
+/// written by whoever publishes a site. Checking here spends the few slots on
+/// relays that can pass; the pool checks again at connect, on the addresses
+/// it dials, which is what a rebinding name can't get past. Only the first
+/// few are resolved at all, since each check is a DNS lookup and the list can
+/// be as long as its author likes.
 pub async fn vet_relay_hints(urls: &[String]) -> Vec<String> {
     let candidates: Vec<String> = dedupe(urls.iter().filter_map(|url| parse_relay_url(url).ok()))
         .into_iter()

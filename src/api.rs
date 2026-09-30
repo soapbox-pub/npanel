@@ -350,7 +350,7 @@ async fn serialize_host(deps: &Deps, host: Host) -> anyhow::Result<Value> {
 
     // The same question the serving path asks, answered the same way.
     let declared = match (&build, host.csp == 1) {
-        (Some(build), true) => deps.site_csp.policy(build.id).await,
+        (Some(build), true) => deps.site_csp.policy(build.id).await?,
         _ => None,
     };
 

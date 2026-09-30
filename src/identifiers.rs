@@ -30,7 +30,7 @@ pub fn parse_relay_url(input: &str) -> Result<String, String> {
 /// Accept an npub, nprofile, or hex pubkey; always return hex.
 pub fn parse_pubkey(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
-    let value = if trimmed.len() >= 6 && trimmed[..6].eq_ignore_ascii_case("nostr:") { &trimmed[6..] } else { trimmed };
+    let value = crate::util::strip_prefix_ci(trimmed, "nostr:");
 
     if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Ok(value.to_lowercase());
@@ -98,6 +98,7 @@ mod tests {
         assert_eq!(parse_pubkey(&hex.to_uppercase()).unwrap(), hex);
         assert_eq!(parse_pubkey(&format!("nostr:{}", nip19::npub_encode(hex))).unwrap(), hex);
         assert!(parse_pubkey("nope").is_err());
+        assert!(parse_pubkey("nostr€aaaa").is_err());
     }
 
     #[test]

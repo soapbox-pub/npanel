@@ -21,7 +21,7 @@ use anyhow::Result;
 use futures_util::FutureExt;
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
-use tokio::sync::{watch, Notify};
+use tokio::sync::{broadcast, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -159,7 +159,14 @@ impl SyncWorker {
         let mut changes = self.deps().settings.subscribe();
         let worker = self.clone();
         let listener = tokio::spawn(async move {
-            while let Ok(keys) = changes.recv().await {
+            loop {
+                let keys = match changes.recv().await {
+                    Ok(keys) => keys,
+                    // Missed notices name keys nobody can recover, so react
+                    // as if every one of them changed.
+                    Err(broadcast::error::RecvError::Lagged(_)) => Arc::new(crate::settings::KEYS.to_vec()),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
                 if keys.contains(&"relays") {
                     // Connections to relays that were removed close themselves
                     // once the restarted subscription stops asking them anything.
@@ -289,7 +296,13 @@ impl SyncWorker {
     }
 
     async fn run_resync(&self) {
-        let sites = self.db(|conn| Ok(list_configured_sites(conn)?)).await.unwrap_or_default();
+        let sites = match self.db(|conn| Ok(list_configured_sites(conn)?)).await {
+            Ok(sites) => sites,
+            Err(error) => {
+                self.deps().log.error("resync_failed", with_err(fields! {}, error));
+                return;
+            }
+        };
         self.deps().log.debug("resync_started", fields! { "sites" => sites.len() });
 
         for site in sites {
@@ -361,7 +374,10 @@ impl SyncWorker {
                 Ok(ids)
             })
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|error| {
+                self.deps().log.error("retry_incomplete_failed", with_err(fields! {}, error));
+                Vec::new()
+            });
 
         for event_id in pending {
             self.enqueue(&event_id);
@@ -401,7 +417,13 @@ impl SyncWorker {
             token
         };
 
-        let sites = self.db(|conn| Ok(list_configured_sites(conn)?)).await.unwrap_or_default();
+        let sites = match self.db(|conn| Ok(list_configured_sites(conn)?)).await {
+            Ok(sites) => sites,
+            Err(error) => {
+                self.deps().log.error("subscription_failed", with_err(fields! {}, error));
+                return;
+            }
+        };
         if sites.is_empty() {
             self.deps().log.debug("subscription_idle", fields! { "reason" => "no_hosts" });
             return;
@@ -458,7 +480,10 @@ impl SyncWorker {
             }
             !std::mem::replace(&mut state.pumping, true)
         };
-        self.inner.wake.notify_waiters();
+        // `notify_one` rather than `notify_waiters`: it leaves a permit when
+        // the pump is between reading the queue and starting to wait, which
+        // `notify_waiters` would miss, leaving this version behind a backoff.
+        self.inner.wake.notify_one();
 
         if start {
             self.inner.pumping.send_replace(true);
@@ -471,6 +496,17 @@ impl SyncWorker {
     /// backoff holds up nothing: whatever is ready goes first, and only an
     /// otherwise empty queue actually waits.
     async fn pump(&self) {
+        // Reset however the pump ends, a panic included: a `pumping` flag
+        // left set would mean nothing is ever deployed again.
+        struct Pumping<'a>(&'a Inner);
+        impl Drop for Pumping<'_> {
+            fn drop(&mut self) {
+                self.0.state.lock().pumping = false;
+                self.0.pumping.send_replace(false);
+            }
+        }
+        let _pumping = Pumping(&self.inner);
+
         loop {
             let next = {
                 let mut state = self.inner.state.lock();
@@ -501,15 +537,12 @@ impl SyncWorker {
                         Ok(outcome) => outcome,
                         Err(_) => Err(anyhow::anyhow!("the deploy panicked")),
                     };
-                    self.settle(&event_id, outcome).await;
+                    if AssertUnwindSafe(self.settle(&event_id, outcome)).catch_unwind().await.is_err() {
+                        self.deps().log.error("deploy_settle_panicked", fields! { "event_id" => event_id });
+                    }
                 }
             }
         }
-
-        let mut state = self.inner.state.lock();
-        state.pumping = false;
-        drop(state);
-        self.inner.pumping.send_replace(false);
     }
 
     async fn settle(&self, event_id: &str, outcome: Result<Option<Outcome>>) {
@@ -872,8 +905,10 @@ impl SyncWorker {
                 Ok(site_event(conn, &id)?.map(|row| row.address()))
             })
             .await
-            .ok()
-            .flatten();
+            .unwrap_or_else(|error| {
+                self.deps().log.error("deploy_record_failed", with_err(fields! { "event_id" => event_id }, error));
+                None
+            });
 
         if ready {
             self.inner.state.lock().attempts.remove(event_id);

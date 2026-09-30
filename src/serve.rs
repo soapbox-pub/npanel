@@ -30,7 +30,7 @@ use crate::db::{BuildKind, Db};
 use crate::fields;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
-use crate::log::Logger;
+use crate::log::{with_err, Logger};
 use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
 use crate::seo::canonical_link;
@@ -104,10 +104,10 @@ impl ServeCache {
     }
 
     /// The host this hostname names and the build it serves, if either exists.
-    pub async fn lookup(&self, hostname: &str) -> Option<Arc<CachedSite>> {
+    pub async fn lookup(&self, hostname: &str) -> anyhow::Result<Option<Arc<CachedSite>>> {
         if let Some((site, expires)) = self.entries.read().get(hostname) {
             if *expires > Instant::now() {
-                return Some(site.clone());
+                return Ok(Some(site.clone()));
             }
         }
 
@@ -124,14 +124,12 @@ impl ServeCache {
                 let build = if host.host.enabled == 1 { current_build(conn, host.host.id, kind)? } else { None };
                 Ok(Some((host, build)))
             })
-            .await
-            .ok()
-            .flatten();
+            .await?;
 
         let Some((host, build)) = found else {
             // An expired entry whose host is gone would otherwise sit here forever.
             self.entries.write().remove(hostname);
-            return None;
+            return Ok(None);
         };
 
         let version = build.map(|build| CachedVersion {
@@ -142,7 +140,7 @@ impl ServeCache {
         let site = Arc::new(CachedSite { host, version, naddr });
 
         self.entries.write().insert(hostname.to_string(), (site.clone(), Instant::now() + HOST_TTL));
-        Some(site)
+        Ok(Some(site))
     }
 
     /// Drop everything. Host writes are rare enough that no writer needs to
@@ -199,17 +197,32 @@ impl SiteServer {
     }
 
     async fn handle(&self, request: &Parts, origin: &RequestOrigin) -> Reply {
+        match self.try_handle(request, origin).await {
+            Ok(response) => response,
+            // A database that couldn't answer says nothing about the site, so
+            // the visitor is told to come back rather than that it's missing —
+            // and nothing about the failure is cached.
+            Err(error) => {
+                self.deps.log.error("site_unavailable", with_err(fields! { "hostname" => origin.hostname.as_str(), "path" => request.uri.path() }, &error));
+                let mut response = text(StatusCode::SERVICE_UNAVAILABLE, "This site is temporarily unavailable. Try again in a moment.");
+                response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+                response
+            }
+        }
+    }
+
+    async fn try_handle(&self, request: &Parts, origin: &RequestOrigin) -> anyhow::Result<Reply> {
         // The build comes along because the policy below is the build's and
         // applies to every answer this host gives.
-        let site = self.deps.serve_cache.lookup(&origin.hostname).await;
-        let mut response = self.respond(request, origin, site.as_deref()).await;
+        let site = self.deps.serve_cache.lookup(&origin.hostname).await?;
+        let mut response = self.respond(request, origin, site.as_deref()).await?;
         let headers = response.headers_mut();
 
         // On unless this one site turned it off. A hostname with no host row
         // has nobody to have turned it off, so it gets the gateway's.
         if site.as_ref().is_none_or(|site| site.host.host.csp != 0) {
             let declared = match site.as_ref().and_then(|site| site.version.as_ref()) {
-                Some(version) => self.deps.site_csp.policy(version.build_id).await,
+                Some(version) => self.deps.site_csp.policy(version.build_id).await?,
                 None => None,
             };
             let policy = declared.as_deref().unwrap_or(GATEWAY_CSP);
@@ -226,32 +239,32 @@ impl SiteServer {
             advertise_onion(request, origin, &site.host, &mut response);
         }
 
-        response
+        Ok(response)
     }
 
-    async fn respond(&self, request: &Parts, origin: &RequestOrigin, site: Option<&CachedSite>) -> Reply {
+    async fn respond(&self, request: &Parts, origin: &RequestOrigin, site: Option<&CachedSite>) -> anyhow::Result<Reply> {
         let log = &self.deps.log;
         let hostname = origin.hostname.as_str();
 
         if request.method != Method::GET && request.method != Method::HEAD {
             // An nsite is a pile of files. There is nothing to POST to.
-            return Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .header(header::ALLOW, "GET, HEAD")
                 .body(Body::from("This site only serves GET and HEAD requests."))
-                .expect("response");
+                .expect("response"));
         }
 
         if site.is_none() {
-            if let Some(redirect) = self.www_redirect(request, origin).await {
-                return redirect;
+            if let Some(redirect) = self.www_redirect(request, origin).await? {
+                return Ok(redirect);
             }
         }
 
         let Some(site) = site.filter(|site| site.host.host.enabled == 1) else {
             log.debug("site_unknown_host", fields! { "hostname" => hostname });
-            return text(StatusCode::NOT_FOUND, "This domain is not configured.");
+            return Ok(text(StatusCode::NOT_FOUND, "This domain is not configured."));
         };
 
         let path = request.uri.path();
@@ -259,24 +272,24 @@ impl SiteServer {
         // Ahead of the deploy check, because these names are npanel's and not
         // the site's: one added here resolves straight away.
         if path == NIP05_PATH {
-            if let Some(names) = self.nip05(request, &site.host).await {
-                return names;
+            if let Some(names) = self.nip05(request, &site.host).await? {
+                return Ok(names);
             }
         }
 
         let Some(version) = &site.version else {
             log.debug("site_not_deployed", fields! { "hostname" => hostname });
-            return Response::builder()
+            return Ok(Response::builder()
                 .status(StatusCode::SERVICE_UNAVAILABLE)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
                 .header(header::RETRY_AFTER, "30")
                 .body(Body::from("This site has not finished deploying yet."))
-                .expect("response");
+                .expect("response"));
         };
 
-        let Some(file) = self.resolve(version.build_id, path, site.host.host.spa == 1).await else {
+        let Some(file) = self.resolve(version.build_id, path, site.host.host.spa == 1).await? else {
             log.debug("site_path_missing", fields! { "hostname" => hostname, "path" => path });
-            return text(StatusCode::NOT_FOUND, "Not found.");
+            return Ok(text(StatusCode::NOT_FOUND, "Not found."));
         };
 
         // Sizes come with the path lookup when a deploy recorded them; the
@@ -291,7 +304,7 @@ impl SiteServer {
         let Some(variants) = variants else {
             // The build is ready, so this means the blob was removed underneath us.
             log.error("blob_missing", fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.as_str() });
-            return text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage.");
+            return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
         };
 
         // Everything below is about the representation this picks, not the
@@ -323,16 +336,16 @@ impl SiteServer {
         }
 
         if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
-            return builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response");
+            return Ok(builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response"));
         }
 
         let range = match parse_range(header_str(&request.headers, header::RANGE), size) {
             Range::Unsatisfiable => {
-                return builder
+                return Ok(builder
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .header(header::CONTENT_RANGE, format!("bytes */{size}"))
                     .body(Body::empty())
-                    .expect("response");
+                    .expect("response"));
             }
             Range::Whole => None,
             Range::Part(start, end) => Some((start, end)),
@@ -354,7 +367,7 @@ impl SiteServer {
         };
 
         if request.method == Method::HEAD {
-            return builder.status(status).body(Body::empty()).expect("response");
+            return Ok(builder.status(status).body(Body::empty()).expect("response"));
         }
 
         let bytes = match self.open(&file.sha256, encoding).await {
@@ -364,7 +377,7 @@ impl SiteServer {
                     "blob_missing",
                     fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.as_str(), "err_msg" => error.to_string() },
                 );
-                return text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage.");
+                return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
             }
         };
         let body = match range {
@@ -386,7 +399,7 @@ impl SiteServer {
             );
         }
 
-        builder.status(status).body(Body::from(body)).expect("response")
+        Ok(builder.status(status).body(Body::from(body)).expect("response"))
     }
 
     /// A blob's bytes for a response body. Kept mappings answer without a
@@ -400,12 +413,12 @@ impl SiteServer {
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
 
-    async fn resolve(&self, build_id: i64, path: &str, spa: bool) -> Option<ResolvedFile> {
+    async fn resolve(&self, build_id: i64, path: &str, spa: bool) -> anyhow::Result<Option<ResolvedFile>> {
         // The SPA flag is part of the key because it is read per request rather
         // than built in: switching it must not have to wait for a rebuild.
         let key = (build_id, spa, path.to_string());
         if let Some(cached) = self.paths.lock().get(&key) {
-            return cached.clone();
+            return Ok(cached.clone());
         }
 
         let request_path = path.to_string();
@@ -413,26 +426,24 @@ impl SiteServer {
             .deps
             .db
             .call(move |conn| Ok(resolve_site_path(conn, build_id, &request_path, spa)?))
-            .await
-            .ok()
-            .flatten();
+            .await?;
 
         // A path the build has no file for is cached too — the file list that
         // settled that is as immutable as the one that resolves a hit.
         if file.as_ref().is_none_or(|file| file.variants.is_some()) {
             self.paths.lock().put(key, file.clone());
         }
-        file
+        Ok(file)
     }
 
     /// The redirect `www.example.com` gets when `example.com` asked for one.
     /// Only reached when no host of that name is configured, so a `www` host
     /// someone added deliberately is served rather than redirected away.
-    async fn www_redirect(&self, request: &Parts, origin: &RequestOrigin) -> Option<Reply> {
-        let apex = www_apex(&origin.hostname)?;
-        let site = self.deps.serve_cache.lookup(apex).await?;
+    async fn www_redirect(&self, request: &Parts, origin: &RequestOrigin) -> anyhow::Result<Option<Reply>> {
+        let Some(apex) = www_apex(&origin.hostname) else { return Ok(None) };
+        let Some(site) = self.deps.serve_cache.lookup(apex).await? else { return Ok(None) };
         if site.host.host.enabled != 1 || site.host.host.redirect_www != 1 {
-            return None;
+            return Ok(None);
         }
 
         let path_and_query = request.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
@@ -440,7 +451,7 @@ impl SiteServer {
 
         self.deps.log.debug("site_www_redirect", fields! { "hostname" => origin.hostname.as_str(), "location" => location.as_str() });
 
-        Some(
+        Ok(Some(
             Response::builder()
                 .status(StatusCode::MOVED_PERMANENTLY)
                 .header(header::LOCATION, location)
@@ -449,7 +460,7 @@ impl SiteServer {
                 .header(header::CACHE_CONTROL, "public, max-age=3600")
                 .body(Body::empty())
                 .expect("response"),
-        )
+        ))
     }
 
     /// A host's NIP-05 names, as the document at `/.well-known/nostr.json`.
@@ -458,7 +469,7 @@ impl SiteServer {
     /// its own `nostr.json` go on serving it. A request naming one gets that
     /// one; a request naming nothing gets the lot. A name nobody here answers
     /// for is an empty document rather than a 404: the question was answered.
-    async fn nip05(&self, request: &Parts, host: &ServedHost) -> Option<Reply> {
+    async fn nip05(&self, request: &Parts, host: &ServedHost) -> anyhow::Result<Option<Reply>> {
         let host_id = host.host.id;
         let entries: Vec<(String, String, String)> = self
             .deps
@@ -469,10 +480,9 @@ impl SiteServer {
                     .query_map([host_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
                     .collect::<rusqlite::Result<_>>()?)
             })
-            .await
-            .ok()?;
+            .await?;
         if entries.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         let requested = request
@@ -500,7 +510,7 @@ impl SiteServer {
             .header(header::CACHE_CONTROL, "public, max-age=60")
             .header(header::CONTENT_LENGTH, body.len());
 
-        Some(if request.method == Method::HEAD { builder.body(Body::empty()) } else { builder.body(Body::from(body)) }.expect("response"))
+        Ok(Some(if request.method == Method::HEAD { builder.body(Body::empty()) } else { builder.body(Body::from(body)) }.expect("response")))
     }
 }
 

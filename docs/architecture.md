@@ -156,15 +156,18 @@ servers redirect — so without the rule, publishing a manifest would be enough 
 make npanel probe cloud metadata, a LAN admin interface, or a database's HTTP
 port, with the resulting status codes landing in a deploy log the author can
 read. Redirects are followed by hand, three at most, so each hop is resolved and
-checked rather than only the first. The check resolves the name rather than
-pinning the connection to the address it checked, so a determined DNS-rebinding
-attack can still get through: don't run npanel somewhere a single GET request to
-a neighbouring service would be a disaster.
+checked rather than only the first. The check is the resolver the HTTP client
+connects through (`PublicResolver`, `src/net.rs`), so the address checked is
+the address dialed and a DNS-rebinding name gets no second answer.
 
 Relays the author lists in their kind 10002 are held to the same rule, since
 they are just as much the author's to choose and each one is a WebSocket the
 deploy runtime opens. Only `wss://` URLs on public addresses are used, and only
-the first five (`vet_relay_hints`, `src/nostr/service.rs`). The relays an admin configures
+the first five (`vet_relay_hints`, `src/nostr/service.rs`). As with downloads,
+the relay connection is checked where it is made: the pool resolves the name
+itself and dials the addresses it checked (`src/nostr/pool.rs`), so a
+rebinding name gets no second answer.
+The relays an admin configures
 are not checked against the address rule — pointing npanel at a relay on the
 LAN is theirs to decide — but they too must be `wss://`.
 

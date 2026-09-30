@@ -69,6 +69,37 @@ impl Db {
         tokio::task::spawn_blocking(move || db.with(f)).await.context("database task panicked")?
     }
 
+    /// [`Db::call`], with the query interrupted if it is still running after
+    /// `limit` — not just abandoned, which would leave it holding a blocking
+    /// thread and a connection for as long as it cared to run. `None` when
+    /// it was cut short.
+    pub async fn call_within<T, F>(&self, limit: std::time::Duration, f: F) -> Result<Option<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
+        let db = self.clone();
+        let (handle_tx, handle_rx) = tokio::sync::oneshot::channel();
+        let mut task = tokio::task::spawn_blocking(move || {
+            db.with(|conn| {
+                let _ = handle_tx.send(conn.get_interrupt_handle());
+                f(conn)
+            })
+        });
+
+        match tokio::time::timeout(limit, &mut task).await {
+            Ok(result) => Ok(Some(result.context("database task panicked")??)),
+            Err(_) => {
+                if let Ok(handle) = handle_rx.await {
+                    handle.interrupt();
+                }
+                // Whatever it came to, it came to it too late.
+                let _ = task.await;
+                Ok(None)
+            }
+        }
+    }
+
     fn checkout(&self) -> Result<Connection> {
         if let Some(conn) = self.inner.idle.lock().pop() {
             return Ok(conn);
@@ -192,6 +223,29 @@ mod tests {
 
         // Idempotent across opens.
         Db::open(&t.dir.path().join("npanel.sqlite3"), None).unwrap();
+    }
+
+    #[tokio::test]
+    async fn interrupts_a_query_that_runs_long() {
+        let t = testing::temp_db();
+        let started = std::time::Instant::now();
+        let result = t
+            .db
+            .call_within(std::time::Duration::from_millis(100), |conn| {
+                Ok(conn.query_row(
+                    "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(result, None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+
+        // The connection it ran on goes back into service unharmed.
+        let one = t.db.call_within(std::time::Duration::from_secs(5), |conn| Ok(conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?)).await;
+        assert_eq!(one.unwrap(), Some(1));
     }
 
     #[test]

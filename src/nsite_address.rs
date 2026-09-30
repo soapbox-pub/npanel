@@ -45,8 +45,8 @@ pub fn parse_nsite_address(input: &str) -> Result<NsiteAddress, String> {
         return Err("Enter an address.".into());
     }
 
-    let mut value = strip_prefix_ci(trimmed, "nostr:");
-    value = strip_prefix_ci(value, "web+nostr:");
+    let mut value = crate::util::strip_prefix_ci(trimmed, "nostr:");
+    value = crate::util::strip_prefix_ci(value, "web+nostr:");
     let mut value = value.to_string();
 
     // Full URL, eg https://<label>.nsite.lol/some/page
@@ -83,14 +83,6 @@ pub fn parse_nsite_address(input: &str) -> Result<NsiteAddress, String> {
     Err(format!(
         "Unrecognized address: {trimmed}. Use an npub, naddr, {NAMED_SITE_KIND}:<pubkey>:<identifier>, or an nsite URL."
     ))
-}
-
-fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> &'a str {
-    if value.len() >= prefix.len() && value.is_char_boundary(prefix.len()) && value[..prefix.len()].eq_ignore_ascii_case(prefix) {
-        &value[prefix.len()..]
-    } else {
-        value
-    }
 }
 
 /// `^[a-z][a-z0-9+.-]*://`, case-insensitively.

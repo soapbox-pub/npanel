@@ -87,8 +87,14 @@ impl TorService {
         let mut changes = settings.subscribe();
         let notify = tx.clone();
         tokio::spawn(async move {
-            while let Ok(keys) = changes.recv().await {
-                if keys.iter().any(|key| key.starts_with("tor_")) && notify.send(Command::Apply).is_err() {
+            loop {
+                let relevant = match changes.recv().await {
+                    Ok(keys) => keys.iter().any(|key| key.starts_with("tor_")),
+                    // Missed notices may have been about Tor.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if relevant && notify.send(Command::Apply).is_err() {
                     break;
                 }
             }

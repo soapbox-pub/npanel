@@ -40,8 +40,10 @@ pub fn decode_uri_component(value: &str) -> Option<String> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' {
-            let hex = value.get(i + 1..i + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
+            // Checked by hand: `from_str_radix` also accepts a leading `+`,
+            // which `decodeURIComponent` rejects.
+            let hex = bytes.get(i + 1..i + 3).filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))?;
+            out.push(u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?);
             i += 3;
         } else {
             out.push(bytes[i]);
@@ -49,6 +51,15 @@ pub fn decode_uri_component(value: &str) -> Option<String> {
         }
     }
     String::from_utf8(out).ok()
+}
+
+/// `value` without `prefix`, matched ASCII-case-insensitively, or `value` as
+/// it was.
+pub fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> &'a str {
+    match value.get(..prefix.len()) {
+        Some(head) if head.eq_ignore_ascii_case(prefix) => &value[prefix.len()..],
+        _ => value,
+    }
 }
 
 /// A request path percent-decoded, tolerating malformed escapes.
@@ -109,6 +120,15 @@ mod tests {
         assert_eq!(decode_path("/%E2%9C%93"), "/✓");
         assert_eq!(decode_path("/100%"), "/100%");
         assert_eq!(decode_path("/%ff"), "/%ff");
+        assert_eq!(decode_path("/%+1"), "/%+1");
+        assert_eq!(decode_path("/%é"), "/%é");
+    }
+
+    #[test]
+    fn strips_prefixes() {
+        assert_eq!(strip_prefix_ci("NOSTR:npub", "nostr:"), "npub");
+        assert_eq!(strip_prefix_ci("nostr€x", "nostr:"), "nostr€x");
+        assert_eq!(strip_prefix_ci("nos", "nostr:"), "nos");
     }
 
     #[test]
