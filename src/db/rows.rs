@@ -1,15 +1,13 @@
 //! The rows npanel reads back, and the column lists that select them.
 
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::Row;
 use serde::Serialize;
 
 use crate::nsite_address::NsiteAddress;
 
 /// A hostname mapped to a site, and every switch that shapes how it is served.
-///
-/// Flags are kept as the 0/1 the table stores, since that is also how the
-/// audit log records them.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct Host {
     pub id: i64,
     /// Lowercased hostname, eg `docs.example.com`.
@@ -22,14 +20,14 @@ pub struct Host {
     pub identifier: String,
     /// Event id to serve, or null to always serve the newest ready version.
     pub pinned_event_id: Option<String>,
-    pub enabled: i64,
-    pub hidden: i64,
-    pub redirect_www: i64,
-    pub spa: i64,
-    pub csp: i64,
-    pub seo: i64,
-    pub merge_deployments: i64,
-    pub analytics: i64,
+    pub enabled: bool,
+    pub hidden: bool,
+    pub redirect_www: bool,
+    pub spa: bool,
+    pub csp: bool,
+    pub seo: bool,
+    pub merge_deployments: bool,
+    pub analytics: bool,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -39,33 +37,31 @@ pub const HOST_COLUMNS: &str = "hosts.id, hosts.hostname, hosts.pubkey, hosts.ki
     hosts.pinned_event_id, hosts.enabled, hosts.hidden, hosts.redirect_www, hosts.spa, hosts.csp, hosts.seo, \
     hosts.merge_deployments, hosts.analytics, hosts.created_by, hosts.created_at, hosts.updated_at";
 
-impl Host {
-    /// Read a host from a row selected with [`HOST_COLUMNS`], starting at
-    /// column `at`.
-    pub fn from_row_at(row: &Row, at: usize) -> rusqlite::Result<Host> {
-        Ok(Host {
-            id: row.get(at)?,
-            hostname: row.get(at + 1)?,
-            pubkey: row.get(at + 2)?,
-            kind: row.get(at + 3)?,
-            identifier: row.get(at + 4)?,
-            pinned_event_id: row.get(at + 5)?,
-            enabled: row.get(at + 6)?,
-            hidden: row.get(at + 7)?,
-            redirect_www: row.get(at + 8)?,
-            spa: row.get(at + 9)?,
-            csp: row.get(at + 10)?,
-            seo: row.get(at + 11)?,
-            merge_deployments: row.get(at + 12)?,
-            analytics: row.get(at + 13)?,
-            created_by: row.get(at + 14)?,
-            created_at: row.get(at + 15)?,
-            updated_at: row.get(at + 16)?,
-        })
-    }
+/// How many columns [`HOST_COLUMNS`] selects, for a query that selects more
+/// after them.
+pub const HOST_COLUMN_COUNT: usize = 17;
 
+impl Host {
     pub fn from_row(row: &Row) -> rusqlite::Result<Host> {
-        Self::from_row_at(row, 0)
+        Ok(Host {
+            id: row.get(0)?,
+            hostname: row.get(1)?,
+            pubkey: row.get(2)?,
+            kind: row.get(3)?,
+            identifier: row.get(4)?,
+            pinned_event_id: row.get(5)?,
+            enabled: row.get(6)?,
+            hidden: row.get(7)?,
+            redirect_www: row.get(8)?,
+            spa: row.get(9)?,
+            csp: row.get(10)?,
+            seo: row.get(11)?,
+            merge_deployments: row.get(12)?,
+            analytics: row.get(13)?,
+            created_by: row.get(14)?,
+            created_at: row.get(15)?,
+            updated_at: row.get(16)?,
+        })
     }
 
     pub fn address(&self) -> NsiteAddress {
@@ -75,10 +71,75 @@ impl Host {
 
 /// Lifecycle of a single site version. A host only serves versions that
 /// reached `ready`.
-pub mod status {
-    pub const PENDING: &str = "pending";
-    pub const READY: &str = "ready";
-    pub const FAILED: &str = "failed";
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployStatus {
+    Pending,
+    FetchingBlobs,
+    Ready,
+    Failed,
+}
+
+impl DeployStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeployStatus::Pending => "pending",
+            DeployStatus::FetchingBlobs => "fetching_blobs",
+            DeployStatus::Ready => "ready",
+            DeployStatus::Failed => "failed",
+        }
+    }
+}
+
+impl ToSql for DeployStatus {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for DeployStatus {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value.as_str()? {
+            "pending" => Ok(DeployStatus::Pending),
+            "fetching_blobs" => Ok(DeployStatus::FetchingBlobs),
+            "ready" => Ok(DeployStatus::Ready),
+            "failed" => Ok(DeployStatus::Failed),
+            other => Err(FromSqlError::Other(format!("unknown deploy status {other}").into())),
+        }
+    }
+}
+
+/// What a user may do: admins everything, staff only the hosts granted them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Admin,
+    Staff,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Admin => "admin",
+            Role::Staff => "staff",
+        }
+    }
+}
+
+impl ToSql for Role {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl FromSql for Role {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        match value.as_str()? {
+            "admin" => Ok(Role::Admin),
+            "staff" => Ok(Role::Staff),
+            other => Err(FromSqlError::Other(format!("unknown role {other}").into())),
+        }
+    }
 }
 
 /// Every manifest seen, verbatim, with its deploy status.
@@ -92,7 +153,7 @@ pub struct SiteEvent {
     pub created_at: i64,
     /// Raw signed event JSON.
     pub event: String,
-    pub status: String,
+    pub status: DeployStatus,
     pub files_total: i64,
     pub files_ready: i64,
     /// Human-readable reason the deploy failed.

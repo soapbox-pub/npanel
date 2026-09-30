@@ -249,6 +249,19 @@ async fn a_published_site_is_deployed_built_and_served() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["host"]["hostname"], "docs.example.com");
 
+    // A name that's taken is a conflict, whether added or renamed onto, and
+    // a malformed body is the caller's mistake.
+    let (status, body) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "other.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, body) = gw.api("PATCH", "/api/hosts/other.example.com", Some(serde_json::json!({ "hostname": "DOCS.example.com" }))).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
+    let (status, _) = gw.api("PATCH", "/api/hosts/other.example.com", Some(serde_json::json!({ "spa": "yes" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = gw.api("DELETE", "/api/hosts/other.example.com", None).await;
+    assert_eq!(status, StatusCode::OK);
+
     // The new host fetches the manifest, downloads, and builds.
     eventually("the site going live", async || gw.request("GET", "docs.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
 
@@ -369,7 +382,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     // Every change was audited.
     let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
-    assert_eq!(actions, ["host.update", "host.update", "env.delete", "env.set", "nip05.set", "host.create"]);
+    assert_eq!(actions, ["host.update", "host.update", "env.delete", "env.set", "nip05.set", "host.delete", "host.create", "host.create"]);
 
     gw.deployer.stop().await;
     drop(gw.db);

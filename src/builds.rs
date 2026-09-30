@@ -318,7 +318,7 @@ impl HostBuilder {
                 let Some(host) = host_by_id(conn, host_id)? else {
                     return Ok(Vec::new());
                 };
-                if host.enabled != 1 {
+                if !host.enabled {
                     return Ok(Vec::new());
                 }
 
@@ -334,7 +334,7 @@ impl HostBuilder {
                     .prepare_cached("SELECT address FROM onion_services WHERE host_id = ?")?
                     .query_row([host_id], |row| row.get(0))
                     .optional()?;
-                let tracker = host.analytics == 1;
+                let tracker = host.analytics;
                 let vars = host_env(conn, host_id)?;
                 let env = (!vars.is_empty()).then(|| env_script(&vars));
 
@@ -549,7 +549,7 @@ fn assemble(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, log: &Lo
         .map(|(path, (_, sha256, event_id))| (path, BuildFile { sha256, event_id: Some(event_id), source_sha256: None }))
         .collect();
 
-    if target.host.seo != 0 {
+    if target.host.seo {
         seo(conn, blobs, target, &mut files, log)?;
     }
     scripts(conn, blobs, target, &mut files, log)?;
@@ -746,27 +746,37 @@ fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &L
 /// TypeScript npanel knows nothing of: a host without any keeps the
 /// fingerprint it had there, and one with some gets a build of its own.
 fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, env: Option<&str>) -> String {
-    let mut inputs = serde_json::json!({
-        "builder": BUILDER_VERSION,
-        "origin": origin_url(origin),
-        "hostname": host.hostname,
-        "chain": chain,
-        "seo": host.seo,
-        "tracker": if tracker { serde_json::Value::from(tracker_sha256()) } else { serde_json::Value::Null },
-    });
-    if let Some(env) = env {
-        inputs["env"] = hex::encode(Sha256::digest(env.as_bytes())).into();
+    // A struct rather than `json!`, so the key order is fixed by the
+    // declaration and not by a crate-wide serde_json feature.
+    #[derive(serde::Serialize)]
+    struct Inputs<'a> {
+        builder: i64,
+        origin: String,
+        hostname: &'a str,
+        chain: &'a [String],
+        /// 0 or 1, as the TypeScript npanel read it from the table.
+        seo: i64,
+        tracker: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<String>,
     }
-    hex::encode(Sha256::digest(inputs.to_string().as_bytes()))
+    let inputs = Inputs {
+        builder: BUILDER_VERSION,
+        origin: origin_url(origin),
+        hostname: &host.hostname,
+        chain,
+        seo: i64::from(host.seo),
+        tracker: tracker.then(tracker_sha256),
+        env: env.map(|env| hex::encode(Sha256::digest(env.as_bytes()))),
+    };
+    let serialized = serde_json::to_string(&inputs).expect("serializable");
+    hex::encode(Sha256::digest(serialized.as_bytes()))
 }
 
 fn origin_url(origin: &RequestOrigin) -> String {
     format!("{}://{}", origin.scheme, origin.hostname)
 }
 
-/// `Last-Modified` for a build's responses: the served version's date, capped
-/// at the moment npanel saw it, since an author can date a manifest however
-/// they please.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,14 +795,14 @@ mod tests {
             kind: 15128,
             identifier: String::new(),
             pinned_event_id: None,
-            enabled: 1,
-            hidden: 0,
-            redirect_www: 1,
-            spa: 0,
-            csp: 1,
-            seo: 1,
-            merge_deployments: 0,
-            analytics: 0,
+            enabled: true,
+            hidden: false,
+            redirect_www: true,
+            spa: false,
+            csp: true,
+            seo: true,
+            merge_deployments: false,
+            analytics: false,
             created_by: String::new(),
             created_at: 0,
             updated_at: 0,

@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::blobs::Variants;
-use crate::db::{Host, SiteEvent, HOST_COLUMNS, SITE_EVENT_COLUMNS};
+use crate::db::{DeployStatus, Host, SiteEvent, HOST_COLUMNS, HOST_COLUMN_COUNT, SITE_EVENT_COLUMNS};
 use crate::hostname::is_onion_address;
 use crate::log::Fields;
 use crate::manifest::{join_root, manifest_address, manifest_paths};
@@ -45,7 +45,7 @@ pub fn find_host(conn: &Connection, hostname: &str) -> rusqlite::Result<Option<S
          LEFT JOIN onion_services ON onion_services.host_id = hosts.id
          WHERE {column} = ?"
     ))?
-    .query_row([name], |row| Ok(ServedHost { host: Host::from_row(row)?, onion: row.get(17)? }))
+    .query_row([name], |row| Ok(ServedHost { host: Host::from_row(row)?, onion: row.get(HOST_COLUMN_COUNT)? }))
     .optional()
 }
 
@@ -120,7 +120,7 @@ pub const MAX_MERGED_VERSIONS: i64 = 60;
 /// invariant that serving never reaches a blob that may not be on disk.
 pub fn version_chain(conn: &Connection, host: &Host, active: &SiteEvent) -> rusqlite::Result<Vec<String>> {
     let mut chain = vec![active.event_id.clone()];
-    if host.merge_deployments != 1 {
+    if !host.merge_deployments {
         return Ok(chain);
     }
 
@@ -272,7 +272,7 @@ pub fn newest_by_path<T>(rows: Vec<T>, event_ids: &[String], key: impl Fn(&T) ->
 
 /// Record a manifest event and its file list. Returns false when the event
 /// was already stored, so callers can skip redeploying something already seen.
-pub fn store_manifest(conn: &mut Connection, event: &Event, status: &str) -> rusqlite::Result<bool> {
+pub fn store_manifest(conn: &mut Connection, event: &Event) -> rusqlite::Result<bool> {
     let existing: Option<String> = conn
         .prepare_cached("SELECT event_id FROM site_events WHERE event_id = ?")?
         .query_row([&event.id], |row| row.get(0))
@@ -289,7 +289,7 @@ pub fn store_manifest(conn: &mut Connection, event: &Event, status: &str) -> rus
     let tx = conn.transaction()?;
     tx.execute(
         &format!("INSERT INTO site_events ({SITE_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL)"),
-        params![event.id, address.pubkey, address.kind, address.identifier, event.created_at, json, status, paths.len() as i64, now],
+        params![event.id, address.pubkey, address.kind, address.identifier, event.created_at, json, DeployStatus::Pending, paths.len() as i64, now],
     )?;
     {
         let mut insert = tx.prepare_cached("INSERT INTO site_files (event_id, path, sha256) VALUES (?, ?, ?)")?;
@@ -471,8 +471,8 @@ mod tests {
             sig: "0".repeat(128),
         };
         t.db.with(|conn| {
-            assert!(store_manifest(conn, &event, "pending")?);
-            assert!(!store_manifest(conn, &event, "pending")?);
+            assert!(store_manifest(conn, &event)?);
+            assert!(!store_manifest(conn, &event)?);
             let newest = newest_event(conn, &address())?.unwrap();
             assert_eq!(newest.files_total, 1);
             assert!(newest_ready_event(conn, &address())?.is_none());

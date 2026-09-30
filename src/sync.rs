@@ -27,7 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::blobs::BlobStore;
 use crate::builds::HostBuilder;
-use crate::db::{status, Db};
+use crate::db::{DeployStatus, Db};
 use crate::fields;
 use crate::log::{with_err, Fields, Logger};
 use crate::manifest::{is_site_manifest, manifest_address};
@@ -251,7 +251,7 @@ impl SyncWorker {
         // Pick up a version that was stored earlier but never finished deploying.
         let address = address.clone();
         let newest = self.db(move |conn| Ok(newest_event(conn, &address)?)).await?;
-        if let Some(newest) = newest.filter(|n| n.status != status::READY) {
+        if let Some(newest) = newest.filter(|n| n.status != DeployStatus::Ready) {
             self.enqueue(&newest.event_id);
         }
         Ok(())
@@ -337,7 +337,7 @@ impl SyncWorker {
                     log.debug("manifest_ignored", fields! { "pubkey" => event.pubkey.as_str(), "kind" => event.kind });
                     return Ok(false);
                 }
-                Ok(store_manifest(conn, &event, status::PENDING)?)
+                Ok(store_manifest(conn, &event)?)
             })
             .await?
         };
@@ -367,7 +367,7 @@ impl SyncWorker {
             .db(|conn| {
                 let mut ids = Vec::new();
                 for site in list_configured_sites(conn)? {
-                    if let Some(newest) = newest_event(conn, &site)?.filter(|n| n.status != status::READY) {
+                    if let Some(newest) = newest_event(conn, &site)?.filter(|n| n.status != DeployStatus::Ready) {
                         ids.push(newest.event_id);
                     }
                 }
@@ -548,7 +548,7 @@ impl SyncWorker {
     async fn settle(&self, event_id: &str, outcome: Result<Option<Outcome>>) {
         match outcome {
             Ok(None) => {}
-            Ok(Some(Outcome::Ready)) => self.finish(event_id, status::READY, None).await,
+            Ok(Some(Outcome::Ready)) => self.finish(event_id, DeployStatus::Ready, None).await,
             Ok(Some(Outcome::Failed(reason))) => self.fail(event_id, &reason).await,
             Ok(Some(Outcome::Refused { reason, msg, fields })) => self.refuse(event_id, &reason, msg, fields).await,
             Ok(Some(Outcome::Interrupted(remaining))) => self.interrupt(event_id, remaining).await,
@@ -572,7 +572,7 @@ impl SyncWorker {
         let Some(row) = self.db(move |conn| Ok(site_event(conn, &id)?)).await? else {
             return Ok(None);
         };
-        if row.status == status::READY {
+        if row.status == DeployStatus::Ready {
             return Ok(None);
         }
 
@@ -606,7 +606,7 @@ impl SyncWorker {
         let id = event_id.to_string();
         let files: Vec<(String, String)> = self
             .db(move |conn| {
-                conn.execute("UPDATE site_events SET status = 'fetching_blobs', error = NULL WHERE event_id = ?", [&id])?;
+                conn.execute("UPDATE site_events SET status = ?, error = NULL WHERE event_id = ?", params![DeployStatus::FetchingBlobs, id])?;
                 Ok(conn
                     .prepare("SELECT sha256, path FROM site_files WHERE event_id = ?")?
                     .query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -852,7 +852,7 @@ impl SyncWorker {
             explanation = format!("{} Attempt {attempt} of {limit}. {next}", terminate(reason));
         }
 
-        self.finish(event_id, status::FAILED, Some(&explanation)).await;
+        self.finish(event_id, DeployStatus::Failed, Some(&explanation)).await;
 
         if again {
             self.deploy_log(
@@ -871,7 +871,7 @@ impl SyncWorker {
     async fn refuse(&self, event_id: &str, reason: &str, msg: &'static str, fields: Fields) {
         self.inner.state.lock().attempts.remove(event_id);
         self.deploy_log(event_id, "warn", msg, fields).await;
-        self.finish(event_id, status::FAILED, Some(reason)).await;
+        self.finish(event_id, DeployStatus::Failed, Some(reason)).await;
     }
 
     /// Leave an interrupted deploy incomplete, so the next sync resumes it.
@@ -881,8 +881,8 @@ impl SyncWorker {
         let _ = self
             .db(move |conn| {
                 Ok(conn.execute(
-                    "UPDATE site_events SET status = 'pending', error = ? WHERE event_id = ?",
-                    params!["Deploy was interrupted while npanel was stopping. It resumes on the next sync.", id],
+                    "UPDATE site_events SET status = ?, error = ? WHERE event_id = ?",
+                    params![DeployStatus::Pending, "Deploy was interrupted while npanel was stopping. It resumes on the next sync.", id],
                 )?)
             })
             .await;
@@ -890,11 +890,11 @@ impl SyncWorker {
         self.deps().log.warn("deploy_interrupted", fields! { "event_id" => event_id, "remaining" => remaining });
     }
 
-    async fn finish(&self, event_id: &str, status: &'static str, error: Option<&str>) {
+    async fn finish(&self, event_id: &str, status: DeployStatus, error: Option<&str>) {
         let now = crate::util::now();
         let id = event_id.to_string();
         let err = error.map(str::to_string);
-        let ready = status == status::READY;
+        let ready = status == DeployStatus::Ready;
         let (level, msg, fields) =
             if ready { ("info", "deploy_ready", fields! {}) } else { ("error", "deploy_failed", fields! { "err_msg" => error }) };
 

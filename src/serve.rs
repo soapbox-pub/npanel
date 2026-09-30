@@ -121,7 +121,7 @@ impl ServeCache {
                 // An onion has a build of its own, because the files npanel
                 // generates for it name the onion rather than the hostname.
                 let kind = if is_onion_address(&name) { BuildKind::Onion } else { BuildKind::Clearnet };
-                let build = if host.host.enabled == 1 { current_build(conn, host.host.id, kind)? } else { None };
+                let build = if host.host.enabled { current_build(conn, host.host.id, kind)? } else { None };
                 Ok(Some((host, build)))
             })
             .await?;
@@ -220,7 +220,7 @@ impl SiteServer {
 
         // On unless this one site turned it off. A hostname with no host row
         // has nobody to have turned it off, so it gets the gateway's.
-        if site.as_ref().is_none_or(|site| site.host.host.csp != 0) {
+        if site.as_ref().is_none_or(|site| site.host.host.csp) {
             let declared = match site.as_ref().and_then(|site| site.version.as_ref()) {
                 Some(version) => self.deps.site_csp.policy(version.build_id).await?,
                 None => None,
@@ -262,7 +262,7 @@ impl SiteServer {
             }
         }
 
-        let Some(site) = site.filter(|site| site.host.host.enabled == 1) else {
+        let Some(site) = site.filter(|site| site.host.host.enabled) else {
             log.debug("site_unknown_host", fields! { "hostname" => hostname });
             return Ok(text(StatusCode::NOT_FOUND, "This domain is not configured."));
         };
@@ -287,7 +287,7 @@ impl SiteServer {
                 .expect("response"));
         };
 
-        let Some(file) = self.resolve(version.build_id, path, site.host.host.spa == 1).await? else {
+        let Some(file) = self.resolve(version.build_id, path, site.host.host.spa).await? else {
             log.debug("site_path_missing", fields! { "hostname" => hostname, "path" => path });
             return Ok(text(StatusCode::NOT_FOUND, "Not found."));
         };
@@ -329,7 +329,7 @@ impl SiteServer {
 
         // Names the one spelling of this page, so `/foo`, `/foo/` and
         // `/foo/index.html` score as one page instead of three.
-        if site.host.host.seo != 0 {
+        if site.host.host.seo {
             if let Some(canonical) = canonical_link(origin, path, &file.path, file.status) {
                 builder = builder.header(header::LINK, canonical);
             }
@@ -442,7 +442,7 @@ impl SiteServer {
     async fn www_redirect(&self, request: &Parts, origin: &RequestOrigin) -> anyhow::Result<Option<Reply>> {
         let Some(apex) = www_apex(&origin.hostname) else { return Ok(None) };
         let Some(site) = self.deps.serve_cache.lookup(apex).await? else { return Ok(None) };
-        if site.host.host.enabled != 1 || site.host.host.redirect_www != 1 {
+        if !site.host.host.enabled || !site.host.host.redirect_www {
             return Ok(None);
         }
 

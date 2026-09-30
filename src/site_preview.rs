@@ -109,7 +109,7 @@ impl SitePreviews {
         let origin = url::Url::parse(&format!("https://{}/", host.hostname)).expect("a hostname makes a URL");
         // With the SPA flag on, the shell the site would serve for `/` is the
         // page being described, wherever it is published.
-        let index = resolve_site_path(conn, build.id, "/", host.spa == 1)?;
+        let index = resolve_site_path(conn, build.id, "/", host.spa)?;
         let page = index.filter(|file| file.status == 200).map(|file| file.sha256);
 
         let mut lookup_stmt = conn.prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = ?")?;
