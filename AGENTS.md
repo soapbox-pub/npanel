@@ -39,6 +39,7 @@ src/
   tls_check.rs          certificate authorization, on its own port
   analytics/            the Plausible-compatible analytics runtime
   blobs.rs              content-addressed filesystem store
+  hash.rs               BlobHash, a blob's name, parsed where it enters
   sites.rs              queries over stored versions, and the deploy log
   site_csp.rs           a site's declared Content Security Policy
   site_preview.rs       link-preview metadata, read from a site's own index.html
