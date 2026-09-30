@@ -1,7 +1,7 @@
 # Architecture
 
 npanel is one process that does three things: it serves nsites over HTTP, it
-serves a dashboard for configuring which nsites those are, and, on a thread of
+serves a dashboard for configuring which nsites those are, and, on threads of
 its own, it keeps local storage in sync with Nostr.
 
 ```
@@ -28,12 +28,12 @@ its own, it keeps local storage in sync with Nostr.
 ## Request routing
 
 Everything hangs off the `Host` header, checked in one middleware in
-`src/app.ts`. If it equals `DASHBOARD_HOST`, the request goes to the Hono API at
+`src/app.rs`. If it equals `DASHBOARD_HOST`, the request goes to the axum API at
 `/api` and otherwise to the built dashboard SPA. Any other hostname is served as
 an nsite.
 
 Only `Host` is read. Ports and the trailing dot of an FQDN are stripped and the
-name is lowercased (`requestHostname`, `src/hostname.ts`, shared with the Tor
+name is lowercased (`request_hostname`, `src/hostname.rs`, shared with the Tor
 listener so the two cannot drift). `X-Forwarded-Host` is deliberately ignored:
 npanel cannot tell a proxy's copy of that header from a client's, and a proxy
 that doesn't set one — nginx doesn't — would pass a visitor's straight through,
@@ -42,7 +42,7 @@ rewrites `Host` has to be configured not to; see
 [deployment](deployment.md#other-proxies).
 
 The scheme is a different matter, and comes from `X-Forwarded-Proto`
-(`requestScheme`, `src/app.ts`), defaulting to `https`. npanel terminates no
+(`request_scheme`, `src/app.rs`), defaulting to `https`. npanel terminates no
 TLS, so the local request always says `http` and redirects built from it would
 downgrade; believing the proxy here costs at worst a redirect to the scheme the
 visitor was already using.
@@ -58,13 +58,11 @@ address it proxies to, carrying no hostname npanel could route on: as a path
 here it would have to answer on every hostname npanel serves, putting a
 certificate-issuing decision on the public internet where a stranger could spend
 a real host's hourly budget. So it gets a listener of its own on
-`TLS_CHECK_PORT`, serving one path and nothing else (`src/tls-check.ts`). It
+`TLS_CHECK_PORT`, serving one path and nothing else (`src/tls_check.rs`). It
 approves the hostnames npanel serves, plus the `www` names it only redirects —
 a redirect is an HTTPS response like any other, and without a certificate the
-browser never gets far enough to be told where to go. It
-calls `Bun.serve` directly rather than going through Hono and the default export
-in `src/server.ts`, which is what the runtime serves: one route needs no router,
-and a second port has to be bound by hand.
+browser never gets far enough to be told where to go. It is a bare handler
+rather than a router, since one route needs none.
 
 A site only answers `GET` and `HEAD`; anything else is a `405`.
 
@@ -74,8 +72,9 @@ A host may also answer for its `www`. When nothing is configured for
 and query on the bare name. The redirect is offered only where the hostname is
 a *root domain*, which is a question the Public Suffix List answers and label
 counting does not: `example.co.uk` is one and `foo.github.io` is not. So
-`src/hostname.ts` carries the list, via `tldts`, and the dashboard imports the
-same module so it offers the switch exactly where the server will honour it.
+`src/psl.rs` carries the list's ICANN section, and the dashboard's twin of
+`src/hostname.rs` applies the same list (via `tldts`) so it offers the switch
+exactly where the server will honour it.
 Folding `www.docs.example.com` into `docs.example.com` would be a guess about
 somebody else's zone, so npanel doesn't make it. A `www` host someone
 configured deliberately always wins over the redirect.
@@ -88,7 +87,7 @@ the permanent answer.
 The dashboard is otherwise served straight off disk, with one exception:
 `index.html` is read into memory and its `og:image` and `og:url` tags are
 rewritten from site-relative paths to absolute URLs built from `DASHBOARD_HOST`
-(`src/dashboard.ts`). A built static file cannot know its own origin, and
+(`src/dashboard.rs`). A built static file cannot know its own origin, and
 link-preview crawlers are inconsistent about resolving relative ones. The
 result is cached until the file's mtime changes.
 
@@ -111,16 +110,17 @@ The manifest event lists the site's files as tags:
 Each `sha256` is a [Blossom](https://github.com/hzrd149/blossom) blob, fetched
 from `<server>/<sha256>`. Where those servers are comes from, in order: the
 manifest's own `server` tags, the author's kind 10063 list, then the configured
-fallbacks (`NostrService.blobSources`, `src/nostr.ts:141`).
+fallbacks (`blob_sources`, `src/nostr/service.rs`).
 
-`src/nsite-address.ts` accepts every form a person might paste — npub, nprofile,
+`src/nsite_address.rs` accepts every form a person might paste — npub, nprofile,
 naddr, an `a` tag, a NIP-5A label, a URL — and reduces it to
-`{ pubkey, kind, identifier }`. The dashboard imports this same module so the
-address preview in the UI can't drift from what the server will store.
+`{ pubkey, kind, identifier }`. The dashboard has a TypeScript twin of it
+(`dashboard/src/shared/nsite-address.ts`) so the address preview in the UI
+matches what the server will store; the two are changed together.
 
 ## Sync
 
-`SyncWorker` (`src/sync.ts`) is driven by three things:
+`SyncWorker` (`src/sync.rs`) is driven by three things:
 
 1. **A live subscription** to the configured relays, filtered to the authors and
    kinds of every enabled host. The authors' own write relays (kind 10002) are
@@ -163,8 +163,8 @@ a neighbouring service would be a disaster.
 
 Relays the author lists in their kind 10002 are held to the same rule, since
 they are just as much the author's to choose and each one is a WebSocket the
-deploy thread opens. Only `wss://` URLs on public addresses are used, and only
-the first five (`vetRelayHints`, `src/nostr.ts`). The relays an admin configures
+deploy runtime opens. Only `wss://` URLs on public addresses are used, and only
+the first five (`vet_relay_hints`, `src/nostr/service.rs`). The relays an admin configures
 are not checked against the address rule — pointing npanel at a relay on the
 LAN is theirs to decide — but they too must be `wss://`.
 
@@ -198,12 +198,12 @@ failed deploy explains itself without anyone SSHing into the box.
 
 A ready version is not yet something a host serves. What a host serves is its
 **build**: the finished bundle for that host, made once and then frozen
-(`HostBuilder`, `src/builds.ts`). A build is a path map — the host's version
+(`HostBuilder`, `src/builds.rs`). A build is a path map — the host's version
 chain flattened into one, plus every file npanel generates or rewrites for that
 host: a sitemap, a `robots.txt` with a line appended, and with analytics on the
 tracker script and every page rewritten to load it — and everything in it is an
-ordinary stored blob with its compressed copies. So every body a site sends goes out through `sendfile`, including the
-ones npanel wrote, and all the work of making them happens once, when the host
+ordinary stored blob with its compressed copies. So every body a site sends is a slice of a kept memory
+mapping of a stored file, including the ones npanel wrote, and all the work of making them happens once, when the host
 is built, rather than on a request. Only headers are decided per request.
 
 The invariant goes up a level with it: **a host serves only its newest ready
@@ -235,50 +235,47 @@ Each host keeps its current build and the one before it — a request that
 looked up the old one a moment before the switch may still be resolving a path
 in it — and older ones are deleted as the new one goes live.
 
-## The deploy thread
+## The deploy runtime
 
-Sync and builds run on a worker thread of their own (`src/deploy/`), starting
-from the relay pool. Everything expensive about deploying a site happens there:
-checking the signature of every event a relay sends, downloading and hashing
-every blob, compressing at brotli's slowest setting, rewriting pages and
-generating files for a build, and the database writes that record each step.
-None of it is on the thread that serves sites, which goes on answering requests
-for the whole of a large deploy.
+Sync and builds run on a Tokio runtime of their own, on threads of their own
+(`src/deploy.rs`), starting from the relay pool. Everything expensive about
+deploying a site happens there: checking the signature of every event a relay
+sends, downloading and hashing every blob, compressing at brotli's slowest
+setting, rewriting pages and generating files for a build, and the database
+writes that record each step. None of it is on the threads that serve sites,
+which go on answering requests for the whole of a large deploy.
 
-The two threads share a database file rather than memory. The deploy thread
-opens its own connection to it, once the main thread has migrated it, and
-writes versions, deploy logs and builds there, where serving and the dashboard
-read them. So very little has to cross the channel: the main thread sends the
-settings whenever they change, and says when a host was edited or someone
-pressed *Check for a new version*; the deploy thread says when a build went
-live, so that serving's cache is cleared (`DeployService`,
-`src/deploy/service.ts`).
+The two runtimes share the settings (a change is broadcast to both) and the
+serving cache (the deploy runtime clears it when a build goes live), and write
+through the same pool of database connections. So very little has to cross the
+channel between them: the API says when a host was edited or someone pressed
+*Check for a new version* (`DeployService`).
 
-None of what the main thread says has to arrive. Sync and builds are reconciled
-rather than tracked, so a thread starting up does everything a missed message
-would have asked for: it resyncs every site and rebuilds every host whose build
-is out of date. That is what makes the thread cheap to restart. An uncaught
-error ends it and it is started again with backoff, and whatever is sent while
-it starts is held until it is ready — behind a fresh copy of the settings,
-since one may have been written in between.
+None of what the API says has to arrive. Sync and builds are reconciled rather
+than tracked, so a runtime starting up does everything a missed message would
+have asked for: it resyncs every site and rebuilds every host whose build is out
+of date. That is what makes it cheap to restart. A panic that escapes it ends
+it and it is started again with backoff, and whatever is sent while it starts
+waits in the channel until it is ready. A panic inside one deploy or one build
+is caught where it happens and fails that version or that host, rather than
+the queue behind it.
 
 The price is a second SQLite writer. WAL keeps reads from ever waiting on a
-write, but two writes still take turns, and with a synchronous binding the
-wait happens on the thread that asked. Serving never writes, the main thread
-writes only when staff change something, and the deploy thread's transactions
-are short — the longest inserts one build's file rows — so the worst it costs
-is a dashboard save waiting a moment, never a visitor.
+write, but two writes still take turns, and every query runs on Tokio's
+blocking pool so a wait never holds up a runtime thread. Serving never writes,
+the API writes only when staff change something, and the deploy runtime's
+transactions are short — the longest inserts one build's file rows — so the
+worst it costs is a dashboard save waiting a moment, never a visitor.
 
 ## Storage
 
-**SQLite** via Kysely, at `DATA_DIR/npanel.sqlite3`. Migrations run at startup.
-Analytics live in a database of their own beside it — see
-[analytics](#analytics).
-The dialect in `src/db/sqlite.ts` is a thin adapter over whichever synchronous
-binding the runtime has: `node:sqlite` if it's there — which now includes Bun
-and Deno, not just Node — and `bun:sqlite` otherwise. Either way there's no
-native module to compile. (`better-sqlite3` is deliberately avoided: it crashes Bun's
-NAPI implementation.)
+**SQLite** via `rusqlite`, with SQLite compiled in, at
+`DATA_DIR/npanel.sqlite3`. Migrations run at startup, and are the same list
+under the same names as the TypeScript npanel's (`src/db/migrations.rs`), so
+either opens the other's database. Analytics live in a database of their own
+beside it — see [analytics](#analytics). Connections are pooled
+(`src/db/mod.rs`); each one maps the database into memory and keeps its
+prepared statements.
 
 The tables:
 
@@ -334,12 +331,12 @@ its `blobs` row — including the settled absence of one, which is `-1` and not
 same. The sizes then ride along on the `site_files` lookup a request already
 makes, so serving answers `Accept-Encoding` without touching the disk; a `NULL`
 row falls back to statting the sidecars until the next deploy that references
-the blob — or one run of `bun run compress-blobs` — fills it in.
+the blob — or one run of `npanel compress-blobs` — fills it in.
 
 ## Serving a site
 
-`src/serve-site.ts` handles a request in a few steps: find the host, find its
-build, resolve the path, stream the blob.
+`src/serve.rs` handles a request in a few steps: find the host, find its
+build, resolve the path, send the blob.
 
 Path resolution mirrors what static hosts do: exact match, then `index.html` for
 extensionless paths, then the site's own `/404.html`. Resolution reads
@@ -373,7 +370,7 @@ The `merge_deployments` flag, also off by default, changes what a build is
 made of rather than what resolution does. A merged host's build flattens a
 *chain* of versions — the one it serves, and every earlier ready version of the
 same site underneath it, newest first — taking each path from the newest
-version that has it (`versionChain`, `src/sites.ts`). The served version
+version that has it (`version_chain`, `src/sites.rs`). The served version
 therefore wins everywhere it published a file, and a path it dropped goes on
 being answered by the deploy that last published it. Since resolution sees the
 flattened map, an exact match in a superseded version still beats an
@@ -608,25 +605,23 @@ site at `/.npanel/script.js` with the site's name baked in, reporting to
 the site's Content Security Policy and working over the site's onion address;
 the path is neutral because `plausible` and `analytics` are exactly what
 blocklists look for. See [the builds section](#builds) — the pages are rewritten
-once, when the host is built, and served over `sendfile` like everything else.
+once, when the host is built, and served like every other stored file.
 
-**Isolation.** Events are received and recorded on a worker thread with its own
-port, `ANALYTICS_PORT`, which the proxy routes that one path to on every site
-(`src/analytics/worker.ts`). Serving sites is always the first priority, so
-nothing about counting visits runs on the thread that serves them: not the
-parsing, not the user-agent and location lookups, not the writes, and not the
-dashboard's queries. An event that reaches the main listener instead — every
-visit over Tor, since those never pass through the proxy — is read and handed
-across whole, a few hundred bytes. The thread owns its database file and its
-caches outright; an uncaught error closes its port and ends it, and the main
-thread starts another with backoff (`src/analytics/service.ts`). It is never
-terminated from outside, because a worker killed that way keeps its listening
-socket bound for the life of the process.
+**Isolation.** Events are received and recorded on a runtime of their own,
+on a thread of its own, with its own port, `ANALYTICS_PORT`, which the proxy
+routes that one path to on every site (`src/analytics/mod.rs`). Serving sites
+is always the first priority, so nothing about counting visits runs on the
+threads that serve them: not the parsing, not the user-agent and location
+lookups, not the writes, and not the dashboard's queries. An event that reaches
+the main listener instead — every visit over Tor, since those never pass
+through the proxy — is read there, capped at the same size, and handed across
+whole. The runtime owns its database file and its caches outright; if it dies,
+it releases its port and another is started with backoff.
 
 **Ingestion** follows Plausible's closely enough that anything written against
 its `POST /api/event` works here: the same fields and limits, the same
 `202 ok`, `x-plausible-dropped` for events it chose not to keep, and the same
-`400` bodies (`src/analytics/request.ts`, `ingest.ts`). Each event is matched to
+`400` bodies (`src/analytics/request.rs`, `ingest.rs`). Each event is matched to
 a site by its `d`, and dropped with a `202` if that site isn't counting, if the
 user agent is a bot, or if the referrer is on Matomo's spam list. Browsers and
 operating systems are read with the same Matomo database Plausible uses;
@@ -664,10 +659,10 @@ memory.
 Plausible's own functions, so the same query covers the same seconds. SQLite
 has no time zones, so bucketing moves each timestamp onto local wall time by
 the zone's offset — a `CASE` over the offsets in force across the range, found
-from `Intl`, since a range can straddle a daylight-saving change — before
+from the IANA data compiled into npanel, since a range can straddle a daylight-saving change — before
 formatting it the way the labels are. A question becomes at most a few grouped
 queries, one over events and one over visits, merged by their dimensions and
-ordered and paginated in JavaScript. Visitors are counted from pageviews when
+ordered and paginated in Rust. Visitors are counted from pageviews when
 the question is about pages and from visits otherwise, and a visit-level metric
 broken down by page is about the visits that entered there, as in Plausible.
 Visits by the hour or minute are counted in every bucket they were active in.
@@ -713,7 +708,8 @@ and those cannot express it.
 
 ## Live settings
 
-`SettingsService` caches settings in memory and emits a change event on write.
+`Settings` (`src/settings.rs`) caches settings in memory and broadcasts the keys
+that changed on every write.
 Subscribers reconfigure in place: the relay pool clears its list caches, the
 subscription restarts — so a relay that is gone is asked nothing more and its
 connection closes itself once idle — the resync
@@ -721,9 +717,8 @@ timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
-The deploy thread keeps a copy of its own, sent across whole on every change,
-and applies it the same way (`SettingsService.adopt`), so its subscribers
-reconfigure exactly as they would on the main thread.
+The deploy and analytics runtimes read the same settings and receive the same
+change notices, so their subscribers reconfigure exactly as the rest do.
 
 Nothing in the settings UI requires a restart, which is the point: the six
 environment variables are the only things that do.

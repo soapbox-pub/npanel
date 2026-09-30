@@ -241,13 +241,13 @@ function Terminal() {
       </div>
       <div className="space-y-0.5 overflow-x-auto p-4 whitespace-nowrap">
         <p>
-          <span className="text-[#28c840]">$</span> bun install
+          <span className="text-[#28c840]">$</span> cargo build --release
         </p>
         <p>
-          <span className="text-[#28c840]">$</span> bun run dashboard:build
+          <span className="text-[#28c840]">$</span> (cd dashboard && bun install && bun run build)
         </p>
         <p>
-          <span className="text-[#28c840]">$</span> DASHBOARD_HOST=panel.example.com bun start
+          <span className="text-[#28c840]">$</span> DASHBOARD_HOST=panel.example.com ./target/release/npanel
         </p>
         <p className="text-[#8e8e93]">listening on 127.0.0.1:3000</p>
       </div>

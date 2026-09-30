@@ -11,12 +11,12 @@ hot reload on its own port and proxies `/api` to the server.
 
 ## Setup
 
-[Bun](https://bun.sh) 1.3+ is the only prerequisite. Nothing here needs Node,
-npm, or Docker.
+Two toolchains: [Rust](https://rustup.rs) 1.85 or newer for the server, and
+[Bun](https://bun.sh) 1.3+ for the dashboard.
 
 ```sh
-bun install
-bun run dashboard:install
+cargo build
+(cd dashboard && bun install)
 ```
 
 Then the configuration. It is the same `.env` production uses, with local
@@ -45,16 +45,17 @@ npanel is not permissionless, so an unknown pubkey gets a `403` locally exactly
 as it would in production. Bootstrap yourself:
 
 ```sh
-bun run make-admin npub1yourkeyhere
+cargo run -- make-admin npub1yourkeyhere
 ```
 
 ## Running
 
-```sh
-bun run dev
-```
+In two terminals:
 
-That starts both halves, with prefixed output and a single Ctrl-C:
+```sh
+cargo run                        # the server
+(cd dashboard && bun run dev)    # the dashboard, with hot reload
+```
 
 | | |
 | --- | --- |
@@ -69,9 +70,9 @@ header, and NIP-98 compares only the hostname of the URL you signed for — neve
 the port or the scheme — so `http://localhost:8080/api/hosts` verifies against
 `DASHBOARD_HOST=localhost` with nothing to configure.
 
-Either half can be run alone. `bun run dev:server` is the server on its own,
-which is what you want when you're changing how the built SPA is served rather
-than the SPA itself; `bun run dashboard:dev` is the reverse.
+A debug build is several times slower than a release one, most visibly in
+user-agent parsing and brotli compression. Use `cargo run --release` when
+measuring anything.
 
 ## Serving a site locally
 
@@ -99,19 +100,20 @@ curl -H 'Host: example.org' http://localhost:3000/
 
 ## What differs from production
 
-**`http://localhost:3000` answers `503`.** That is the server serving
-`dashboard/dist`, which development never builds. The dashboard is at `:8080`.
-Run `bun run dashboard:build` if you want to check the production SPA — that
-path serves the built `index.html`, rewrites its link-preview meta tags, and
-caches Vite's hashed assets forever, none of which the dev server does.
+**`http://localhost:3000` answers `503`** until the dashboard is built. That is
+the server serving `dashboard/dist`, which `bun run dev` never builds. The
+dashboard is at `:8080`. Run `bun run build` in `dashboard/` if you want to
+check the production SPA — that path serves the built `index.html`, rewrites its
+link-preview meta tags, and caches Vite's hashed assets forever, none of which
+the dev server does. The running server picks the build up without a restart.
 
 **Absolute URLs point at `https` and drop the port.** npanel terminates no TLS
 and assumes `https` unless a proxy says otherwise, and a hostname carries no
 port through the code. So the `www` redirect, the canonical `Link` header, and
 the sitemap all name `https://foo.localhost/…` even though you are reading them
 on `:3000`. Browsing works; those three features cannot be exercised without a
-proxy in front. `src/seo.test.ts` states the origin outright instead, which is
-where to check a change to any of them.
+proxy in front. The tests in `src/seo.rs` state the origin outright instead,
+which is where to check a change to any of them.
 
 **Certificate authorization has nobody asking.** `TLS_CHECK_PORT` is listening,
 and answers by hand:
@@ -134,19 +136,19 @@ unauthenticated by design.
 Both toolchains, and both must pass:
 
 ```sh
-bun lint                 # biome
-bun check                # tsc --noEmit, over src and scripts
-bun test                 # node:test, run through bun
-bun run dashboard:test   # tsc, eslint, vitest, and a production build
+cargo clippy --all-targets              # no warnings
+cargo test                              # the server
+cargo test --manifest-path vendor/device-detector/Cargo.toml
+(cd dashboard && bun run test)          # tsc, eslint, vitest, and a production build
 ```
 
-Server tests live next to their subject as `*.test.ts` and use the harness in
-`src/test/harness.ts` — an in-memory database, a fake Nostr service, and a
-signed-request helper — rather than a real relay.
+Server tests live beside their subject in a `#[cfg(test)]` module.
+`src/e2e.rs` assembles a whole gateway the way `main` does, with a fake Nostr
+source and a Blossom server on loopback, and drives a deploy from a manifest to
+a served site and the API — the place for a test that crosses subsystems.
 
-Note the `run` in `bun run dashboard:test`. From inside `dashboard/` it has to
-be `bun run test` too: a bare `bun test` starts Bun's own test runner instead of
-the script, and those tests need Vitest's DOM environment.
+Note the `run` in `bun run test`: a bare `bun test` starts Bun's own test runner
+instead of the script, and the dashboard's tests need Vitest's DOM environment.
 
 ## Housekeeping
 
@@ -154,8 +156,8 @@ Every version of every site is kept, along with its files, so a data directory
 you have been testing against grows. The production tools work locally:
 
 ```sh
-bun run prune-blobs --keep 3 --dry-run
-bun run prune-blobs --keep 3
+cargo run -- prune-blobs --keep 3 --dry-run
+cargo run -- prune-blobs --keep 3
 ```
 
 To start over entirely, stop the server and delete `data/`. The next start

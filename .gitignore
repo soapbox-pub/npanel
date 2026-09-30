@@ -1,11 +1,6 @@
-.env
-.env.*
-!.env.example
-# The runbook for our own instance: hostnames, ports, and what else shares the
-# box. docs/deployment.md is the one written for everybody else.
-DEPLOY.md
-.ai/
-node_modules/
-# The development data directory, not src/analytics/data.
+target/
+# The development data directory.
 /data/
+.env
+dashboard/node_modules/
 dashboard/dist/

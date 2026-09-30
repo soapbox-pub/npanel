@@ -72,7 +72,7 @@ Then bootstrap the first admin, as in [section 3](#3-bootstrap-the-first-admin),
 inside the running container:
 
 ```sh
-docker compose exec npanel bun run make-admin npub1yourkeyhere
+docker compose exec npanel npanel make-admin npub1yourkeyhere
 ```
 
 `prune-blobs` and `compress-blobs` run the same way. All three are safe against
@@ -142,8 +142,9 @@ docker run --rm -v npanel_npanel-data:/data -v "$PWD:/backup" alpine:3 sh -c \
 
 ## 2. Install and build
 
-npanel runs from a checkout. Bun runs the TypeScript directly; there is no build
-step for the server.
+npanel is one binary. Build it from a checkout with a Rust toolchain (1.85 or
+newer), then build the dashboard it serves, which is a separate TypeScript SPA
+built with [Bun](https://bun.sh):
 
 ```sh
 sudo useradd --system --home /opt/npanel --shell /usr/sbin/nologin npanel
@@ -152,16 +153,18 @@ sudo chown npanel:npanel /opt/npanel
 
 sudo -u npanel git clone <your-repo-url> /opt/npanel
 cd /opt/npanel
-sudo -u npanel bun install
+sudo -u npanel cargo build --release
+(cd dashboard && sudo -u npanel bun install && sudo -u npanel bun run build)
 ```
 
-Build the dashboard. The server serves `dashboard/dist` as a static SPA, so this
-must exist or the dashboard hostname returns 503 with an explanatory message:
+The server serves `dashboard/dist` as a static SPA, so it must exist or the
+dashboard hostname returns 503 with an explanatory message. npanel looks for it
+under its working directory, beside the binary, and in the source tree the
+binary was built from, and picks it up without a restart once it is built.
 
-```sh
-sudo -u npanel bun run dashboard:install
-sudo -u npanel bun run dashboard:build
-```
+Nothing else is needed at runtime: the Matomo device database, the Public
+Suffix List, the analytics tracker and the time zone data are all compiled into
+the binary.
 
 Configure:
 
@@ -186,7 +189,7 @@ in the dashboard is admin-only. So the first account has to come from the
 command line.
 
 ```sh
-sudo -u npanel bun run make-admin npub1yourkeyhere
+cd /opt/npanel && sudo -u npanel ./target/release/npanel make-admin npub1yourkeyhere
 ```
 
 It accepts an npub, nprofile, or hex pubkey, and promotes an existing user if
@@ -207,7 +210,7 @@ Type=simple
 User=npanel
 Group=npanel
 WorkingDirectory=/opt/npanel
-ExecStart=/usr/local/bin/bun run src/server.ts
+ExecStart=/opt/npanel/target/release/npanel
 Restart=on-failure
 RestartSec=5s
 
@@ -225,8 +228,8 @@ ReadWritePaths=/var/lib/npanel
 WantedBy=multi-user.target
 ```
 
-Adjust `ExecStart` to wherever `bun` actually lives (`command -v bun`), and
-`ReadWritePaths` to your `DATA_DIR`.
+Adjust `ReadWritePaths` to your `DATA_DIR`. `.env` is read from the working
+directory, so `WorkingDirectory` is where the configuration lives too.
 
 ```sh
 sudo systemctl daemon-reload
@@ -274,9 +277,9 @@ The first `reverse_proxy` sends analytics events to npanel's analytics thread on
 visits reports to that path on its own origin, and routing it here keeps
 recording a visit entirely off the thread that serves pages. Caddy matches the
 more specific path first, so the order of the two lines doesn't matter. Leave
-it out and events still count, handed across from the main thread instead —
-which works, and is exactly the load the separate port exists to avoid on a
-busy gateway. The proxy must set `X-Forwarded-For` to the visitor's address,
+it out and events still count, handed across from the listener that serves
+sites instead — which works, and is exactly the load the separate port exists
+to avoid on a busy gateway. The proxy must set `X-Forwarded-For` to the visitor's address,
 which Caddy does; it is how visitors are told apart and placed, and is never
 stored.
 
@@ -295,7 +298,7 @@ downloaded before you take `encode` out of the site block. Otherwise every site
 it currently serves goes back to shipping raw HTML until it next deploys:
 
 ```sh
-bun run compress-blobs
+npanel compress-blobs
 ```
 
 That is safe to re-run and skips anything already done; `--dry-run` reports how
@@ -484,6 +487,25 @@ without any need to restart anything.
 asynchronous — a newly added site takes a moment. If it never arrives, look for
 `tor_onion_failed` in the log.
 
+## Moving from the TypeScript npanel
+
+This is a port of the Bun/TypeScript npanel, and it opens the same `DATA_DIR`:
+the database migrations are the same list under the same names, blobs are
+stored at the same paths with the same sidecars, and a build is fingerprinted
+the same way, so hosts built by one are current for the other and nothing is
+rebuilt. The API, the dashboard and the environment variables are unchanged.
+
+Stop the old service, point this one at the same `DATA_DIR` and `.env`, and
+start it. Keep a database backup from just before, as for any upgrade. Moving
+back works the same way, as long as no migration newer than the TypeScript
+npanel knows has run.
+
+A few answers differ from the old server's, all where Bun's HTTP layer departed
+from what the TypeScript code asked for: a `Range` request for a path that
+resolves to the site's `/404.html` gets a `404` rather than a `206`, an empty
+file is a `200` rather than a `204`, and a `HEAD` response carries the length
+its `GET` would have.
+
 ## Adding a site
 
 In the dashboard: **Add site**, give it a domain and an nsite address. The
@@ -509,14 +531,7 @@ sqlite3 /var/lib/npanel/npanel.sqlite3 ".backup '/backup/npanel-$(date +%F).sqli
 ```
 
 On Docker the same call runs in a throwaway container against the volume — see
-[The volumes](#the-volumes). Where there is no `sqlite3` binary at all, Bun can
-take the same online backup with `VACUUM INTO`:
-
-```sh
-bun -e "import { Database } from 'bun:sqlite';
-  new Database('/var/lib/npanel/npanel.sqlite3', { readonly: true })
-    .exec(\"VACUUM INTO '/backup/npanel.sqlite3'\")"
-```
+[The volumes](#the-volumes).
 
 To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
 named by hash, so incremental syncs are cheap.
@@ -526,9 +541,8 @@ named by hash, so incremental syncs are cheap.
 ```sh
 cd /opt/npanel
 sudo -u npanel git pull
-sudo -u npanel bun install
-sudo -u npanel bun run dashboard:install
-sudo -u npanel bun run dashboard:build
+sudo -u npanel cargo build --release
+(cd dashboard && sudo -u npanel bun install && sudo -u npanel bun run build)
 sudo systemctl restart npanel
 ```
 
@@ -546,11 +560,11 @@ Every version of every site is kept, along with its files. On a site that
 deploys often this adds up.
 
 ```sh
-sudo -u npanel bun run prune-blobs --keep 10 --dry-run
-sudo -u npanel bun run prune-blobs --keep 10
+sudo -u npanel ./target/release/npanel prune-blobs --keep 10 --dry-run
+sudo -u npanel ./target/release/npanel prune-blobs --keep 10
 ```
 
-On Docker, `docker compose exec npanel bun run prune-blobs --keep 10`.
+On Docker, `docker compose exec npanel npanel prune-blobs --keep 10`.
 
 `--keep N` forgets all but the newest N versions of each site, then deletes
 every blob no remaining version or host build references. The version a host is
@@ -569,11 +583,11 @@ deployed have no reason to deploy again and would otherwise go on being served
 raw indefinitely.
 
 ```sh
-sudo -u npanel bun run compress-blobs --dry-run
-sudo -u npanel bun run compress-blobs
+sudo -u npanel ./target/release/npanel compress-blobs --dry-run
+sudo -u npanel ./target/release/npanel compress-blobs
 ```
 
-On Docker, `docker compose exec npanel bun run compress-blobs`.
+On Docker, `docker compose exec npanel npanel compress-blobs`.
 
 Run it before removing `encode` from the site block of your `Caddyfile`, not
 after. It is safe to re-run and skips blobs that already have their copies, so
@@ -582,8 +596,8 @@ there is no harm in leaving it in a maintenance script.
 ## Troubleshooting
 
 **The dashboard returns 503 "The dashboard has not been built."** Run
-`bun run dashboard:build`. The server logs `dashboard_not_built` once with the
-directory it looked in. The image builds it, so on Docker this means the
+`bun install && bun run build` in `dashboard/`. The server logs
+`dashboard_not_built` once with the directories it looked in. The image builds it, so on Docker this means the
 container is running a stale image — `docker compose up -d --build`.
 
 **A site returns 503 "This site has not finished deploying yet."** No version is

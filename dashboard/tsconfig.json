@@ -24,12 +24,12 @@
 
     "paths": {
       "@/*": ["./src/*"],
-      "@shared/nsite-address": ["../src/nsite-address.ts"],
-      "@shared/pubkey": ["../src/pubkey.ts"],
-      "@shared/hostname": ["../src/hostname.ts"],
-      "@shared/nip05": ["../src/nip05.ts"],
-      "@shared/relay-url": ["../src/relay-url.ts"],
-      "@shared/analytics-query": ["../src/analytics/query/parse.ts"]
+      "@shared/nsite-address": ["./src/shared/nsite-address.ts"],
+      "@shared/pubkey": ["./src/shared/pubkey.ts"],
+      "@shared/hostname": ["./src/shared/hostname.ts"],
+      "@shared/nip05": ["./src/shared/nip05.ts"],
+      "@shared/relay-url": ["./src/shared/relay-url.ts"],
+      "@shared/analytics-query": ["./src/shared/analytics-query/parse.ts"]
     }
   },
   "include": ["src"]

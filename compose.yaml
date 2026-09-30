@@ -3,7 +3,7 @@
 #   cp .env.example .env      # set DASHBOARD_HOST
 #   $EDITOR .env
 #   docker compose up -d
-#   docker compose exec npanel bun run make-admin npub1yourkeyhere
+#   docker compose exec npanel npanel make-admin npub1yourkeyhere
 #
 # Caddy gets a certificate for every hostname staff add, asking npanel first
 # whether that hostname is configured. See docs/deployment.md.

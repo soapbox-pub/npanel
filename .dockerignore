@@ -1,12 +1,10 @@
-# Installed inside the image, for the image's own platform.
-node_modules/
-dashboard/node_modules/
-
 # Built inside the image.
+target/
+dashboard/node_modules/
 dashboard/dist/
 
-# Host state and secrets, which must never end up in a layer: Bun loads .env
-# from the working directory, so a copied one would silently override the
+# Host state and secrets, which must never end up in a layer: npanel loads .env
+# from its working directory, so a copied one would silently override the
 # environment compose passes in.
 .env
 .env.*
@@ -14,9 +12,6 @@ dashboard/dist/
 data/
 
 .git/
-.github/
-.agents/
-.ai/
 docs/
 *.md
 Dockerfile

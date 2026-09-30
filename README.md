@@ -17,16 +17,52 @@ when the relays and Blossom servers it came from are down.
 - **Auditable.** Every change to a site, user, or setting is recorded.
 - **Analytics built in.** Flip a switch on a site and npanel counts its visits
   the way Plausible does — no cookies, nothing identifying stored — and shows
-  them in a Plausible-style dashboard. npanel *is* the Plausible server; there
-  is nothing else to install, and the site's author changes nothing.
+  them in a Plausible-style dashboard.
+
+This is the Rust implementation of npanel, a port of the Bun/TypeScript one.
+It opens the same data directory, speaks the
+same API and serves the same dashboard, so it is a drop-in replacement — see
+[moving from the TypeScript npanel](docs/deployment.md#moving-from-the-typescript-npanel).
+
+## Performance
+
+Measured side by side on one machine against a copy of the same data directory,
+64 concurrent connections, 10 seconds per row:
+
+| Request                               | Bun npanel | Rust npanel |
+| ------------------------------------- | ---------: | ----------: |
+| `index.html` (2 KB, brotli)           | 10,496/s   | 70,219/s    |
+| JS bundle (555 KB, 149 KB brotli)     | 7,514/s    | 28,856/s    |
+| Image (284 KB, identity)              | 5,643/s    | 15,756/s    |
+| Range request (1 KB)                  | 9,418/s    | 71,157/s    |
+| SPA fallback                          | 10,045/s   | 69,224/s    |
+| 404                                   | 9,412/s    | 75,010/s    |
+| 304 revalidation                      | 16,922/s   | 93,974/s    |
+| `GET /api/instance`                   | 19,352/s   | 92,065/s    |
+| Dashboard `index.html`                | 16,340/s   | 81,309/s    |
+
+Median latency drops from 4–11 ms to 0.6–3.7 ms. The two large files are
+limited by copying bytes over loopback rather than by npanel. Anonymous
+memory after serving load and a burst of analytics events is 119 MB against
+Bun's 171 MB; serving alone uses 35 MB. Host builds run two to four times
+faster, and the analytics user-agent parser — a Matomo port vendored in
+`vendor/device-detector` — parses in well under a millisecond.
+
+The same comparison checked that the two agree: every file of every site was
+requested from both with eight combinations of encoding, range, method and
+conditional headers (14,894 requests), and every API route and 1,053 analytics
+queries across three time zones were compared field by field. The differences
+that remain are all places where Bun's HTTP layer departs from what the
+TypeScript code asked for; they are listed in the deployment guide.
 
 ## Requirements
 
-- [Bun](https://bun.sh) 1.3+ — the only runtime you need; Node.js is not required
+- Rust 1.85+ to build the server, and [Bun](https://bun.sh) 1.3+ to build the
+  dashboard. At runtime npanel is one binary and the built dashboard.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
-  and a sample `Caddyfile` is included
+  and a sample `Caddyfile` is included.
 
-Or just Docker, if you'd rather not install either.
+Or just Docker, if you'd rather not install any of that.
 
 ## Quick start with Docker
 
@@ -38,7 +74,7 @@ cp .env.example .env
 $EDITOR .env          # set DASHBOARD_HOST
 
 docker compose up -d
-docker compose exec npanel bun run make-admin npub1yourkeyhere
+docker compose exec npanel npanel make-admin npub1yourkeyhere
 ```
 
 Point DNS at the box first — certificates are issued on the first visit.
@@ -46,17 +82,15 @@ Point DNS at the box first — certificates are issued on the first visit.
 ## Quick start from source
 
 ```sh
-cd npanel
-bun install
+cd npanel-rs
+cargo build --release
+(cd dashboard && bun install && bun run build)
 
 cp .env.example .env
 $EDITOR .env          # set DASHBOARD_HOST at minimum
 
-bun run dashboard:install
-bun run dashboard:build
-
-bun run make-admin npub1yourkeyhere
-bun start
+./target/release/npanel make-admin npub1yourkeyhere
+./target/release/npanel
 ```
 
 Then put Caddy in front of it:
@@ -71,6 +105,15 @@ Visit your dashboard domain, log in with a Nostr extension, and add a site.
 
 See [docs/deployment.md](docs/deployment.md) for a real production setup, either
 way — DNS, TLS, backups, and a systemd unit.
+
+## Commands
+
+| Command                                         | Does                                          |
+| ----------------------------------------------- | --------------------------------------------- |
+| `npanel`                                        | Runs the gateway                              |
+| `npanel make-admin <npub>`                      | Adds or promotes an admin                     |
+| `npanel prune-blobs [--keep N] [--dry-run]`     | Forgets old versions and unreferenced blobs   |
+| `npanel compress-blobs [--dry-run]`             | Stores compressed copies of older blobs       |
 
 ## Configuration
 
@@ -98,32 +141,8 @@ recorded in the audit log. See [docs/configuration.md](docs/configuration.md).
 - [API](docs/api.md) — the JSON API behind the dashboard
 - [Development](docs/development.md) — running npanel locally
 
-## Development
-
-```sh
-bun install
-bun run dashboard:install
-
-cp .env.example .env
-$EDITOR .env                # DASHBOARD_HOST="localhost"
-
-bun run make-admin npub1yourkeyhere
-bun run dev                 # server on :3000, dashboard on :8080, with reload
-```
-
-The checks, all four of which must pass:
-
-```sh
-bun lint                    # biome
-bun check                   # tsc --noEmit
-bun test                    # node:test, via bun
-bun run dashboard:test      # tsc, eslint, vitest, and a production build
-```
-
-See [docs/development.md](docs/development.md) for the rest — how to serve a
-site at `foo.localhost:3000`, and what a local instance does differently from
-one behind a proxy.
-
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE).
+AGPL-3.0-or-later. `vendor/device-detector` is MIT, Matomo's device database in
+`assets/device-detector` is LGPL-3.0, and Plausible's tracker in
+`assets/analytics` is MIT; each carries its license beside it.

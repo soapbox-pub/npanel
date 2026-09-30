@@ -50,7 +50,7 @@ https:// {
 	# already downloaded before you take this directive out, or the sites it
 	# is serving go back to shipping raw HTML until they next deploy:
 	#
-	#     bun run compress-blobs
+	#     npanel compress-blobs
 
 	# Analytics events go straight to npanel's analytics thread, which listens
 	# on a port of its own, so recording a visit never queues behind serving

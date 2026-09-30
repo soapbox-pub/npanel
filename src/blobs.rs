@@ -1,0 +1,668 @@
+//! The content-addressed filesystem store.
+//!
+//! Blobs live at `<dir>/<ab>/<cd>/<sha256>` — a two-level fanout keeps any one
+//! directory small. Downloads are hashed while they stream into a temp file
+//! and renamed into place only once the hash matches, so a truncated transfer
+//! or a lying server can never leave a bad blob behind, and the rename is
+//! atomic so readers never see a partial file.
+//!
+//! Compressed copies sit beside their blob as `<sha256>.br` and `<sha256>.gz`.
+//! They are an attribute of a blob rather than blobs themselves: nothing
+//! references them by name, [`BlobStore::list`] doesn't yield them, and
+//! [`BlobStore::delete`] takes them along — so pruning keeps working on hashes
+//! alone and a sidecar can never outlive what it was made from.
+
+use std::io::{Read, Write};
+use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{bail, Result};
+use bytes::Bytes;
+use parking_lot::Mutex;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
+
+use crate::net::{is_public_address, PublicResolver};
+use crate::nostr::is_hex64;
+
+/// Compressed copies npanel stores alongside a blob.
+///
+/// Both, rather than only the better one: Tor Browser reaches an onion over
+/// plain HTTP, and Firefox only offers `br` on HTTPS — so the visitors who
+/// gain most from compression are exactly the ones who can only accept `gzip`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Encoding {
+    Br,
+    Gzip,
+}
+
+impl Encoding {
+    pub const ALL: [Encoding; 2] = [Encoding::Br, Encoding::Gzip];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Encoding::Br => "br",
+            Encoding::Gzip => "gzip",
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Encoding::Br => ".br",
+            Encoding::Gzip => ".gz",
+        }
+    }
+}
+
+/// Blobs too small to bother compressing: anything under a TCP segment arrives
+/// in one packet either way.
+const MIN_VARIANT_SIZE: u64 = 512;
+
+/// How much smaller a variant has to be before it's worth keeping.
+const MIN_SAVING: f64 = 0.05;
+
+/// Size above which brotli drops from its slowest setting. Quality 11 runs
+/// around a megabyte a second: fine once for a page or a bundle, not for a
+/// large dump that would hold up every other blob in the deploy.
+const BROTLI_SLOW_ABOVE: u64 = 4 * 1024 * 1024;
+
+/// Redirects followed before giving up on a blob.
+const MAX_REDIRECTS: usize = 3;
+
+/// How long one download may take, start to finish.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Mapped blobs kept for serving.
+const MAPPED_BLOBS: usize = 4096;
+
+/// Sizes of a stored blob and whatever compressed copies it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Variants {
+    /// Size of the blob itself, which is always the one that exists.
+    pub identity: u64,
+    pub br: Option<u64>,
+    pub gzip: Option<u64>,
+}
+
+impl Variants {
+    pub fn size(&self, encoding: Option<Encoding>) -> u64 {
+        match encoding {
+            None => self.identity,
+            Some(Encoding::Br) => self.br.unwrap_or(self.identity),
+            Some(Encoding::Gzip) => self.gzip.unwrap_or(self.identity),
+        }
+    }
+
+    pub fn get(&self, encoding: Encoding) -> Option<u64> {
+        match encoding {
+            Encoding::Br => self.br,
+            Encoding::Gzip => self.gzip,
+        }
+    }
+}
+
+/// Why a download failed, as the deploy log records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadReason {
+    Http,
+    TooLarge,
+    HashMismatch,
+    Network,
+    Blocked,
+}
+
+impl DownloadReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DownloadReason::Http => "http",
+            DownloadReason::TooLarge => "too_large",
+            DownloadReason::HashMismatch => "hash_mismatch",
+            DownloadReason::Network => "network",
+            DownloadReason::Blocked => "blocked",
+        }
+    }
+}
+
+/// A download that failed, with fields suitable for the deploy log.
+#[derive(Debug)]
+pub struct DownloadError {
+    pub message: String,
+    pub reason: DownloadReason,
+    pub status: Option<u16>,
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+fn fail(message: impl Into<String>, reason: DownloadReason, status: Option<u16>) -> DownloadError {
+    DownloadError { message: message.into(), reason, status }
+}
+
+#[derive(Clone)]
+pub struct BlobStore {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    dir: PathBuf,
+    tmp: PathBuf,
+    http: reqwest::Client,
+    /// Only tests turn this off: their Blossom servers listen on loopback,
+    /// which is exactly what the real check refuses.
+    public_only: bool,
+    mapped: Mutex<lru::LruCache<(String, Option<Encoding>), Bytes>>,
+}
+
+impl BlobStore {
+    pub fn new(dir: &Path) -> BlobStore {
+        Self::build(dir, true)
+    }
+
+    /// A store whose downloads may reach private addresses. For tests.
+    #[cfg(test)]
+    pub fn allowing_private(dir: &Path) -> BlobStore {
+        Self::build(dir, false)
+    }
+
+    fn build(dir: &Path, public_only: bool) -> BlobStore {
+        let mut http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent(concat!("npanel/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(10));
+        if public_only {
+            http = http.dns_resolver(Arc::new(PublicResolver));
+        }
+
+        BlobStore {
+            inner: Arc::new(Inner {
+                dir: dir.to_path_buf(),
+                tmp: dir.join("tmp"),
+                http: http.build().expect("an HTTP client"),
+                public_only,
+                mapped: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAPPED_BLOBS).unwrap())),
+            }),
+        }
+    }
+
+    /// Filesystem path a blob occupies, whether or not it exists.
+    pub fn path(&self, sha256: &str) -> PathBuf {
+        debug_assert!(is_hex64(sha256));
+        self.inner.dir.join(&sha256[..2]).join(&sha256[2..4]).join(sha256)
+    }
+
+    /// Filesystem path one of a blob's compressed copies occupies.
+    pub fn variant_path(&self, sha256: &str, encoding: Encoding) -> PathBuf {
+        let mut path = self.path(sha256).into_os_string();
+        path.push(encoding.suffix());
+        path.into()
+    }
+
+    fn file_path(&self, sha256: &str, encoding: Option<Encoding>) -> PathBuf {
+        match encoding {
+            Some(encoding) => self.variant_path(sha256, encoding),
+            None => self.path(sha256),
+        }
+    }
+
+    /// Size in bytes, or `None` when the blob isn't stored.
+    pub fn size(&self, sha256: &str) -> Option<u64> {
+        if !is_hex64(sha256) {
+            return None;
+        }
+        size_of(&self.path(sha256))
+    }
+
+    pub fn has(&self, sha256: &str) -> bool {
+        self.size(sha256).is_some()
+    }
+
+    /// Sizes of a blob and every compressed copy it has, or `None` when the
+    /// blob isn't stored.
+    pub fn variants(&self, sha256: &str) -> Option<Variants> {
+        let identity = self.size(sha256)?;
+        Some(Variants {
+            identity,
+            br: size_of(&self.variant_path(sha256, Encoding::Br)),
+            gzip: size_of(&self.variant_path(sha256, Encoding::Gzip)),
+        })
+    }
+
+    /// The first `max_bytes` of a blob, for a build that rewrites it or a
+    /// reader that scrapes it. The cap is the point: a site may publish a file
+    /// of any size at any name.
+    pub fn read_bytes(&self, sha256: &str, max_bytes: u64) -> Vec<u8> {
+        let Ok(file) = std::fs::File::open(self.path(sha256)) else {
+            return Vec::new();
+        };
+        let mut bytes = Vec::new();
+        let _ = file.take(max_bytes).read_to_end(&mut bytes);
+        bytes
+    }
+
+    /// The first `max_bytes` of a blob, decoded as UTF-8 with anything invalid
+    /// replaced, as `Buffer.toString("utf8")` does.
+    pub fn read_text(&self, sha256: &str, max_bytes: u64) -> String {
+        String::from_utf8_lossy(&self.read_bytes(sha256, max_bytes)).into_owned()
+    }
+
+    /// A blob, or one of its compressed copies, for a response body.
+    ///
+    /// Mapped rather than read: the bytes are the kernel's page cache, a
+    /// response is a slice of the mapping, and the mapping is kept, so a warm
+    /// file costs no system call at all to send again. Stored files are only
+    /// ever replaced by rename, never rewritten, so a mapping can't change
+    /// under a reader.
+    pub fn open(&self, sha256: &str, encoding: Option<Encoding>) -> Result<Bytes> {
+        let key = (sha256.to_string(), encoding);
+        if let Some(bytes) = self.inner.mapped.lock().get(&key) {
+            return Ok(bytes.clone());
+        }
+
+        let file = std::fs::File::open(self.file_path(sha256, encoding))?;
+        let len = file.metadata()?.len();
+        let bytes = if len == 0 {
+            Bytes::new()
+        } else {
+            // SAFETY: stored files are written once, through a temp file and a
+            // rename, and never truncated or modified in place.
+            let map = unsafe { memmap2::Mmap::map(&file)? };
+            Bytes::from_owner(map)
+        };
+
+        self.inner.mapped.lock().put(key, bytes.clone());
+        Ok(bytes)
+    }
+
+    /// Compress a stored blob, if it isn't already and it's worth doing.
+    ///
+    /// Returns the encodings written by this call. CPU-bound, so callers on a
+    /// runtime run it on the blocking pool.
+    pub fn ensure_variants(&self, sha256: &str) -> Result<Vec<Encoding>> {
+        let Some(size) = self.size(sha256) else {
+            return Ok(Vec::new());
+        };
+        if size < MIN_VARIANT_SIZE {
+            return Ok(Vec::new());
+        }
+
+        let mut written = Vec::new();
+        // One encoding at a time: a deploy already compresses several blobs at
+        // once, and doubling that again would just contend for the same cores.
+        for encoding in Encoding::ALL {
+            if size_of(&self.variant_path(sha256, encoding)).is_some() {
+                continue;
+            }
+            if self.write_variant(sha256, encoding, size)? {
+                written.push(encoding);
+            }
+        }
+
+        Ok(written)
+    }
+
+    /// Store bytes already in memory, verifying them against `sha256`.
+    pub fn put(&self, sha256: &str, bytes: &[u8]) -> Result<u64> {
+        if !is_hex64(sha256) {
+            bail!("Not a sha256 hash: {sha256}");
+        }
+        let digest = hex::encode(Sha256::digest(bytes));
+        if digest != sha256 {
+            bail!(fail(format!("Expected {sha256}, got {digest}"), DownloadReason::HashMismatch, None));
+        }
+
+        let tmp = self.temp_path()?;
+        std::fs::write(&tmp, bytes)?;
+        self.commit(&tmp, sha256)?;
+        Ok(bytes.len() as u64)
+    }
+
+    /// Download a blob from `url`, verifying it hashes to `sha256`.
+    ///
+    /// The target — and every redirect it leads to — must be a public address,
+    /// because the URL ultimately comes from a manifest anyone can publish.
+    /// Returns the size in bytes, leaving the store untouched on failure.
+    pub async fn download(
+        &self,
+        url: &str,
+        sha256: &str,
+        max_size: u64,
+        cancel: &CancellationToken,
+    ) -> Result<u64, DownloadError> {
+        if !is_hex64(sha256) {
+            return Err(fail(format!("Not a sha256 hash: {sha256}"), DownloadReason::Blocked, None));
+        }
+
+        let work = self.download_inner(url, sha256, max_size);
+        tokio::select! {
+            result = tokio::time::timeout(DOWNLOAD_TIMEOUT, work) => match result {
+                Ok(result) => result,
+                Err(_) => Err(fail("The operation timed out.", DownloadReason::Network, None)),
+            },
+            _ = cancel.cancelled() => Err(fail("The operation was aborted.", DownloadReason::Network, None)),
+        }
+    }
+
+    async fn download_inner(&self, url: &str, sha256: &str, max_size: u64) -> Result<u64, DownloadError> {
+        let mut response = self.request(url).await?;
+
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Err(fail(format!("HTTP {status}"), DownloadReason::Http, Some(status)));
+        }
+
+        // Reject oversized blobs before reading a single byte, when possible.
+        if let Some(declared) = response.content_length() {
+            if declared > max_size {
+                return Err(fail(
+                    format!("{declared} bytes exceeds the {max_size} byte limit"),
+                    DownloadReason::TooLarge,
+                    None,
+                ));
+            }
+        }
+
+        let tmp = self.temp_path().map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+        let result = async {
+            let mut file = tokio::io::BufWriter::with_capacity(
+                256 * 1024,
+                tokio::fs::File::create(&tmp).await.map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?,
+            );
+            let mut hash = Sha256::new();
+            let mut size: u64 = 0;
+
+            loop {
+                let chunk = response.chunk().await.map_err(|e| fail(error_chain(&e), DownloadReason::Network, None))?;
+                let Some(chunk) = chunk else { break };
+                size += chunk.len() as u64;
+                // Servers may omit content-length, so enforce the cap mid-stream too.
+                if size > max_size {
+                    return Err(fail(format!("Body exceeds the {max_size} byte limit"), DownloadReason::TooLarge, None));
+                }
+                hash.update(&chunk);
+                file.write_all(&chunk).await.map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+            }
+            file.flush().await.map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+
+            let digest = hex::encode(hash.finalize());
+            if digest != sha256 {
+                return Err(fail(
+                    format!("Expected {sha256}, server returned {digest}"),
+                    DownloadReason::HashMismatch,
+                    None,
+                ));
+            }
+            Ok(size)
+        }
+        .await;
+
+        match result {
+            Ok(size) => {
+                self.commit(&tmp, sha256).map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+                Ok(size)
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// Fetch a URL, following redirects one at a time, so each hop is vetted
+    /// before it is requested.
+    async fn request(&self, url: &str) -> Result<reqwest::Response, DownloadError> {
+        let mut target =
+            url::Url::parse(url).map_err(|_| fail(format!("Not a valid URL: {url}"), DownloadReason::Blocked, None))?;
+
+        for hop in 0.. {
+            if target.scheme() != "http" && target.scheme() != "https" {
+                return Err(fail(format!("Refusing to fetch a {}: URL", target.scheme()), DownloadReason::Blocked, None));
+            }
+            self.assert_public(&target).await?;
+
+            let response = self
+                .inner
+                .http
+                .get(target.clone())
+                .send()
+                .await
+                .map_err(|e| fail(error_chain(&e), DownloadReason::Network, None))?;
+
+            let status = response.status().as_u16();
+            if ![301, 302, 303, 307, 308].contains(&status) {
+                return Ok(response);
+            }
+
+            let location = response.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
+            let Some(location) = location else {
+                return Err(fail(format!("HTTP {status} without a Location header"), DownloadReason::Http, Some(status)));
+            };
+            if hop >= MAX_REDIRECTS {
+                return Err(fail(format!("More than {MAX_REDIRECTS} redirects"), DownloadReason::Http, Some(status)));
+            }
+            target = target.join(&location).map_err(|_| {
+                fail(format!("Redirected to an invalid URL: {location}"), DownloadReason::Blocked, None)
+            })?;
+        }
+
+        unreachable!()
+    }
+
+    /// Refuse to fetch anything that isn't on the public internet. The
+    /// resolver the client connects through enforces the same rule; this is
+    /// what gives the deploy log a sentence rather than a connection error.
+    async fn assert_public(&self, url: &url::Url) -> Result<(), DownloadError> {
+        if !self.inner.public_only {
+            return Ok(());
+        }
+
+        let host = url.host_str().unwrap_or("");
+        let addresses =
+            crate::net::resolve_all(host).await.map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+        if addresses.into_iter().all(is_public_address) {
+            return Ok(());
+        }
+
+        Err(fail(
+            format!(
+                "{host} is not a public address. Publish this site's blobs to a Blossom server reachable on the public internet."
+            ),
+            DownloadReason::Blocked,
+            None,
+        ))
+    }
+
+    /// Remove a blob and its compressed copies. Returns whether it existed.
+    pub fn delete(&self, sha256: &str) -> bool {
+        let existed = self.has(sha256);
+        let _ = std::fs::remove_file(self.path(sha256));
+        for encoding in Encoding::ALL {
+            let _ = std::fs::remove_file(self.variant_path(sha256, encoding));
+        }
+        let mut mapped = self.inner.mapped.lock();
+        mapped.pop(&(sha256.to_string(), None));
+        for encoding in Encoding::ALL {
+            mapped.pop(&(sha256.to_string(), Some(encoding)));
+        }
+        existed
+    }
+
+    /// Every sha256 currently stored. Compressed sidecars are skipped by the
+    /// same test that keeps stray files out: their names aren't 64 hex digits.
+    pub fn list(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let Ok(outer) = std::fs::read_dir(&self.inner.dir) else {
+            return out;
+        };
+        for first in outer.flatten() {
+            let name = first.file_name();
+            let name = name.to_string_lossy();
+            if name == "tmp" || name.len() != 2 {
+                continue;
+            }
+            for second in std::fs::read_dir(first.path()).into_iter().flatten().flatten() {
+                for entry in std::fs::read_dir(second.path()).into_iter().flatten().flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if is_hex64(&name) {
+                        out.push(name);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Delete any temp files left behind by an interrupted download.
+    pub fn clear_temp(&self) {
+        let _ = std::fs::remove_dir_all(&self.inner.tmp);
+    }
+
+    fn temp_path(&self) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.inner.tmp)?;
+        Ok(self.inner.tmp.join(crate::util::random_hex(16)))
+    }
+
+    fn commit(&self, tmp: &Path, sha256: &str) -> Result<()> {
+        let target = self.path(sha256);
+        if let Some(dir) = target.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::rename(tmp, &target)?;
+        Ok(())
+    }
+
+    /// Compress one blob into one encoding. Returns whether the result was
+    /// worth keeping. Streamed through a temp file, for the same reason
+    /// downloads are: an interrupted pass must not leave a truncated variant.
+    fn write_variant(&self, sha256: &str, encoding: Encoding, size: u64) -> Result<bool> {
+        let tmp = self.temp_path()?;
+
+        let result = (|| -> Result<bool> {
+            let mut input = std::io::BufReader::with_capacity(256 * 1024, std::fs::File::open(self.path(sha256))?);
+            let output = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&tmp)?);
+
+            match encoding {
+                Encoding::Gzip => {
+                    let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(9));
+                    std::io::copy(&mut input, &mut encoder)?;
+                    encoder.finish()?.flush()?;
+                }
+                Encoding::Br => {
+                    let params = brotli::enc::BrotliEncoderParams {
+                        quality: if size > BROTLI_SLOW_ABOVE { 5 } else { 11 },
+                        // A window as large as the input, capped at what every
+                        // decoder handles without the large-window extension.
+                        lgwin: 24,
+                        size_hint: size as usize,
+                        ..Default::default()
+                    };
+                    let mut output = output;
+                    brotli::BrotliCompress(&mut input, &mut output, &params)?;
+                    output.flush()?;
+                }
+            }
+
+            let compressed = size_of(&tmp).unwrap_or(u64::MAX);
+            if compressed as f64 > size as f64 * (1.0 - MIN_SAVING) {
+                return Ok(false);
+            }
+            std::fs::rename(&tmp, self.variant_path(sha256, encoding))?;
+            Ok(true)
+        })();
+
+        if !matches!(result, Ok(true)) {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    }
+}
+
+/// Size of a file, or `None` when it isn't there.
+fn size_of(path: &Path) -> Option<u64> {
+    std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len())
+}
+
+/// An error with its causes, which is where reqwest keeps the useful part.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stores_and_compresses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path());
+        let text = "hello world ".repeat(200);
+        let sha = hex::encode(Sha256::digest(text.as_bytes()));
+
+        assert!(store.put(&"0".repeat(64), text.as_bytes()).is_err());
+        assert_eq!(store.put(&sha, text.as_bytes()).unwrap(), text.len() as u64);
+        assert_eq!(store.size(&sha), Some(text.len() as u64));
+
+        let written = store.ensure_variants(&sha).unwrap();
+        assert_eq!(written, [Encoding::Br, Encoding::Gzip]);
+        assert!(store.ensure_variants(&sha).unwrap().is_empty());
+
+        let variants = store.variants(&sha).unwrap();
+        assert!(variants.br.unwrap() < variants.identity);
+        assert!(variants.gzip.unwrap() < variants.identity);
+
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(&store.open(&sha, Some(Encoding::Gzip)).unwrap()[..]).read_to_string(&mut decoded).unwrap();
+        assert_eq!(decoded, text);
+        let mut decoded = Vec::new();
+        brotli::BrotliDecompress(&mut &store.open(&sha, Some(Encoding::Br)).unwrap()[..], &mut decoded).unwrap();
+        assert_eq!(decoded, text.as_bytes());
+
+        assert_eq!(&store.open(&sha, None).unwrap()[..], text.as_bytes());
+        assert_eq!(store.list(), std::slice::from_ref(&sha));
+        assert!(store.delete(&sha));
+        assert!(!store.has(&sha));
+        assert!(store.variants(&sha).is_none());
+    }
+
+    #[test]
+    fn skips_small_and_incompressible() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path());
+        let small = b"tiny";
+        let sha = hex::encode(Sha256::digest(small));
+        store.put(&sha, small).unwrap();
+        assert!(store.ensure_variants(&sha).unwrap().is_empty());
+
+        let noise: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let sha = hex::encode(Sha256::digest(&noise));
+        store.put(&sha, &noise).unwrap();
+        store.ensure_variants(&sha).unwrap();
+        let variants = store.variants(&sha).unwrap();
+        assert!(variants.br.is_none_or(|br| (br as f64) <= 4096.0 * 0.95));
+    }
+
+    #[tokio::test]
+    async fn refuses_private_addresses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::new(dir.path());
+        let cancel = CancellationToken::new();
+        let error = store.download("http://127.0.0.1:1/x", &"a".repeat(64), 1000, &cancel).await.unwrap_err();
+        assert_eq!(error.reason, DownloadReason::Blocked);
+        let error = store.download("ftp://example.com/x", &"a".repeat(64), 1000, &cancel).await.unwrap_err();
+        assert_eq!(error.reason, DownloadReason::Blocked);
+    }
+}

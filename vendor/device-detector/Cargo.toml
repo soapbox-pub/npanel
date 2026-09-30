@@ -1,0 +1,24 @@
+# Vendored from device-detector-rs 0.1.1 (MIT), with fixes for npanel: the
+# regex database is loaded from memory, clients are matched in Matomo's order,
+# versions use dots, and heuristic patterns are compiled once.
+[package]
+name = "device-detector"
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "device_detector"
+path = "src/lib.rs"
+
+[dependencies]
+aho-corasick = "1"
+fancy-regex = "0.14"
+indexmap = { version = "2", features = ["serde"] }
+rayon = "1"
+regex = "1"
+regex-syntax = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "2"

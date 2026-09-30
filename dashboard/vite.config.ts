@@ -16,10 +16,6 @@ export default defineConfig(() => ({
         changeOrigin: false,
       },
     },
-    fs: {
-      // Allow importing the shared address parser from the server's src/.
-      allow: [path.resolve(import.meta.dirname, ".."), path.resolve(import.meta.dirname)],
-    },
   },
   plugins: [
     react(),
@@ -51,21 +47,15 @@ export default defineConfig(() => ({
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
-      // One address parser for the server and the dashboard, so the preview
-      // shown while typing is exactly what the server will store.
-      "@shared/nsite-address": path.resolve(import.meta.dirname, "../src/nsite-address.ts"),
-      "@shared/pubkey": path.resolve(import.meta.dirname, "../src/pubkey.ts"),
-      // The same Public Suffix List rules the server applies, so the dashboard
-      // offers the www redirect exactly where the server will honour it.
-      "@shared/hostname": path.resolve(import.meta.dirname, "../src/hostname.ts"),
-      // NIP-05 names and relay URLs are validated once, so a name the form
-      // accepts is a name the server will store rather than a round trip away
-      // from a 400.
-      "@shared/nip05": path.resolve(import.meta.dirname, "../src/nip05.ts"),
-      "@shared/relay-url": path.resolve(import.meta.dirname, "../src/relay-url.ts"),
-      // The analytics query's metrics and dimensions, so the dashboard can't
-      // ask for one the server doesn't know.
-      "@shared/analytics-query": path.resolve(import.meta.dirname, "../src/analytics/query/parse.ts"),
+      // The server's parsing rules, in TypeScript: twins of the Rust modules
+      // they name, so the preview shown while typing is what the server will
+      // store, and the www switch is offered exactly where it is honoured.
+      "@shared/nsite-address": path.resolve(import.meta.dirname, "./src/shared/nsite-address.ts"),
+      "@shared/pubkey": path.resolve(import.meta.dirname, "./src/shared/pubkey.ts"),
+      "@shared/hostname": path.resolve(import.meta.dirname, "./src/shared/hostname.ts"),
+      "@shared/nip05": path.resolve(import.meta.dirname, "./src/shared/nip05.ts"),
+      "@shared/relay-url": path.resolve(import.meta.dirname, "./src/shared/relay-url.ts"),
+      "@shared/analytics-query": path.resolve(import.meta.dirname, "./src/shared/analytics-query/parse.ts"),
     },
   },
 }));

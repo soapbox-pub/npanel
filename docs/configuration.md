@@ -12,7 +12,8 @@ without a restart, and are recorded in the audit log.
 
 ## Environment variables
 
-Copy `.env.example` to `.env` and edit it. Bun loads `.env` automatically.
+Copy `.env.example` to `.env` and edit it. npanel loads `.env` from its working
+directory at startup, without overriding anything already set in the environment.
 
 On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
 compose, which passes them to the containers; the image fixes the other five.
@@ -73,8 +74,8 @@ origin, and the proxy sends that one path here rather than to `PORT`. That is
 the point of the separate port: recording a visit happens on a thread and a
 listener of its own, so it never queues behind serving a page, and a burst of
 events can't slow a site down. Without the route everything still works —
-events reaching `PORT` are handed to the thread — but through the main thread,
-which is the thing this port exists to spare. Visits over Tor always take that
+events reaching `PORT` are handed to the thread — but through the listener that
+serves sites, which is the thing this port exists to spare. Visits over Tor always take that
 path, since they never pass through the proxy.
 
 If the port can't be bound, the thread retries with backoff and logs
@@ -409,9 +410,9 @@ password. It is still stored in the `settings` table and returned to admins by
 
 Default `UTC`. The IANA time zone every site's analytics are reported in, like
 `Europe/Berlin` — where one day's visitors end and the next day's begin, for
-the charts and every date range. Validated against the time zone data of the
-runtime npanel is on, which is what does the arithmetic, and stored in its
-canonical spelling.
+the charts and every date range. Validated against the IANA database compiled
+into npanel, which is what does the arithmetic, matched case-insensitively and
+stored in its canonical spelling.
 
 It is one clock for the whole instance rather than one per site: a gateway is
 usually run by one team, reading all of its sites' numbers together. Changing it

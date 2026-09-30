@@ -665,7 +665,7 @@ they already have access.
 Removes the user and their grants.
 
 Demoting or deleting the last admin is `409` — there is no way to lock every
-admin out of the dashboard through the API. (`bun run make-admin` is the way
+admin out of the dashboard through the API. (`npanel make-admin` is the way
 back in if it ever happens anyway.)
 
 ## Settings — admin
