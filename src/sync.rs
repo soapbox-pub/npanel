@@ -19,10 +19,11 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::stream::FuturesUnordered;
+use futures_util::future::BoxFuture;
 use futures_util::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use rusqlite::{params, OptionalExtension};
-use tokio::sync::{watch, Notify};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -67,18 +68,20 @@ struct QueuedDeploy {
     after: Instant,
 }
 
+/// The two tasks a running worker has, and how to reach them.
+struct Tasks {
+    /// Versions to deploy, each with a fresh run of attempts.
+    deploys: mpsc::UnboundedSender<String>,
+    /// Requests for another resync pass.
+    resyncs: mpsc::UnboundedSender<()>,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
 #[derive(Default)]
 struct State {
     running: bool,
-    queue: Vec<QueuedDeploy>,
-    /// Attempts already spent on a version, while it is being retried.
-    attempts: HashMap<String, u32>,
-    pumping: bool,
-    resyncing: bool,
-    resync_again: bool,
     subscription: Option<CancellationToken>,
-    settings_listener: Option<tokio::task::JoinHandle<()>>,
-    resync_timer: Option<tokio::task::JoinHandle<()>>,
+    tasks: Option<Tasks>,
 }
 
 #[derive(Clone)]
@@ -91,10 +94,6 @@ struct Inner {
     state: Mutex<State>,
     /// Cancels downloads and relay lookups when the worker stops.
     cancel: Mutex<CancellationToken>,
-    /// Cuts short the wait for the next retry, when there's work sooner.
-    wake: Notify,
-    pumping: watch::Sender<bool>,
-    resyncing: watch::Sender<bool>,
 }
 
 /// What a deploy of one version came to, short of crashing.
@@ -107,16 +106,7 @@ enum Outcome {
 
 impl SyncWorker {
     pub fn new(deps: SyncWorkerDeps) -> SyncWorker {
-        SyncWorker {
-            inner: Arc::new(Inner {
-                deps,
-                state: Mutex::new(State::default()),
-                cancel: Mutex::new(CancellationToken::new()),
-                wake: Notify::new(),
-                pumping: watch::channel(false).0,
-                resyncing: watch::channel(false).0,
-            }),
-        }
+        SyncWorker { inner: Arc::new(Inner { deps, state: Mutex::new(State::default()), cancel: Mutex::new(CancellationToken::new()) }) }
     }
 
     fn deps(&self) -> &SyncWorkerDeps {
@@ -140,7 +130,7 @@ impl SyncWorker {
         let _ = self.db(move |conn| Ok(write_deploy_log(conn, &event_id, level, msg, fields)?)).await;
     }
 
-    /// Begin syncing.
+    /// Begin syncing: resync everything, subscribe, and deploy what turns up.
     pub async fn start(&self) {
         {
             let mut state = self.inner.state.lock();
@@ -157,64 +147,37 @@ impl SyncWorker {
         let blobs = self.deps().blobs.clone();
         let _ = tokio::task::spawn_blocking(move || blobs.clear_temp()).await;
 
-        let mut changes = self.deps().settings.subscribe();
-        let worker = self.clone();
-        let listener = tokio::spawn(async move {
-            let mut seen = changes.borrow_and_update().clone();
-            while changes.changed().await.is_ok() {
-                let now = changes.borrow_and_update().clone();
-                if now.relays != seen.relays {
-                    // Connections to relays that were removed close themselves
-                    // once the restarted subscription stops asking them anything.
-                    worker.deps().nostr.clear_caches();
-                    worker.restart_subscription().await;
-                }
-                if now.resync_interval != seen.resync_interval {
-                    worker.schedule_resync();
-                }
-                // New servers or a bigger limit may be exactly what a failed
-                // deploy needed.
-                if now.blossom_fallback_servers != seen.blossom_fallback_servers
-                    || now.max_file_size != seen.max_file_size
-                    || now.max_site_size != seen.max_site_size
-                    || now.max_site_files != seen.max_site_files
-                {
-                    worker.retry_incomplete().await;
-                }
-                seen = now;
-            }
-        });
-        self.inner.state.lock().settings_listener = Some(listener);
+        let (deploys, deploy_requests) = mpsc::unbounded_channel();
+        let (resyncs, resync_requests) = mpsc::unbounded_channel();
+        let handles = vec![tokio::spawn(self.clone().work_deploys(deploy_requests)), tokio::spawn(self.clone().work_resyncs(resync_requests))];
+        self.inner.state.lock().tasks = Some(Tasks { deploys, resyncs, handles });
 
-        self.schedule_resync();
         self.restart_subscription().await;
-
-        let worker = self.clone();
-        tokio::spawn(async move { worker.resync_all().await });
-
         self.deps().log.info("sync_started", fields! { "relays" => self.deps().nostr.relays().len() });
     }
 
-    /// Stop syncing and release relay connections.
+    /// Stop syncing and release relay connections. Resolves once the deploy
+    /// in progress, if any, has left itself resumable.
     pub async fn stop(&self) {
-        {
+        let tasks = {
             let mut state = self.inner.state.lock();
             if !state.running {
                 return;
             }
             state.running = false;
-            for task in [state.settings_listener.take(), state.resync_timer.take()].into_iter().flatten() {
-                task.abort();
-            }
             if let Some(subscription) = state.subscription.take() {
                 subscription.cancel();
             }
-        }
+            state.tasks.take()
+        };
         self.inner.cancel.lock().cancel();
-        self.inner.wake.notify_waiters();
 
-        self.when_idle().await;
-        self.inner.state.lock().attempts.clear();
+        // Dropping the senders is what ends each task, once it is between
+        // pieces of work — so before waiting on them, not after.
+        if let Some(Tasks { deploys, resyncs, handles }) = tasks {
+            drop((deploys, resyncs));
+            futures_util::future::join_all(handles).await;
+        }
         self.deps().log.info("sync_stopped", fields! {});
     }
 
@@ -225,25 +188,34 @@ impl SyncWorker {
             return;
         }
         self.restart_subscription().await;
-        let worker = self.clone();
-        tokio::spawn(async move { worker.resync_all().await });
+        self.request_resync();
     }
 
-    /// Resolves once the deploy queue has drained.
-    pub async fn when_idle(&self) {
-        let mut pumping = self.inner.pumping.subscribe();
-        let _ = pumping.wait_for(|busy| !busy).await;
+    /// Ask for a pass over every site. A pass under way when this is asked
+    /// may already be past whatever prompted it, so one more follows it.
+    fn request_resync(&self) {
+        if let Some(tasks) = &self.inner.state.lock().tasks {
+            let _ = tasks.resyncs.send(());
+        }
     }
 
     /// Fetch a site's newest manifest now, and deploy it if it isn't ready.
     pub async fn sync_site(&self, address: &NsiteAddress) -> Result<()> {
         let cancel = self.cancel_token();
-        match self.deps().nostr.fetch_manifest(address, &cancel).await {
+        let stored = match self.deps().nostr.fetch_manifest(address, &cancel).await {
             Some(event) => self.ingest(event).await?,
-            None => self.deps().log.debug(
-                "manifest_not_found",
-                fields! { "pubkey" => address.pubkey.as_str(), "identifier" => address.identifier.as_str() },
-            ),
+            None => {
+                self.deps().log.debug(
+                    "manifest_not_found",
+                    fields! { "pubkey" => address.pubkey.as_str(), "identifier" => address.identifier.as_str() },
+                );
+                false
+            }
+        };
+        // A new version is queued already, and queueing it twice would reset
+        // the attempts its first deploy may have spent by now.
+        if stored {
+            return Ok(());
         }
 
         // Pick up a version that was stored earlier but never finished deploying.
@@ -253,44 +225,6 @@ impl SyncWorker {
             self.enqueue(&newest.event_id);
         }
         Ok(())
-    }
-
-    /// Re-fetch every configured site from relays.
-    ///
-    /// Passes never overlap, but a call made mid-pass isn't dropped either:
-    /// the walk may already be past whatever prompted it, so one more pass is
-    /// queued behind the current one.
-    pub async fn resync_all(&self) {
-        let already = {
-            let mut state = self.inner.state.lock();
-            if state.resyncing {
-                state.resync_again = true;
-            }
-            std::mem::replace(&mut state.resyncing, true)
-        };
-        if already {
-            let mut resyncing = self.inner.resyncing.subscribe();
-            let _ = resyncing.wait_for(|busy| !busy).await;
-            return;
-        }
-        self.inner.resyncing.send_replace(true);
-
-        loop {
-            self.inner.state.lock().resync_again = false;
-            self.run_resync().await;
-            let again = {
-                let mut state = self.inner.state.lock();
-                let again = state.resync_again && state.running;
-                if !again {
-                    state.resyncing = false;
-                }
-                again
-            };
-            if !again {
-                break;
-            }
-        }
-        self.inner.resyncing.send_replace(false);
     }
 
     async fn run_resync(&self) {
@@ -316,10 +250,11 @@ impl SyncWorker {
         }
     }
 
-    /// Store a manifest event and queue it for deployment.
-    pub async fn ingest(&self, event: Event) -> Result<()> {
+    /// Store a manifest event and queue it for deployment. Whether it was
+    /// new, and for a site someone configured.
+    pub async fn ingest(&self, event: Event) -> Result<bool> {
         if !is_site_manifest(&event) {
-            return Ok(());
+            return Ok(false);
         }
 
         let address = manifest_address(&event);
@@ -340,7 +275,7 @@ impl SyncWorker {
             .await?
         };
         if !stored {
-            return Ok(());
+            return Ok(false);
         }
 
         let address = manifest_address(&event);
@@ -356,7 +291,7 @@ impl SyncWorker {
         self.deploy_log(&event.id, "info", "manifest_received", fields! { "created_at" => event.created_at }).await;
 
         self.enqueue(&event.id);
-        Ok(())
+        Ok(true)
     }
 
     /// Queue every version that isn't ready yet.
@@ -380,25 +315,6 @@ impl SyncWorker {
         for event_id in pending {
             self.enqueue(&event_id);
         }
-    }
-
-    fn schedule_resync(&self) {
-        let interval = Duration::from_secs(self.deps().settings.get().resync_interval as u64);
-        let worker = self.clone();
-        let timer = tokio::spawn(async move {
-            let mut ticker = tokio::time::interval_at(Instant::now() + interval, interval);
-            loop {
-                ticker.tick().await;
-                let worker = worker.clone();
-                tokio::spawn(async move { worker.resync_all().await });
-            }
-        });
-
-        if let Some(previous) = self.inner.state.lock().resync_timer.replace(timer) {
-            previous.abort();
-        }
-
-        self.deps().log.debug("resync_scheduled", fields! { "interval_seconds" => interval.as_secs() });
     }
 
     async fn restart_subscription(&self) {
@@ -463,101 +379,152 @@ impl SyncWorker {
     /// Queue a version with a fresh run of attempts: everything that calls
     /// this is a reason to believe a deploy that gave up could now succeed.
     fn enqueue(&self, event_id: &str) {
-        self.inner.state.lock().attempts.remove(event_id);
-        self.queue_deploy(event_id, Instant::now());
+        if let Some(tasks) = &self.inner.state.lock().tasks {
+            let _ = tasks.deploys.send(event_id.to_string());
+        }
     }
 
-    /// Queue a version, to be deployed no earlier than `after`.
-    fn queue_deploy(&self, event_id: &str, after: Instant) {
-        let start = {
-            let mut state = self.inner.state.lock();
-            match state.queue.iter_mut().find(|entry| entry.event_id == event_id) {
+    /// Deploy queued versions one at a time, until the worker stops. A version
+    /// waiting out a retry's backoff holds up nothing: whatever is ready goes
+    /// first, and only an otherwise empty queue actually waits.
+    ///
+    /// The queue and the attempts spent belong to this task alone, so taking
+    /// work and going to sleep can't race a request arriving in between.
+    async fn work_deploys(self, mut requests: mpsc::UnboundedReceiver<String>) {
+        let mut queue: Vec<QueuedDeploy> = Vec::new();
+        let mut attempts: HashMap<String, u32> = HashMap::new();
+        let admit = |queue: &mut Vec<QueuedDeploy>, attempts: &mut HashMap<String, u32>, event_id: String| {
+            attempts.remove(&event_id);
+            let now = Instant::now();
+            match queue.iter_mut().find(|entry| entry.event_id == event_id) {
                 // A fresh reason to deploy overtakes a retry waiting out its backoff.
-                Some(pending) => pending.after = pending.after.min(after),
-                None => state.queue.push(QueuedDeploy { event_id: event_id.to_string(), after }),
+                Some(pending) => pending.after = pending.after.min(now),
+                None => queue.push(QueuedDeploy { event_id, after: now }),
             }
-            !std::mem::replace(&mut state.pumping, true)
         };
-        // `notify_one` rather than `notify_waiters`: it leaves a permit when
-        // the pump is between reading the queue and starting to wait, which
-        // `notify_waiters` would miss, leaving this version behind a backoff.
-        self.inner.wake.notify_one();
-
-        if start {
-            self.inner.pumping.send_replace(true);
-            let worker = self.clone();
-            tokio::spawn(async move { worker.pump().await });
-        }
-    }
-
-    /// Deploy queued versions one at a time. A version waiting out a retry's
-    /// backoff holds up nothing: whatever is ready goes first, and only an
-    /// otherwise empty queue actually waits.
-    async fn pump(&self) {
-        // Reset however the pump ends, a panic included: a `pumping` flag
-        // left set would mean nothing is ever deployed again.
-        struct Pumping<'a>(&'a Inner);
-        impl Drop for Pumping<'_> {
-            fn drop(&mut self) {
-                self.0.state.lock().pumping = false;
-                self.0.pumping.send_replace(false);
-            }
-        }
-        let _pumping = Pumping(&self.inner);
 
         loop {
-            let next = {
-                let mut state = self.inner.state.lock();
-                if !state.running {
-                    None
-                } else {
-                    let now = Instant::now();
-                    match state.queue.iter().position(|entry| entry.after <= now) {
-                        Some(index) => Some(Ok(state.queue.remove(index).event_id)),
-                        None => state.queue.iter().map(|entry| entry.after).min().map(Err),
-                    }
-                }
-            };
+            while let Ok(event_id) = requests.try_recv() {
+                admit(&mut queue, &mut attempts, event_id);
+            }
+            if !self.running() {
+                break;
+            }
 
-            match next {
-                None => break,
-                Some(Err(soonest)) => {
-                    let cancel = self.cancel_token();
-                    tokio::select! {
-                        _ = tokio::time::sleep_until(soonest) => {}
-                        _ = self.inner.wake.notified() => {}
-                        _ = cancel.cancelled() => {}
-                    }
+            let now = Instant::now();
+            if let Some(index) = queue.iter().position(|entry| entry.after <= now) {
+                let event_id = queue.remove(index).event_id;
+                let outcome = match AssertUnwindSafe(self.deploy(&event_id)).catch_unwind().await {
+                    Ok(outcome) => outcome,
+                    Err(_) => Err(anyhow::anyhow!("the deploy panicked")),
+                };
+                match AssertUnwindSafe(self.settle(&event_id, outcome, &mut attempts)).catch_unwind().await {
+                    Ok(Some(after)) => queue.push(QueuedDeploy { event_id, after }),
+                    Ok(None) => {}
+                    Err(_) => self.deps().log.error("deploy_settle_panicked", fields! { "event_id" => event_id }),
                 }
-                Some(Ok(event_id)) => {
-                    let outcome = AssertUnwindSafe(self.deploy(&event_id)).catch_unwind().await;
-                    let outcome = match outcome {
-                        Ok(outcome) => outcome,
-                        Err(_) => Err(anyhow::anyhow!("the deploy panicked")),
-                    };
-                    if AssertUnwindSafe(self.settle(&event_id, outcome)).catch_unwind().await.is_err() {
-                        self.deps().log.error("deploy_settle_panicked", fields! { "event_id" => event_id });
-                    }
-                }
+                continue;
+            }
+
+            let soonest = queue.iter().map(|entry| entry.after).min();
+            tokio::select! {
+                request = requests.recv() => match request {
+                    Some(event_id) => admit(&mut queue, &mut attempts, event_id),
+                    None => break,
+                },
+                _ = sleep_until(soonest) => {}
             }
         }
     }
 
-    async fn settle(&self, event_id: &str, outcome: Result<Option<Outcome>>) {
+    /// Pass over every site on the resync timer and whenever asked, and
+    /// reconfigure as the settings change. A pass runs alongside the rest, so
+    /// a relay list saved mid-pass takes effect at once.
+    async fn work_resyncs(self, mut requests: mpsc::UnboundedReceiver<()>) {
+        let mut changes = self.deps().settings.subscribe();
+        let mut seen = changes.borrow_and_update().clone();
+        let mut timer = resync_timer(seen.resync_interval, self.deps().log);
+        // Every start is a reason to look: whatever was missed while stopped.
+        let mut wanted = true;
+        let mut pass: Option<BoxFuture<'static, ()>> = None;
+
+        loop {
+            if wanted && pass.is_none() && self.running() {
+                wanted = false;
+                let worker = self.clone();
+                pass = Some(Box::pin(async move { worker.run_resync().await }));
+            }
+
+            tokio::select! {
+                () = async { pass.as_mut().expect("a pass").await }, if pass.is_some() => pass = None,
+                request = requests.recv() => match request {
+                    Some(()) => wanted = true,
+                    None => break,
+                },
+                _ = timer.tick() => wanted = true,
+                changed = changes.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    let now = changes.borrow_and_update().clone();
+                    if now.relays != seen.relays {
+                        // Connections to relays that were removed close themselves
+                        // once the restarted subscription stops asking them anything.
+                        self.deps().nostr.clear_caches();
+                        self.restart_subscription().await;
+                    }
+                    if now.resync_interval != seen.resync_interval {
+                        timer = resync_timer(now.resync_interval, self.deps().log);
+                    }
+                    // New servers or a bigger limit may be exactly what a failed
+                    // deploy needed.
+                    if now.blossom_fallback_servers != seen.blossom_fallback_servers
+                        || now.max_file_size != seen.max_file_size
+                        || now.max_site_size != seen.max_site_size
+                        || now.max_site_files != seen.max_site_files
+                    {
+                        self.retry_incomplete().await;
+                    }
+                    seen = now;
+                }
+            }
+        }
+
+        // A pass in progress is abandoned where it is: the cancelled token has
+        // already cut its lookups short.
+        drop(pass);
+    }
+
+    /// What a deploy came to, recorded. Returns when to try it again, if it
+    /// is to be.
+    async fn settle(&self, event_id: &str, outcome: Result<Option<Outcome>>, attempts: &mut HashMap<String, u32>) -> Option<Instant> {
         match outcome {
-            Ok(None) => {}
-            Ok(Some(Outcome::Ready)) => self.finish(event_id, DeployStatus::Ready, None).await,
-            Ok(Some(Outcome::Failed(reason))) => self.fail(event_id, &reason).await,
-            Ok(Some(Outcome::Refused { reason, msg, fields })) => self.refuse(event_id, &reason, msg, fields).await,
-            Ok(Some(Outcome::Interrupted(remaining))) => self.interrupt(event_id, remaining).await,
+            Ok(None) => None,
+            Ok(Some(Outcome::Ready)) => {
+                attempts.remove(event_id);
+                self.finish(event_id, DeployStatus::Ready, None).await;
+                None
+            }
+            Ok(Some(Outcome::Failed(reason))) => self.fail(event_id, &reason, attempts).await,
+            Ok(Some(Outcome::Refused { reason, msg, fields })) => {
+                attempts.remove(event_id);
+                self.refuse(event_id, &reason, msg, fields).await;
+                None
+            }
+            Ok(Some(Outcome::Interrupted(remaining))) => {
+                attempts.remove(event_id);
+                self.interrupt(event_id, remaining).await;
+                None
+            }
             Err(error) => {
                 if !self.running() {
                     // A consequence of shutting down, not of the version.
+                    attempts.remove(event_id);
                     self.interrupt(event_id, 0).await;
-                    return;
+                    return None;
                 }
                 self.deps().log.error("deploy_crashed", with_err(fields! { "event_id" => event_id }, &error));
-                self.fail(event_id, &format!("Deploy failed: {error}")).await;
+                self.fail(event_id, &format!("Deploy failed: {error}"), attempts).await
             }
         }
     }
@@ -851,19 +818,15 @@ impl SyncWorker {
     /// disk. Each retry waits twice as long as the last. Attempts are counted
     /// per run: once a run is spent the resync timer still re-queues the
     /// version, which is what lets a site recover on its own.
-    async fn fail(&self, event_id: &str, reason: &str) {
+    async fn fail(&self, event_id: &str, reason: &str, attempts: &mut HashMap<String, u32>) -> Option<Instant> {
         let limit = self.deps().settings.get().deploy_attempts as u32;
-        let (attempt, again) = {
-            let mut state = self.inner.state.lock();
-            let attempt = state.attempts.get(event_id).copied().unwrap_or(0) + 1;
-            let again = attempt < limit && state.running;
-            if again {
-                state.attempts.insert(event_id.to_string(), attempt);
-            } else {
-                state.attempts.remove(event_id);
-            }
-            (attempt, again)
-        };
+        let attempt = attempts.get(event_id).copied().unwrap_or(0) + 1;
+        let again = attempt < limit && self.running();
+        if again {
+            attempts.insert(event_id.to_string(), attempt);
+        } else {
+            attempts.remove(event_id);
+        }
 
         let backoff = self.deps().retry_backoff * 2u32.pow(attempt - 1);
 
@@ -875,29 +838,23 @@ impl SyncWorker {
 
         self.finish(event_id, DeployStatus::Failed, Some(&explanation)).await;
 
-        if again {
-            self.deploy_log(
-                event_id,
-                "info",
-                "deploy_retrying",
-                fields! { "attempt" => attempt + 1, "of" => limit, "wait_ms" => backoff.as_millis() as u64 },
-            )
-            .await;
-            self.queue_deploy(event_id, Instant::now() + backoff);
+        if !again {
+            return None;
         }
+        self.deploy_log(event_id, "info", "deploy_retrying", fields! { "attempt" => attempt + 1, "of" => limit, "wait_ms" => backoff.as_millis() as u64 })
+            .await;
+        Some(Instant::now() + backoff)
     }
 
     /// Fail a version for a reason retrying can't fix: it was superseded, or
     /// it breaks a limit.
     async fn refuse(&self, event_id: &str, reason: &str, msg: &'static str, fields: Fields) {
-        self.inner.state.lock().attempts.remove(event_id);
         self.deploy_log(event_id, "warn", msg, fields).await;
         self.finish(event_id, DeployStatus::Failed, Some(reason)).await;
     }
 
     /// Leave an interrupted deploy incomplete, so the next sync resumes it.
     async fn interrupt(&self, event_id: &str, remaining: usize) {
-        self.inner.state.lock().attempts.remove(event_id);
         let id = event_id.to_string();
         let _ = self
             .db(move |conn| {
@@ -941,7 +898,6 @@ impl SyncWorker {
             });
 
         if ready {
-            self.inner.state.lock().attempts.remove(event_id);
             self.deps().log.info("deploy_ready", fields! { "event_id" => event_id });
 
             // The newest ready version may just have changed, and a version is
@@ -954,6 +910,20 @@ impl SyncWorker {
             self.deps().log.error("deploy_failed", fields! { "event_id" => event_id, "err_msg" => error });
         }
     }
+}
+
+async fn sleep_until(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The timer for the periodic pass, whose first tick is one interval away.
+fn resync_timer(seconds: i64, log: Logger) -> tokio::time::Interval {
+    let interval = Duration::from_secs(seconds.max(1) as u64);
+    log.debug("resync_scheduled", fields! { "interval_seconds" => interval.as_secs() });
+    tokio::time::interval_at(Instant::now() + interval, interval)
 }
 
 /// Why a version too big for `max_site_size` was refused.

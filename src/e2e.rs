@@ -420,3 +420,34 @@ async fn a_missing_blob_fails_the_deploy_and_says_why() {
 
     gw.deployer.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_deploy_is_retried_with_backoff_then_left_to_the_next_sync() {
+    let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, vec![vec!["path".into(), "/index.html".into(), "f".repeat(64)]], "");
+    let server = blossom(HashMap::new()).await;
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "flaky.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Three attempts by default, the last of which gives up for now.
+    eventually("the attempts running out", async || {
+        gw.api("GET", "/api/hosts/flaky.example.com", None).await.1["host"]["latest"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("Attempt 3 of 3. The next sync will try again."))
+    })
+    .await;
+
+    // A resync that finds the version unfinished starts a fresh run of
+    // attempts, and the one at startup can overlap the one adding the host
+    // asks for, so how many runs there were is a matter of timing. Each run is
+    // retried with backoff, and the last one gives up.
+    let (_, log) = gw.api("GET", &format!("/api/hosts/flaky.example.com/versions/{}/log", manifest.id), None).await;
+    let messages: Vec<&str> = log["entries"].as_array().unwrap().iter().map(|e| e["msg"].as_str().unwrap()).collect();
+    assert!(messages.iter().filter(|m| **m == "deploy_retrying").count() >= 2, "{messages:?}");
+    assert_eq!(messages.last(), Some(&"deploy_failed"), "{messages:?}");
+
+    gw.deployer.stop().await;
+}
