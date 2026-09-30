@@ -40,21 +40,21 @@ fn suggestion_dimension(filter: &str) -> Option<&'static str> {
     })
 }
 
-pub fn query(conn: &Connection, log: &Logger, host: &QueryHost, body: &Value, timezone: &str) -> WorkerResponse {
+pub fn query(conn: &Connection, log: &Logger, now: i64, host: &QueryHost, body: &Value, timezone: &str) -> WorkerResponse {
     answer(log, || {
         let query = parse_stats_query(body)?;
-        QueryEngine::new(conn, crate::util::now()).query(host, &query, timezone)
+        QueryEngine::new(conn, now).query(host, &query, timezone)
     })
 }
 
-pub fn current_visitors(conn: &Connection, log: &Logger, host: &QueryHost) -> WorkerResponse {
-    answer(log, || Ok(json!(QueryEngine::new(conn, crate::util::now()).current_visitors(host)?)))
+pub fn current_visitors(conn: &Connection, log: &Logger, now: i64, host: &QueryHost) -> WorkerResponse {
+    answer(log, || Ok(json!(QueryEngine::new(conn, now).current_visitors(host)?)))
 }
 
 /// The last 24 hours of each site: unique visitors, their change against the
 /// 24 hours before, and the visitors of each hour. Two queries a site, since
 /// hourly buckets don't add up to a day's unique visitors.
-pub fn sparklines(conn: &Connection, log: &Logger, hosts: &[QueryHost], timezone: &str) -> WorkerResponse {
+pub fn sparklines(conn: &Connection, log: &Logger, now: i64, hosts: &[QueryHost], timezone: &str) -> WorkerResponse {
     answer(log, || {
         let total = parse_stats_query(&json!({
             "date_range": "24h",
@@ -68,7 +68,7 @@ pub fn sparklines(conn: &Connection, log: &Logger, hosts: &[QueryHost], timezone
             "include": { "time_labels": true },
         }))?;
 
-        let engine = QueryEngine::new(conn, crate::util::now());
+        let engine = QueryEngine::new(conn, now);
         let mut sparklines = serde_json::Map::new();
         for host in hosts {
             let total = engine.query(host, &total, timezone)?;
@@ -107,6 +107,7 @@ pub fn sparklines(conn: &Connection, log: &Logger, hosts: &[QueryHost], timezone
 pub fn suggestions(
     conn: &Connection,
     log: &Logger,
+    now: i64,
     host: &QueryHost,
     filter: &str,
     params: &HashMap<String, String>,
@@ -137,7 +138,7 @@ pub fn suggestions(
             "filters": filters,
         }))?;
 
-        QueryEngine::new(conn, crate::util::now()).suggestions(host, dimension, query, params.get("q").map_or("", String::as_str), timezone)
+        QueryEngine::new(conn, now).suggestions(host, dimension, query, params.get("q").map_or("", String::as_str), timezone)
     })
 }
 

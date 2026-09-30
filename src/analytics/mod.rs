@@ -241,24 +241,24 @@ impl Analytics {
     /// Answer a dashboard query, Plausible's `POST /api/stats/:domain/query`.
     pub async fn query(&self, host: QueryHost, body: serde_json::Value) -> WorkerResponse {
         let timezone = self.shared.settings.get().analytics_timezone.clone();
-        self.read(true, move |conn, log| stats::query(conn, log, &host, &body, &timezone)).await
+        self.read(true, move |conn, log| stats::query(conn, log, crate::util::now(), &host, &body, &timezone)).await
     }
 
     /// Visitors in the last five minutes.
     pub async fn current_visitors(&self, host: QueryHost) -> WorkerResponse {
-        self.read(true, move |conn, log| stats::current_visitors(conn, log, &host)).await
+        self.read(true, move |conn, log| stats::current_visitors(conn, log, crate::util::now(), &host)).await
     }
 
     /// Each site's visitors over the last 24 hours, hour by hour.
     pub async fn sparklines(&self, hosts: Vec<QueryHost>) -> WorkerResponse {
         let timezone = self.shared.settings.get().analytics_timezone.clone();
-        self.read(true, move |conn, log| stats::sparklines(conn, log, &hosts, &timezone)).await
+        self.read(true, move |conn, log| stats::sparklines(conn, log, crate::util::now(), &hosts, &timezone)).await
     }
 
     /// Filter autocomplete.
     pub async fn suggestions(&self, host: QueryHost, filter: String, params: HashMap<String, String>) -> WorkerResponse {
         let timezone = self.shared.settings.get().analytics_timezone.clone();
-        self.read(false, move |conn, log| stats::suggestions(conn, log, &host, &filter, &params, &timezone)).await
+        self.read(false, move |conn, log| stats::suggestions(conn, log, crate::util::now(), &host, &filter, &params, &timezone)).await
     }
 
     /// Run a question on the analytics runtime's read connections, writing
