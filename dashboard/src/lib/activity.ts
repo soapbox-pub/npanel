@@ -24,6 +24,8 @@ export type ActivityKind =
   | 'person-removed'
   | 'name-set'
   | 'name-removed'
+  | 'env-set'
+  | 'env-removed'
   | 'settings'
   | 'other';
 
@@ -175,6 +177,28 @@ export function describe(entry: AuditEntry): Activity {
 
     case 'nip05.delete':
       return { kind: 'name-removed', sentence: ['removed', { strong: nip05Name(target) }], details: [] };
+
+    case 'env.set': {
+      const name = String(after.name ?? '');
+      const value = String(after.value ?? '');
+
+      return {
+        kind: 'env-set',
+        sentence: [before.name ? 'changed' : 'set', { strong: name }, 'on', { site: target }],
+        details: [
+          typeof before.value === 'string'
+            ? { type: 'change', label: 'Value', from: before.value, to: value, mono: true }
+            : { type: 'value', label: 'Value', value, mono: true },
+        ],
+      };
+    }
+
+    case 'env.delete':
+      return {
+        kind: 'env-removed',
+        sentence: ['removed', { strong: String(before.name ?? '') }, 'from', { site: target }],
+        details: [],
+      };
 
     case 'settings.update':
       return settingUpdate(target, entry.old_value, entry.new_value);

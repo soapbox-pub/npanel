@@ -114,6 +114,14 @@ export interface Nip05Name {
   updated_at: number;
 }
 
+/** One variable a site's pages read as `window.ENV`. */
+export interface EnvVariable {
+  name: string;
+  value: string;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface NpanelUser {
   pubkey: string;
   npub: string;

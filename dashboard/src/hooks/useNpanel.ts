@@ -153,6 +153,17 @@ export function useNip05Names(hostname: string | undefined, enabled = true) {
   });
 }
 
+/** The variables this site's pages read as `window.ENV`. */
+export function useEnvVariables(hostname: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('env', hostname ?? ''),
+    queryFn: async () => (await api!.envVariables(hostname!)).variables,
+    enabled: !!api && !!hostname,
+  });
+}
+
 export function useUsers(enabled = true) {
   const api = useApi();
 
@@ -261,6 +272,27 @@ export function useDeleteNip05Name() {
   return useMutation({
     mutationFn: (input: { hostname: string; name: string }) =>
       api!.deleteNip05Name(input.hostname, input.name),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSetEnvVariable() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { hostname: string; name: string; value: string }) =>
+      api!.setEnvVariable(input.hostname, input.name, input.value),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteEnvVariable() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { hostname: string; name: string }) => api!.deleteEnvVariable(input.hostname, input.name),
     onSuccess: invalidate,
   });
 }

@@ -2,6 +2,7 @@ import { useSeoMeta } from '@unhead/react';
 import { useParams } from 'react-router-dom';
 
 import { RowIcon } from '@/components/Grouped';
+import { EnvEditor } from '@/components/host/EnvEditor';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
 import { Nip05Editor } from '@/components/host/Nip05Editor';
@@ -73,6 +74,8 @@ function Content({ id, host }: { id: SiteSectionId; host: Host }) {
       return <FileList hostname={host.hostname} />;
     case 'nip05':
       return <Nip05Editor hostname={host.hostname} />;
+    case 'env':
+      return <EnvEditor hostname={host.hostname} />;
   }
 }
 

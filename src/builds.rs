@@ -2,7 +2,8 @@
 //!
 //! A build is a host's version chain flattened into one path map, plus every
 //! file npanel generates or rewrites for that host — a sitemap, a `robots.txt`
-//! with a line appended, the analytics tracker and every page loading it. All
+//! with a line appended, `window.ENV` and the analytics tracker and every page
+//! loading them. All
 //! of it is worked out here, once, and stored as ordinary blobs with their
 //! compressed copies, so serving a request is a lookup and a send whatever the
 //! file is.
@@ -27,17 +28,18 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256, Sha384};
 use tokio::sync::watch;
 
-use crate::analytics::inject::{inject_analytics, MAX_INJECT_BYTES};
 use crate::analytics::tracker::{tracker_script, tracker_sha256, TRACKER_PATH};
 use crate::blobs::BlobStore;
 use crate::db::{BuildKind, Db, Host, HostBuild, SiteEvent, HOST_BUILD_COLUMNS};
 use crate::fields;
+use crate::inject::{inject_script, versioned_src, Placement, Script, MAX_INJECT_BYTES};
 use crate::log::{with_err, Logger};
 use crate::mime::is_compressible;
 use crate::nsite_address::NsiteAddress;
 use crate::seo::{augment_robots, robots_needs_sitemap, robots_txt, sitemap_paths, sitemap_xml, version_date, MAX_ROBOTS_BYTES};
 use crate::serve::RequestOrigin;
 use crate::settings::Settings;
+use crate::site_env::{env_script, host_env, ENV_PATH};
 use crate::sites::{
     active_event, host_by_id, newest_by_path, prune_deploy_log, record_blob, record_variant_sizes, version_chain, write_deploy_log,
 };
@@ -49,7 +51,7 @@ use crate::util::extname;
 ///
 /// The same number as the TypeScript npanel's: this port builds the same
 /// bytes, so a gateway moving from one to the other rebuilds nothing.
-pub const BUILDER_VERSION: i64 = 2;
+pub const BUILDER_VERSION: i64 = 3;
 
 /// Wait before a second attempt at a build. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -77,6 +79,8 @@ struct BuildTarget {
     chain: Vec<String>,
     /// Whether its pages load the tracker.
     tracker: bool,
+    /// The `window.ENV` script its pages load, if the host has variables.
+    env: Option<String>,
     fingerprint: String,
 }
 
@@ -320,6 +324,8 @@ impl HostBuilder {
                     .query_row([host_id], |row| row.get(0))
                     .optional()?;
                 let tracker = host.analytics == 1;
+                let vars = host_env(conn, host_id)?;
+                let env = (!vars.is_empty()).then(|| env_script(&vars));
 
                 let mut origins = vec![(BuildKind::Clearnet, RequestOrigin { hostname: host.hostname.clone(), scheme: "https" })];
                 // The onion gets a build of its own because its generated files
@@ -331,8 +337,17 @@ impl HostBuilder {
                 Ok(origins
                     .into_iter()
                     .map(|(kind, origin)| {
-                        let fingerprint = fingerprint(&host, &origin, &chain, tracker);
-                        BuildTarget { host: host.clone(), kind, origin, event: event.clone(), chain: chain.clone(), tracker, fingerprint }
+                        let fingerprint = fingerprint(&host, &origin, &chain, tracker, env.as_deref());
+                        BuildTarget {
+                            host: host.clone(),
+                            kind,
+                            origin,
+                            event: event.clone(),
+                            chain: chain.clone(),
+                            tracker,
+                            env: env.clone(),
+                            fingerprint,
+                        }
                     })
                     .collect())
             })
@@ -526,23 +541,68 @@ fn assemble(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, log: &Lo
     if target.host.seo != 0 {
         seo(conn, blobs, target, &mut files, log)?;
     }
-    if target.tracker {
-        analytics(conn, blobs, target, &mut files, log)?;
-    }
+    scripts(conn, blobs, target, &mut files, log)?;
 
     Ok(files)
 }
 
-/// The tracker, and every page of the site loading it. Each page is rewritten
-/// once per distinct blob, and the rewritten page names the published one as
-/// its source.
-fn analytics(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &mut IndexMap<String, BuildFile>, log: &Logger) -> Result<()> {
-    let script = tracker_script(&target.host.hostname);
-    let integrity = format!("sha384-{}", base64::engine::general_purpose::STANDARD.encode(Sha384::digest(script.as_bytes())));
+/// A script npanel adds to every page of a build, and the file it loads.
+struct Addition {
+    /// Where the file is in the build.
+    path: &'static str,
+    body: String,
+    /// What the tag loads, which may carry a version the path doesn't.
+    src: String,
+    integrity: String,
+    module: bool,
+    placement: Placement,
+    connects: bool,
+    /// The deploy log entry saying it was added.
+    msg: &'static str,
+}
 
-    let mut rewritten: HashMap<String, Option<String>> = HashMap::new();
-    let mut pages = 0;
-    let mut skipped = 0;
+/// npanel's scripts — `window.ENV` and the analytics tracker — and every page
+/// of the site loading them. Each page is rewritten once per distinct blob,
+/// with every script at once, and the rewritten page names the published one
+/// as its source.
+fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &mut IndexMap<String, BuildFile>, log: &Logger) -> Result<()> {
+    let integrity = |body: &str| format!("sha384-{}", base64::engine::general_purpose::STANDARD.encode(Sha384::digest(body.as_bytes())));
+
+    let mut additions = Vec::new();
+    if let Some(env) = &target.env {
+        additions.push(Addition {
+            path: ENV_PATH,
+            src: versioned_src(ENV_PATH, env.as_bytes()),
+            integrity: integrity(env),
+            body: env.clone(),
+            module: false,
+            placement: Placement::Start,
+            connects: false,
+            msg: "env_added",
+        });
+    }
+    if target.tracker {
+        let body = tracker_script(&target.host.hostname);
+        additions.push(Addition {
+            path: TRACKER_PATH,
+            src: versioned_src(TRACKER_PATH, body.as_bytes()),
+            integrity: integrity(&body),
+            body,
+            module: true,
+            placement: Placement::End,
+            connects: true,
+            msg: "analytics_added",
+        });
+    }
+    if additions.is_empty() {
+        return Ok(());
+    }
+
+    // Per published blob: the page it became, if any script reached it, and
+    // which ones did.
+    let mut rewritten: HashMap<String, (Option<String>, Vec<bool>)> = HashMap::new();
+    let mut pages = vec![0; additions.len()];
+    let mut skipped = vec![0; additions.len()];
 
     let paths: Vec<String> = files.keys().cloned().collect();
     for path in paths {
@@ -551,38 +611,56 @@ fn analytics(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: 
         }
         let file = files[&path].clone();
 
-        let sha256 = match rewritten.get(&file.sha256) {
-            Some(sha256) => sha256.clone(),
-            None => {
-                let mut sha256 = None;
-                if blobs.size(&file.sha256).is_some_and(|size| size <= MAX_INJECT_BYTES) {
-                    if let Some(page) = inject_analytics(&blobs.read_bytes(&file.sha256, MAX_INJECT_BYTES), &integrity) {
-                        sha256 = Some(store(conn, blobs, &path, &page, log)?);
+        if !rewritten.contains_key(&file.sha256) {
+            let mut added = vec![false; additions.len()];
+            let mut sha256 = None;
+            if blobs.size(&file.sha256).is_some_and(|size| size <= MAX_INJECT_BYTES) {
+                let mut page = blobs.read_bytes(&file.sha256, MAX_INJECT_BYTES);
+                for (i, addition) in additions.iter().enumerate() {
+                    let script = Script {
+                        src: &addition.src,
+                        integrity: &addition.integrity,
+                        module: addition.module,
+                        placement: addition.placement,
+                        connects: addition.connects,
+                    };
+                    if let Some(with_script) = inject_script(&page, &script) {
+                        page = with_script;
+                        added[i] = true;
                     }
                 }
-                rewritten.insert(file.sha256.clone(), sha256.clone());
-                sha256
+                if added.contains(&true) {
+                    sha256 = Some(store(conn, blobs, &path, &page, log)?);
+                }
             }
-        };
+            rewritten.insert(file.sha256.clone(), (sha256, added));
+        }
 
-        let Some(sha256) = sha256 else {
-            skipped += 1;
-            continue;
-        };
-        files.insert(path, BuildFile { sha256, event_id: file.event_id, source_sha256: Some(file.sha256) });
-        pages += 1;
+        let (sha256, added) = &rewritten[&file.sha256];
+        for (i, added) in added.iter().enumerate() {
+            if *added {
+                pages[i] += 1;
+            } else {
+                skipped[i] += 1;
+            }
+        }
+        if let Some(sha256) = sha256 {
+            files.insert(path, BuildFile { sha256: sha256.clone(), event_id: file.event_id, source_sha256: Some(file.sha256) });
+        }
     }
 
-    let sha256 = store(conn, blobs, TRACKER_PATH, script.as_bytes(), log)?;
-    files.insert(TRACKER_PATH.to_string(), BuildFile { sha256, event_id: None, source_sha256: None });
+    for (i, addition) in additions.iter().enumerate() {
+        let sha256 = store(conn, blobs, addition.path, addition.body.as_bytes(), log)?;
+        files.insert(addition.path.to_string(), BuildFile { sha256, event_id: None, source_sha256: None });
 
-    write_deploy_log(
-        conn,
-        &target.event.event_id,
-        "debug",
-        "analytics_added",
-        fields! { "hostname" => target.origin.hostname.as_str(), "kind" => target.kind.as_str(), "pages" => pages, "skipped" => skipped },
-    )?;
+        write_deploy_log(
+            conn,
+            &target.event.event_id,
+            "debug",
+            addition.msg,
+            fields! { "hostname" => target.origin.hostname.as_str(), "kind" => target.kind.as_str(), "pages" => pages[i], "skipped" => skipped[i] },
+        )?;
+    }
     Ok(())
 }
 
@@ -652,8 +730,12 @@ fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &L
 ///
 /// Anything that affects only headers — the CSP switch, SPA mode — is read per
 /// request and deliberately left out, so flipping one rebuilds nothing.
-fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool) -> String {
-    let inputs = serde_json::json!({
+///
+/// `window.ENV` is left out too unless the host has variables, which the
+/// TypeScript npanel knows nothing of: a host without any keeps the
+/// fingerprint it had there, and one with some gets a build of its own.
+fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, env: Option<&str>) -> String {
+    let mut inputs = serde_json::json!({
         "builder": BUILDER_VERSION,
         "origin": origin_url(origin),
         "hostname": host.hostname,
@@ -661,6 +743,9 @@ fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: b
         "seo": host.seo,
         "tracker": if tracker { serde_json::Value::from(tracker_sha256()) } else { serde_json::Value::Null },
     });
+    if let Some(env) = env {
+        inputs["env"] = hex::encode(Sha256::digest(env.as_bytes())).into();
+    }
     hex::encode(Sha256::digest(inputs.to_string().as_bytes()))
 }
 
@@ -706,10 +791,10 @@ mod tests {
             updated_at: 0,
         };
         let origin = RequestOrigin { hostname: "docs.example.com".into(), scheme: "https" };
-        // sha256 of {"builder":2,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}
+        // sha256 of {"builder":3,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}
         assert_eq!(
-            fingerprint(&host, &origin, &["e1".into()], false),
-            sha(r#"{"builder":2,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}"#)
+            fingerprint(&host, &origin, &["e1".into()], false, None),
+            sha(r#"{"builder":3,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}"#)
         );
     }
 
@@ -780,7 +865,27 @@ mod tests {
             .with(|conn| Ok(conn.query_row("SELECT sha256, source_sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'", [second], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?))
             .unwrap();
         assert_eq!(index.1.as_deref(), Some(sha(page).as_str()));
-        assert!(blobs.read_text(&index.0, 10_000).contains(r#"<script type="module" src="/.npanel/script.js"></script></head>"#));
+        let tracker = versioned_src(TRACKER_PATH, tracker_script("docs.example.com").as_bytes());
+        assert!(blobs.read_text(&index.0, 10_000).contains(&format!(r#"<script type="module" src="{tracker}"></script></head>"#)));
+
+        // A variable too: both scripts, in one rewrite of the published page.
+        t.db.with(|conn| Ok(conn.execute("INSERT INTO host_env (host_id, name, value, created_at, updated_at) VALUES (?, 'A', 'b', 0, 0)", [host_id])?))
+            .unwrap();
+        builder.hosts_changed(Some(&[host_id]));
+        builder.when_idle().await;
+        let (third, list) = files(&t.db);
+        assert_ne!(third, second);
+        assert!(list.iter().any(|(p, e)| p == ENV_PATH && e.is_none()));
+        let index = t
+            .db
+            .with(|conn| Ok(conn.query_row("SELECT sha256, source_sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'", [third], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?))
+            .unwrap();
+        assert_eq!(index.1.as_deref(), Some(sha(page).as_str()));
+        let src = versioned_src(ENV_PATH, env_script(&[("A".into(), "b".into())]).as_bytes());
+        assert_eq!(
+            blobs.read_text(&index.0, 10_000),
+            format!(r#"<html><head><script src="{src}"></script><title>Hi</title><script type="module" src="{tracker}"></script></head><body>hello</body></html>"#)
+        );
 
         builder.stop().await;
     }

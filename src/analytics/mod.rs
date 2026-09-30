@@ -14,7 +14,6 @@
 pub mod channel;
 pub mod geo;
 pub mod ingest;
-pub mod inject;
 pub mod query;
 pub mod request;
 pub mod salts;

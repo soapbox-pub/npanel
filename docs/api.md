@@ -372,7 +372,8 @@ it.
 `analytics` counts visits to the site, and defaults to `false`. With it on,
 every HTML page the site serves loads npanel's tracker — Plausible's own
 `@plausible-analytics/tracker`, served from the site at `/.npanel/script.js`
-and reporting to `/.npanel/api/event` on the same origin — so nothing needs
+(loaded as `/.npanel/script.js?v=<hash>`, so a new tracker is picked up at
+once) and reporting to `/.npanel/api/event` on the same origin — so nothing needs
 configuring and a visit over the site's onion address counts too. The pages are
 rewritten when the host is built, not per request: the one tag is added at the
 end of `<head>`, every other byte is left as published, and the result is
@@ -526,6 +527,52 @@ NIP forbids `npub` in the document itself.
 
 Removes one name; `404` if the host never had it. Returns the remaining list.
 Deleting the host deletes its names with it.
+
+### `GET /api/hosts/:hostname/env`
+
+The variables this host's pages read as `window.ENV`, ordered by name. See
+[the architecture](architecture.md#environment-variables) for how they reach a
+page.
+
+```json
+{
+  "variables": [
+    {
+      "name": "API_URL",
+      "value": "https://api.example.com",
+      "created_at": 1754000000,
+      "updated_at": 1754000000
+    }
+  ]
+}
+```
+
+Not admin-only, for the same reason NIP-05 names aren't.
+
+### `PUT /api/hosts/:hostname/env/:name`
+
+```json
+{ "value": "https://api.example.com" }
+```
+
+Sets the variable — `201` for a new one, `200` for a new value — and returns
+the whole list, in the shape `GET` returns. The host is rebuilt, and pages load
+the new values once the build is live, usually within a second.
+
+`name` is kept as written, case and all, and must be letters, digits and `_`,
+not starting with a digit — the rule shells hold environment variables to — and
+at most 128 characters. `value` is any string up to 4,096 characters, stored
+verbatim; an empty one is a value like any other. A host may have at most 100
+variables. Anything outside those is a `400`.
+
+Values are served to every visitor of the site. Don't store secrets in them.
+
+### `DELETE /api/hosts/:hostname/env/:name`
+
+Removes one variable; `404` if the host never had it. Returns the remaining
+list. Removing the last one takes `/.npanel/env.js` out of the build, and the
+pages go back to exactly what the site published. Deleting the host deletes its
+variables with it.
 
 ## Analytics
 

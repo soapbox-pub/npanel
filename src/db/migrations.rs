@@ -287,4 +287,17 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
         WHERE relays LIKE '%"ws://%'"#,
         ],
     ),
+    (
+        "020_host_env",
+        &[
+            r#"CREATE TABLE host_env (
+        host_id INTEGER NOT NULL REFERENCES hosts (id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        value TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (host_id, name)
+      )"#,
+        ],
+    ),
 ];

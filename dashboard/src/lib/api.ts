@@ -4,6 +4,7 @@ import type {
   AuditEntry,
   DeployLogEntry,
   DnsTarget,
+  EnvVariable,
   Host,
   HostPatch,
   HostVersion,
@@ -181,6 +182,19 @@ export class ApiClient {
 
   deleteNip05Name(hostname: string, name: string): Promise<{ names: Nip05Name[] }> {
     return this.request('DELETE', `/api/hosts/${path(hostname)}/nip05/${path(name)}`);
+  }
+
+  envVariables(hostname: string): Promise<{ variables: EnvVariable[] }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/env`);
+  }
+
+  /** Adds the variable, or replaces the value already stored under its name. */
+  setEnvVariable(hostname: string, name: string, value: string): Promise<{ variables: EnvVariable[] }> {
+    return this.request('PUT', `/api/hosts/${path(hostname)}/env/${path(name)}`, { value });
+  }
+
+  deleteEnvVariable(hostname: string, name: string): Promise<{ variables: EnvVariable[] }> {
+    return this.request('DELETE', `/api/hosts/${path(hostname)}/env/${path(name)}`);
   }
 
   users(): Promise<{ users: NpanelUser[] }> {

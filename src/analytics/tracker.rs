@@ -10,6 +10,8 @@ use std::sync::OnceLock;
 
 use sha2::{Digest, Sha256};
 
+use crate::inject::EXPAT_MAGNET;
+
 pub const TRACKER_PATH: &str = "/.npanel/script.js";
 pub const EVENT_PATH: &str = "/.npanel/api/event";
 
@@ -17,10 +19,6 @@ pub const EVENT_PATH: &str = "/.npanel/api/event";
 /// `assets/analytics/plausible-LICENSE.md`), unmodified: it is what the ingest
 /// endpoint is modelled on, so the two can't disagree about a field.
 const CODE: &str = include_str!("../../assets/analytics/plausible.js");
-
-/// The Expat entry's magnet in LibreJS's license_definitions.json, which is
-/// all it checks.
-const EXPAT_MAGNET: &str = "magnet:?xt=urn:btih:d3d9a9a6595521f9666a5e94cc830dab83b65699&dn=expat.txt";
 
 /// Hex sha256 of the tracker module, so a new release rebuilds every site.
 pub fn tracker_sha256() -> &'static str {

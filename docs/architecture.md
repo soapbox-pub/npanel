@@ -200,11 +200,20 @@ A ready version is not yet something a host serves. What a host serves is its
 **build**: the finished bundle for that host, made once and then frozen
 (`HostBuilder`, `src/builds.rs`). A build is a path map — the host's version
 chain flattened into one, plus every file npanel generates or rewrites for that
-host: a sitemap, a `robots.txt` with a line appended, and with analytics on the
-tracker script and every page rewritten to load it — and everything in it is an
+host: a sitemap, a `robots.txt` with a line appended, the `window.ENV` script
+for a host with variables, the tracker script with analytics on, and every page
+rewritten to load them — and everything in it is an
 ordinary stored blob with its compressed copies. So every body a site sends is a slice of a kept memory
 mapping of a stored file, including the ones npanel wrote, and all the work of making them happens once, when the host
 is built, rather than on a request. Only headers are decided per request.
+
+Every script npanel adds to a page — `window.ENV` and the tracker — is loaded
+at a URL versioned by its contents, `/.npanel/script.js?v=<hash>`. The path
+answers whatever the query says, and the script is cached for an hour like any
+other asset; the version is what lets a change reach visitors at once, since
+the pages naming it revalidate on every request and each change names a URL no
+cache has seen. An `ETag` alone would not do it: nothing asks for the script
+again until its hour is up.
 
 The invariant goes up a level with it: **a host serves only its newest ready
 build**. A version that finishes deploying goes live on a host once that
@@ -294,6 +303,7 @@ The tables:
 | `deploy_log`  | Per-version deploy trace, capped at 500 entries             |
 | `onion_services` | A host's Tor address and the key it is named by          |
 | `nip05_names` | The NIP-05 names a host answers for                        |
+| `host_env`    | The variables a host's pages read as `window.ENV`           |
 
 **Blobs** live on the filesystem at `DATA_DIR/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
@@ -539,6 +549,46 @@ Names live in a table of their own keyed by host id rather than hostname, so
 renaming a site carries them along and deleting it takes them with it — the
 same `ON DELETE CASCADE` reasoning as the onion keys. The next site to be given
 that hostname never made those assertions about anyone.
+
+## Environment variables
+
+A host can also carry variables, which its pages read as `window.ENV`. Staff
+set them on the site's Environment page, a name and a value to a row, and as
+with NIP-05 names anyone with a grant on the site can.
+
+A static site has no server to read configuration from, so the same build goes
+everywhere with whatever it was built with. This is the browser half of the
+pattern Remix documents: the server — here, the gateway — renders the values
+into a script that runs before the site's own, and a site written to look
+reads `window.ENV.API_URL` rather than a constant baked in at build time. One
+deploy can then be served on two hosts pointed at two backends, and a backend
+can move without a rebuild. A site that doesn't look is unaffected.
+
+The script is part of the host's build (`src/site_env.rs`, `src/builds.rs`),
+made as the tracker is: stored as a blob at `/.npanel/env.js`, wrapped in a
+LibreJS license block, and loaded by every page, which is rewritten once to
+say so. The differences are all about running first. The tag goes at the
+*start* of the head rather than the end, and is a classic script rather than a
+module, so it blocks the parser and has set `window.ENV` before any script the
+site wrote starts. It also comes before any `<base>` that could send its path
+somewhere else. A `<meta>` Content Security Policy after it is widened all the
+same, since npanel sends a declared policy as a header, and a header covers
+the whole page.
+
+The tag loads the script at a versioned URL, like every script npanel adds
+(see [builds](#builds)), so a changed value reaches visitors at once.
+
+The variables are part of the build's fingerprint, so changing one rebuilds the
+host and nothing else. They enter the fingerprint only when there are some,
+which keeps every host without them at the fingerprint the TypeScript npanel
+gives it: its builds stay current, and it rebuilds a host that has variables
+without them, which is right, since it serves none.
+
+Everything in the script is public. It is served to every visitor, and nothing
+secret belongs in it — the dashboard says so beside the list.
+
+Variables live in a table keyed by host id, like NIP-05 names, so a rename
+carries them along and deleting the host takes them with it.
 
 ## Tor
 

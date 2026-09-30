@@ -318,6 +318,31 @@ async fn a_published_site_is_deployed_built_and_served() {
         serde_json::json!({ "names": { "bob": manifest.pubkey }, "relays": { manifest.pubkey.clone(): ["wss://r.example.com"] } })
     );
 
+    // Variables reach every page as window.ENV, from a script loaded before
+    // anything the site wrote.
+    let (status, body) = gw.api("PUT", "/api/hosts/docs.example.com/env/API_URL", Some(serde_json::json!({ "value": "https://api.example.com" }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["variables"][0]["value"], "https://api.example.com");
+    let (status, body) = gw.api("PUT", "/api/hosts/docs.example.com/env/2FAST", Some(serde_json::json!({ "value": "" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    eventually("the variables going live", async || gw.request("GET", "docs.example.com", "/.npanel/env.js", &[], None).await.0 == StatusCode::OK).await;
+    let (_, headers, script) = gw.request("GET", "docs.example.com", "/.npanel/env.js?v=anything", &[], None).await;
+    assert_eq!(headers["content-type"], "text/javascript; charset=utf-8");
+    let script = String::from_utf8(script).unwrap();
+    assert!(script.contains("\nwindow.ENV = {\"API_URL\":\"https://api.example.com\"};\n"), "{script}");
+    let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
+    let tag = format!(r#"<script src="{}"></script>"#, crate::inject::versioned_src(crate::site_env::ENV_PATH, script.as_bytes()));
+    assert_eq!(String::from_utf8(served).unwrap(), page.replacen("<head>", &format!("<head>{tag}"), 1));
+
+    // Removing the last one puts the pages back as published.
+    let (status, body) = gw.api("DELETE", "/api/hosts/docs.example.com/env/API_URL", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["variables"], serde_json::json!([]));
+    eventually("the variables going away", async || gw.request("GET", "docs.example.com", "/.npanel/env.js", &[], None).await.0 == StatusCode::NOT_FOUND).await;
+    let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
+    assert_eq!(served, page.as_bytes());
+
     // Disabling the host takes it off the air.
     let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "enabled": false }))).await;
     assert_eq!(status, StatusCode::OK);
@@ -327,7 +352,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     // Every change was audited.
     let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
-    assert_eq!(actions, ["host.update", "nip05.set", "host.create"]);
+    assert_eq!(actions, ["host.update", "env.delete", "env.set", "nip05.set", "host.create"]);
 
     gw.deployer.stop().await;
     drop(gw.db);

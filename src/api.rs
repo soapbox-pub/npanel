@@ -34,6 +34,7 @@ use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_addre
 use crate::serve::ServeCache;
 use crate::settings::{Settings, SettingsValues, KEYS};
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
+use crate::site_env::{parse_env_name, parse_env_value, MAX_VARIABLES};
 use crate::site_preview::{SitePreview, SitePreviews};
 use crate::sites::{load_host, newest_event, site_event, site_key};
 use crate::tor::TorService;
@@ -116,6 +117,8 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/hosts/{hostname}/grants", get(get_grants).put(put_grants))
         .route("/api/hosts/{hostname}/nip05", get(list_nip05))
         .route("/api/hosts/{hostname}/nip05/{name}", put(put_nip05).delete(delete_nip05))
+        .route("/api/hosts/{hostname}/env", get(list_env))
+        .route("/api/hosts/{hostname}/env/{name}", put(put_env).delete(delete_env))
         .route("/api/hosts/{hostname}/stats/query", post(stats_query))
         .route("/api/hosts/{hostname}/stats/current-visitors", get(stats_current_visitors))
         .route("/api/hosts/{hostname}/stats/suggestions/{filter}", get(stats_suggestions))
@@ -1094,6 +1097,133 @@ async fn delete_nip05(State(deps): State<Deps>, Extension(user): Extension<AuthU
             ok(json!({ "names": names }))
         }
         Ok(None) => error(StatusCode::NOT_FOUND, format!("{} has no name {name}.", host.hostname)),
+        Err(reply) => reply,
+    }
+}
+
+/// A host's variables, in the shape every route here returns them.
+fn env_list(conn: &Connection, host_id: i64) -> rusqlite::Result<Vec<Value>> {
+    conn.prepare_cached("SELECT name, value, created_at, updated_at FROM host_env WHERE host_id = ? ORDER BY name")?
+        .query_map([host_id], |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "value": r.get::<_, String>(1)?,
+                "created_at": r.get::<_, i64>(2)?,
+                "updated_at": r.get::<_, i64>(3)?,
+            }))
+        })?
+        .collect()
+}
+
+async fn list_env(State(deps): State<Deps>, Extension(user): Extension<AuthUser>, Path(hostname): Path<String>) -> Reply {
+    let host = match accessible_host(&deps, &user, &hostname, "/api/hosts/:hostname/env").await {
+        Ok(host) => host,
+        Err(reply) => return reply,
+    };
+    db(&deps, "/api/hosts/:hostname/env", move |conn| Ok(env_list(conn, host.id)?))
+        .await
+        .map_or_else(|reply| reply, |variables| ok(json!({ "variables": variables })))
+}
+
+/// Add a variable, or replace the value stored under its name. Like a NIP-05
+/// name, it is a setting of the site, so anyone with a grant on the site
+/// manages it.
+async fn put_env(
+    State(deps): State<Deps>,
+    Extension(user): Extension<AuthUser>,
+    Extension(body): Extension<RawBody>,
+    Path((hostname, name)): Path<(String, String)>,
+) -> Reply {
+    let host = match accessible_host(&deps, &user, &hostname, "/api/hosts/:hostname/env/:name").await {
+        Ok(host) => host,
+        Err(reply) => return reply,
+    };
+
+    let Some(Value::Object(body)) = body_json(&body) else {
+        return error(StatusCode::BAD_REQUEST, "Expected a JSON body with a value.");
+    };
+    let Some(Value::String(value)) = body.get("value") else {
+        return error(StatusCode::BAD_REQUEST, "Expected a JSON body with a value.");
+    };
+    let name = match parse_env_name(&name) {
+        Ok(n) => n,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    let value = match parse_env_value(value) {
+        Ok(v) => v,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let (actor, n, v, h) = (user.pubkey.clone(), name.clone(), value.clone(), host.clone());
+    let result = db(&deps, "/api/hosts/:hostname/env/:name", move |conn| {
+        let tx = conn.transaction()?;
+        let previous: Option<String> =
+            tx.query_row("SELECT value FROM host_env WHERE host_id = ? AND name = ?", params![h.id, n], |row| row.get(0)).optional()?;
+        let now = crate::util::now();
+        match &previous {
+            Some(_) => {
+                tx.execute("UPDATE host_env SET value = ?, updated_at = ? WHERE host_id = ? AND name = ?", params![v, now, h.id, n])?;
+            }
+            None => {
+                let count: i64 = tx.query_row("SELECT COUNT(*) FROM host_env WHERE host_id = ?", [h.id], |row| row.get(0))?;
+                if count as usize >= MAX_VARIABLES {
+                    return Ok(None);
+                }
+                tx.execute(
+                    "INSERT INTO host_env (host_id, name, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    params![h.id, n, v, now, now],
+                )?;
+            }
+        }
+        let old = previous.as_ref().map(|old| json!({ "name": n, "value": old }));
+        audit(&tx, &actor, "env.set", Some(&h.hostname), old.as_ref(), Some(&json!({ "name": n, "value": v })))?;
+        tx.commit()?;
+        Ok(Some((previous.is_some(), env_list(conn, h.id)?)))
+    })
+    .await;
+
+    match result {
+        Ok(Some((replaced, variables))) => {
+            deps.log.info("env_set", fields! { "hostname" => host.hostname.as_str(), "name" => name.as_str(), "actor" => user.pubkey.as_str() });
+            deps.deployments.rebuild(vec![host.id]);
+            json_reply(if replaced { StatusCode::OK } else { StatusCode::CREATED }, json!({ "variables": variables }))
+        }
+        Ok(None) => error(
+            StatusCode::BAD_REQUEST,
+            format!("A site can have at most {MAX_VARIABLES} variables. Remove one before adding another."),
+        ),
+        Err(reply) => reply,
+    }
+}
+
+async fn delete_env(State(deps): State<Deps>, Extension(user): Extension<AuthUser>, Path((hostname, name)): Path<(String, String)>) -> Reply {
+    let host = match accessible_host(&deps, &user, &hostname, "/api/hosts/:hostname/env/:name").await {
+        Ok(host) => host,
+        Err(reply) => return reply,
+    };
+    let name = match parse_env_name(&name) {
+        Ok(n) => n,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let (actor, n, h) = (user.pubkey.clone(), name.clone(), host.clone());
+    let result = db(&deps, "/api/hosts/:hostname/env/:name", move |conn| {
+        let previous: Option<String> =
+            conn.query_row("SELECT value FROM host_env WHERE host_id = ? AND name = ?", params![h.id, n], |row| row.get(0)).optional()?;
+        let Some(value) = previous else { return Ok(None) };
+        conn.execute("DELETE FROM host_env WHERE host_id = ? AND name = ?", params![h.id, n])?;
+        audit(conn, &actor, "env.delete", Some(&h.hostname), Some(&json!({ "name": n, "value": value })), None)?;
+        Ok(Some(env_list(conn, h.id)?))
+    })
+    .await;
+
+    match result {
+        Ok(Some(variables)) => {
+            deps.log.info("env_deleted", fields! { "hostname" => host.hostname.as_str(), "name" => name.as_str(), "actor" => user.pubkey.as_str() });
+            deps.deployments.rebuild(vec![host.id]);
+            ok(json!({ "variables": variables }))
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, format!("{} has no variable {name}.", host.hostname)),
         Err(reply) => reply,
     }
 }

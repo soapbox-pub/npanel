@@ -29,6 +29,7 @@
       "@shared/hostname": ["./src/shared/hostname.ts"],
       "@shared/nip05": ["./src/shared/nip05.ts"],
       "@shared/relay-url": ["./src/shared/relay-url.ts"],
+      "@shared/env": ["./src/shared/env.ts"],
       "@shared/analytics-query": ["./src/shared/analytics-query/parse.ts"]
     }
   },

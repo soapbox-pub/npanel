@@ -1,15 +1,54 @@
-//! Adding the tracker to a site's pages, once, when the host is built.
+//! Adding npanel's scripts to a site's pages — the analytics tracker and
+//! `window.ENV` — once, when the host is built.
 
 use std::sync::OnceLock;
 
 use regex::bytes::Regex;
+use sha2::{Digest, Sha256};
 
-use super::tracker::TRACKER_PATH;
 use crate::html::decode_attribute;
 
-/// Largest document the tracker is added to. A page bigger than this is
-/// almost certainly a generated dump, and is served as published.
+/// Largest document a script is added to. A page bigger than this is almost
+/// certainly a generated dump, and is served as published.
 pub const MAX_INJECT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The Expat entry's magnet in LibreJS's license_definitions.json, which is
+/// all it checks. Every script npanel adds is wrapped in a license block
+/// naming it, or a visitor running the extension would have it blocked.
+pub const EXPAT_MAGNET: &str = "magnet:?xt=urn:btih:d3d9a9a6595521f9666a5e94cc830dab83b65699&dn=expat.txt";
+
+/// What a page's tag loads for a script npanel adds: its path, versioned by the
+/// script's contents.
+///
+/// The path serves the script whatever the query says; the version is there
+/// so that a change is seen at once. Scripts are cached for an hour like any
+/// other asset, but the pages naming them revalidate on every request, and
+/// each change names a URL no cache has seen.
+pub fn versioned_src(path: &str, body: &[u8]) -> String {
+    format!("{path}?v={}", &hex::encode(Sha256::digest(body))[..16])
+}
+
+/// Where in a page a script goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// The first thing in the head, so it has run before anything the site
+    /// wrote starts — and before any `<base>` can move what its path means.
+    Start,
+    /// The end of the head, out of the way of everything the site wrote.
+    End,
+}
+
+/// A script npanel adds to a site's pages, served from the site's own origin.
+pub struct Script<'a> {
+    /// The path the tag loads.
+    pub src: &'a str,
+    /// `sha384-…` of the script, for a policy that trusts scripts by hash alone.
+    pub integrity: &'a str,
+    pub module: bool,
+    pub placement: Placement,
+    /// Whether it `fetch`es its own origin, and so needs `connect-src` as well.
+    pub connects: bool,
+}
 
 fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("regex"))
@@ -19,43 +58,73 @@ fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
 /// the no-break space, which is byte 0xA0.
 const SPACE: &str = r"[\t\n\x0B\x0C\r \xA0]";
 
-/// A page with the tracker added, or `None` for one that isn't a document.
+/// A page with the script added, or `None` for one that isn't a document.
 ///
 /// Edited as bytes rather than parsed and re-serialized, so everything the
 /// site wrote comes back exactly as it was apart from the one tag, whatever its
 /// encoding: everything written into it is ASCII.
 ///
-/// The tag goes at the end of `<head>`, and failing that where the head would
-/// have ended — before `<body>`, after `<html>`, or after the doctype. A file
-/// with none of those is a fragment some page fetches and inserts, and a
+/// At the end, the tag goes before `</head>`, and failing that where the head
+/// would have ended — before `<body>`, after `<html>`, or after the doctype.
+/// At the start, it goes after `<head>`, and failing that where the head
+/// would have begun — after `<html>` or the doctype, or before `<body>`. A
+/// file with none of those is a fragment some page fetches and inserts, and a
 /// script tag inserted that way never runs anyway, so it is left alone.
 ///
 /// Any `<meta>` Content Security Policy in the head is widened by
-/// [`allow_analytics`], since otherwise the policy the site wrote would stop
-/// the script npanel added.
-pub fn inject_analytics(html: &[u8], integrity: &str) -> Option<Vec<u8>> {
-    let at = insertion_point(&html.to_ascii_lowercase())?;
+/// [`allow_script`], since otherwise the policy the site wrote would stop the
+/// script npanel added.
+pub fn inject_script(html: &[u8], script: &Script) -> Option<Vec<u8>> {
+    let lower = html.to_ascii_lowercase();
+    let head_end = head_end(&lower);
+    let at = match script.placement {
+        Placement::End => head_end?,
+        Placement::Start => head_start(&lower)?,
+    };
+    // A tag at the start of the head comes before the policies in it, which
+    // still have to let it through: npanel sends a declared policy as a
+    // header, and a header applies to the whole page.
+    let end = head_end.unwrap_or(html.len()).max(at);
 
-    let (head, strict_dynamic) = allow_meta_policies(&html[..at], integrity);
+    let (before, strict_before) = allow_meta_policies(&html[..at], script);
+    let (after, strict_after) = allow_meta_policies(&html[at..end], script);
 
     // Only a policy that trusts by hash alone needs the tag to carry one: a
     // hash pins the script's exact bytes, so a browser still holding the last
     // build's copy would refuse this one.
-    let tag = if strict_dynamic {
-        format!(r#"<script type="module" src="{TRACKER_PATH}" integrity="{integrity}"></script>"#)
-    } else {
-        format!(r#"<script type="module" src="{TRACKER_PATH}"></script>"#)
-    };
+    let kind = if script.module { r#" type="module""# } else { "" };
+    let integrity = if strict_before || strict_after { format!(r#" integrity="{}""#, script.integrity) } else { String::new() };
+    let tag = format!(r#"<script{kind} src="{}"{integrity}></script>"#, script.src);
 
     let mut out = Vec::with_capacity(html.len() + tag.len() + 64);
-    out.extend_from_slice(&head);
+    out.extend_from_slice(&before);
     out.extend_from_slice(tag.as_bytes());
-    out.extend_from_slice(&html[at..]);
+    out.extend_from_slice(&after);
+    out.extend_from_slice(&html[end..]);
     Some(out)
 }
 
-/// Where in a document the tag goes, from its lowercased bytes.
-fn insertion_point(lower: &[u8]) -> Option<usize> {
+/// Where the head begins, from a document's lowercased bytes.
+fn head_start(lower: &[u8]) -> Option<usize> {
+    static HEAD: OnceLock<Regex> = OnceLock::new();
+    static HTML: OnceLock<Regex> = OnceLock::new();
+    static DOCTYPE: OnceLock<Regex> = OnceLock::new();
+    for opening in [
+        regex(&HEAD, &format!(r"(?-u)<head(?:{SPACE}[^>]*)?>")),
+        regex(&HTML, &format!(r"(?-u)<html(?:{SPACE}[^>]*)?>")),
+        regex(&DOCTYPE, r"(?-u)<!doctype[^>]*>"),
+    ] {
+        if let Some(found) = opening.find(lower) {
+            return Some(found.end());
+        }
+    }
+
+    static BODY: OnceLock<Regex> = OnceLock::new();
+    regex(&BODY, &format!(r"(?-u)<body(?:{SPACE}|>)")).find(lower).map(|found| found.start())
+}
+
+/// Where the head ends, from a document's lowercased bytes.
+fn head_end(lower: &[u8]) -> Option<usize> {
     if let Some(at) = find(lower, b"</head") {
         return Some(at);
     }
@@ -82,7 +151,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 /// Every `<meta http-equiv="Content-Security-Policy">` in `head`, widened.
 /// Also reports whether any of them trusts scripts by hash alone.
-fn allow_meta_policies(head: &[u8], integrity: &str) -> (Vec<u8>, bool) {
+fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
     static META: OnceLock<Regex> = OnceLock::new();
     static ATTRIBUTE: OnceLock<Regex> = OnceLock::new();
     let meta = regex(&META, r#"(?i-u)<meta\b[^>]*>"#);
@@ -126,7 +195,7 @@ fn allow_meta_policies(head: &[u8], integrity: &str) -> (Vec<u8>, bool) {
             if uses_strict_dynamic(&policy) {
                 strict_dynamic = true;
             }
-            let widened = allow_analytics(&policy, integrity);
+            let widened = allow_script(&policy, script);
             if widened == policy {
                 return None;
             }
@@ -155,11 +224,12 @@ struct Directive {
     sources: Vec<String>,
 }
 
-/// A Content Security Policy that lets the tracker load and report, and is
-/// otherwise exactly what the site wrote.
+/// A Content Security Policy that lets the script load — and, if it
+/// [`connects`](Script::connects), report — and is otherwise exactly what the
+/// site wrote.
 ///
-/// Two things are needed from the site's own origin: loading a script, and
-/// `fetch`ing to it. Each is granted by adding `'self'` to the directive that
+/// Up to two things are needed from the site's own origin: loading a script,
+/// and `fetch`ing to it. Each is granted by adding `'self'` to the directive that
 /// governs it — `script-src-elem` and `script-src` where the site wrote them,
 /// `connect-src` likewise, and a copy of `default-src` where it relied on the
 /// fallback, so nothing that fallback allowed is taken away. `'none'` gives
@@ -167,15 +237,15 @@ struct Directive {
 /// untouched.
 ///
 /// The one policy `'self'` does nothing for uses `'strict-dynamic'`, which
-/// trusts scripts by nonce or hash alone. There the tracker's hash is added
+/// trusts scripts by nonce or hash alone. There the script's hash is added
 /// instead — only there, since a hash in a policy relying on `'unsafe-inline'`
 /// would switch that off.
 ///
 /// `policy` may be several policies joined with commas; each is widened on
 /// its own.
-pub fn allow_analytics(policy: &str, integrity: &str) -> String {
+pub fn allow_script(policy: &str, script: &Script) -> String {
     let policies: Vec<&str> = policy.split(',').map(str::trim).collect();
-    let widened: Vec<String> = policies.iter().map(|one| allow_in_policy(one, integrity)).collect();
+    let widened: Vec<String> = policies.iter().map(|one| allow_in_policy(one, script)).collect();
 
     if widened.iter().zip(&policies).all(|(a, b)| a == b) {
         policy.to_string()
@@ -184,7 +254,7 @@ pub fn allow_analytics(policy: &str, integrity: &str) -> String {
     }
 }
 
-fn allow_in_policy(policy: &str, integrity: &str) -> String {
+fn allow_in_policy(policy: &str, script: &Script) -> String {
     let mut directives: Vec<Directive> = policy
         .split(';')
         .map(str::trim)
@@ -197,8 +267,10 @@ fn allow_in_policy(policy: &str, integrity: &str) -> String {
         .collect();
 
     let mut changed = false;
-    changed |= widen(&mut directives, &["script-src-elem", "script-src"], "script-src", Some(integrity));
-    changed |= widen(&mut directives, &["connect-src"], "connect-src", None);
+    changed |= widen(&mut directives, &["script-src-elem", "script-src"], "script-src", Some(script.integrity));
+    if script.connects {
+        changed |= widen(&mut directives, &["connect-src"], "connect-src", None);
+    }
 
     if !changed {
         return policy.to_string();
@@ -242,7 +314,7 @@ fn widen(directives: &mut Vec<Directive>, names: &[&str], added: &str, hash: Opt
     true
 }
 
-/// Whether a directive already lets the tracker through: by its hash, under
+/// Whether a directive already lets the script through: by its hash, under
 /// `'strict-dynamic'`, and by the site's own origin otherwise.
 fn allows(directive: &Directive, hash: Option<&str>) -> bool {
     let lower: Vec<String> = directive.sources.iter().map(|s| s.to_lowercase()).collect();
@@ -256,7 +328,7 @@ fn allows(directive: &Directive, hash: Option<&str>) -> bool {
     lower.iter().any(|s| s == "'self'" || s == "*")
 }
 
-/// Make a directive let the tracker through, in whichever way it needs.
+/// Make a directive let the script through, in whichever way it needs.
 fn grant(directive: &mut Directive, hash: Option<&str>) {
     if let Some(hash) = hash {
         if directive.sources.iter().any(|s| s.eq_ignore_ascii_case("'strict-dynamic'")) {
@@ -283,13 +355,20 @@ mod tests {
 
     const HASH: &str = "sha384-abc";
 
+    const TRACKER: Script = Script { src: "/.npanel/script.js?v=1", integrity: HASH, module: true, placement: Placement::End, connects: true };
+    const ENV: Script = Script { src: "/.npanel/env.js?v=1", integrity: HASH, module: false, placement: Placement::Start, connects: false };
+
     fn inject(html: &str) -> Option<String> {
-        inject_analytics(html.as_bytes(), HASH).map(|bytes| String::from_utf8(bytes).unwrap())
+        inject_with(html, &TRACKER)
+    }
+
+    fn inject_with(html: &str, script: &Script) -> Option<String> {
+        inject_script(html.as_bytes(), script).map(|bytes| String::from_utf8(bytes).unwrap())
     }
 
     #[test]
     fn places_the_tag() {
-        let tag = r#"<script type="module" src="/.npanel/script.js"></script>"#;
+        let tag = r#"<script type="module" src="/.npanel/script.js?v=1"></script>"#;
         assert_eq!(inject("<html><head><title>x</title></HEAD><body></body></html>").unwrap(), format!("<html><head><title>x</title>{tag}</HEAD><body></body></html>"));
         assert_eq!(inject("<p>hi</p><BODY class=x>").unwrap(), format!("<p>hi</p>{tag}<BODY class=x>"));
         assert_eq!(inject("<!DOCTYPE html><p>x").unwrap(), format!("<!DOCTYPE html>{tag}<p>x"));
@@ -298,9 +377,23 @@ mod tests {
     }
 
     #[test]
+    fn places_the_tag_first() {
+        let tag = r#"<script src="/.npanel/env.js?v=1"></script>"#;
+        let env = |html: &str| inject_with(html, &ENV);
+        assert_eq!(
+            env("<!doctype html><html><HEAD lang=en><script src=/app.js></script></head><body></body></html>").unwrap(),
+            format!("<!doctype html><html><HEAD lang=en>{tag}<script src=/app.js></script></head><body></body></html>")
+        );
+        assert_eq!(env("<html><header>x</header>").unwrap(), format!("<html>{tag}<header>x</header>"));
+        assert_eq!(env("<!DOCTYPE html><script src=/a.js></script>").unwrap(), format!("<!DOCTYPE html>{tag}<script src=/a.js></script>"));
+        assert_eq!(env("<p>hi</p><body>").unwrap(), format!("<p>hi</p>{tag}<body>"));
+        assert_eq!(env("<div>fragment</div>"), None);
+    }
+
+    #[test]
     fn keeps_other_bytes() {
         let page = b"<head>\xff\xfe caf\xe9</head>".to_vec();
-        let out = inject_analytics(&page, HASH).unwrap();
+        let out = inject_script(&page, &TRACKER).unwrap();
         assert!(out.starts_with(b"<head>\xff\xfe caf\xe9<script"));
     }
 
@@ -318,9 +411,32 @@ mod tests {
     }
 
     #[test]
+    fn widens_policies_after_the_tag() {
+        let out = inject_with(r#"<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'"></head><body><meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#, &ENV).unwrap();
+        assert_eq!(
+            out,
+            r#"<head><script src="/.npanel/env.js?v=1"></script><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'"></head><body><meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#
+        );
+
+        let out = inject_with(r#"<head><meta http-equiv="content-security-policy" content="script-src 'strict-dynamic'"></head>"#, &ENV).unwrap();
+        assert!(out.starts_with(&format!(r#"<head><script src="/.npanel/env.js?v=1" integrity="{HASH}"></script>"#)), "{out}");
+        assert!(out.contains(&format!("script-src 'strict-dynamic' '{HASH}'")), "{out}");
+    }
+
+    #[test]
+    fn versions_sources() {
+        let src = versioned_src("/.npanel/script.js", b"one");
+        assert!(src.starts_with("/.npanel/script.js?v="));
+        assert_eq!(src.len(), "/.npanel/script.js?v=".len() + 16);
+        assert_eq!(versioned_src("/.npanel/script.js", b"one"), src);
+        assert_ne!(versioned_src("/.npanel/script.js", b"two"), src);
+    }
+
+    #[test]
     fn leaves_permissive_policies() {
-        assert_eq!(allow_analytics("default-src 'self'", HASH), "default-src 'self'");
-        assert_eq!(allow_analytics("img-src *", HASH), "img-src *");
-        assert_eq!(allow_analytics("script-src 'none', connect-src *", HASH), "script-src 'self', connect-src *");
+        assert_eq!(allow_script("default-src 'self'", &TRACKER), "default-src 'self'");
+        assert_eq!(allow_script("img-src *", &TRACKER), "img-src *");
+        assert_eq!(allow_script("script-src 'none', connect-src *", &TRACKER), "script-src 'self', connect-src *");
+        assert_eq!(allow_script("default-src 'none'; script-src 'self'", &ENV), "default-src 'none'; script-src 'self'");
     }
 }

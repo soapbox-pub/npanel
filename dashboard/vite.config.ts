@@ -55,6 +55,7 @@ export default defineConfig(() => ({
       "@shared/hostname": path.resolve(import.meta.dirname, "./src/shared/hostname.ts"),
       "@shared/nip05": path.resolve(import.meta.dirname, "./src/shared/nip05.ts"),
       "@shared/relay-url": path.resolve(import.meta.dirname, "./src/shared/relay-url.ts"),
+      "@shared/env": path.resolve(import.meta.dirname, "./src/shared/env.ts"),
       "@shared/analytics-query": path.resolve(import.meta.dirname, "./src/shared/analytics-query/parse.ts"),
     },
   },

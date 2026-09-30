@@ -1,6 +1,7 @@
 import { useSeoMeta } from '@unhead/react';
 import {
   AtSign,
+  Braces,
   History,
   KeyRound,
   type LucideIcon,
@@ -37,6 +38,8 @@ const KINDS: Record<ActivityKind, { icon: LucideIcon; tint: string }> = {
   'person-removed': { icon: UserMinus, tint: 'bg-destructive/12 text-destructive' },
   'name-set': { icon: AtSign, tint: 'bg-[#30b0c7]/15 text-[#1f8fa3] dark:text-[#6ac4dc]' },
   'name-removed': { icon: AtSign, tint: 'bg-destructive/12 text-destructive' },
+  'env-set': { icon: Braces, tint: 'bg-[#ff375f]/15 text-[#e0244b] dark:text-[#ff7a93]' },
+  'env-removed': { icon: Braces, tint: 'bg-destructive/12 text-destructive' },
   settings: { icon: Settings, tint: 'bg-foreground/[0.07] text-muted-foreground' },
   other: { icon: History, tint: 'bg-foreground/[0.07] text-muted-foreground' },
 };
