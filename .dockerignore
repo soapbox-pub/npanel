@@ -1,5 +1,6 @@
-# Built inside the image.
-target/
+# Built inside the image. Every Cargo target directory, the vendored crate's
+# included: a pattern without `**/` matches only at the root.
+**/target/
 dashboard/node_modules/
 dashboard/dist/
 
