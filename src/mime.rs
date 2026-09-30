@@ -81,6 +81,11 @@ pub fn content_type(path: &str) -> &'static str {
     lookup(&extname(path).to_lowercase()).unwrap_or("application/octet-stream")
 }
 
+/// Whether a path names an HTML document.
+pub fn is_html(path: &str) -> bool {
+    matches!(extname(path).to_ascii_lowercase().as_str(), ".html" | ".htm")
+}
+
 /// Whether a file is worth storing compressed copies of.
 ///
 /// Decided from the content type rather than a second list of extensions, so

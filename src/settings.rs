@@ -316,7 +316,7 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "dns_targets" => {
             let targets = strings(value, |s| dns_target(s.trim()))?;
             if targets.len() > 8 {
-                return Err("Too big: expected array to have <=8 items".into());
+                return Err("List at most 8 targets.".into());
             }
             // A CNAME may not coexist with any other record for the same name,
             // so a hostname target has to stand alone.
@@ -340,48 +340,47 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
     }
 }
 
-fn type_name(value: &Value) -> &'static str {
+/// What a JSON value is, as the end of "Expected …, got …".
+fn described(value: &Value) -> &'static str {
     match value {
-        Value::Null => "null",
-        Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
+        Value::Null => "nothing",
+        Value::Bool(_) => "true or false",
+        Value::Number(_) => "a number",
+        Value::String(_) => "text",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
     }
 }
 
 fn string(value: &Value) -> Result<&str, String> {
-    value.as_str().ok_or_else(|| format!("Invalid input: expected string, received {}", type_name(value)))
+    value.as_str().ok_or_else(|| format!("Expected text, got {}.", described(value)))
 }
 
 fn boolean(value: &Value) -> Result<Value, String> {
     match value {
         Value::Bool(_) => Ok(value.clone()),
-        other => Err(format!("Invalid input: expected boolean, received {}", type_name(other))),
+        other => Err(format!("Expected true or false, got {}.", described(other))),
     }
 }
 
 fn integer(value: &Value, min: i64, max: i64) -> Result<Value, String> {
-    let Some(number) = value.as_f64() else {
-        return Err(format!("Invalid input: expected number, received {}", type_name(value)));
+    // Through f64, because `60.0` is as good a way to write sixty in JSON.
+    let number = value.as_f64().filter(|n| n.is_finite() && n.fract() == 0.0);
+    let Some(number) = number.map(|n| n as i64) else {
+        return Err(format!("Expected a whole number, got {value}."));
     };
-    if number.fract() != 0.0 || !number.is_finite() {
-        return Err("Invalid input: expected int, received number".into());
-    }
-    let number = number as i64;
     if number < min {
-        return Err(format!("Too small: expected number to be >={min}"));
+        return Err(format!("Use a number of at least {min}."));
     }
     if number > max {
-        return Err(format!("Too big: expected number to be <={max}"));
+        return Err(format!("Use a number of at most {max}."));
     }
     Ok(number.into())
 }
 
 fn strings(value: &Value, each: impl Fn(&str) -> Result<String, String>) -> Result<Vec<String>, String> {
     let Value::Array(items) = value else {
-        return Err(format!("Invalid input: expected array, received {}", type_name(value)));
+        return Err(format!("Expected a list, got {}.", described(value)));
     };
     items.iter().map(|item| each(string(item)?)).collect()
 }
@@ -480,7 +479,9 @@ mod tests {
             parse_setting("blossom_fallback_servers", &json!(["https://b.example.com/x"])).unwrap(),
             json!(["https://b.example.com/x/"])
         );
-        assert!(parse_setting("resync_interval", &json!(59)).is_err());
+        assert_eq!(parse_setting("resync_interval", &json!(59)).unwrap_err(), "Invalid value for resync_interval: Use a number of at least 60.");
+        assert_eq!(parse_setting("resync_interval", &json!(60.5)).unwrap_err(), "Invalid value for resync_interval: Expected a whole number, got 60.5.");
+        assert_eq!(parse_setting("tor_enabled", &json!("yes")).unwrap_err(), "Invalid value for tor_enabled: Expected true or false, got text.");
         assert_eq!(parse_setting("resync_interval", &json!(60.0)).unwrap(), json!(60));
         assert!(parse_setting("resync_interval", &json!("60")).is_err());
         assert!(parse_setting("dns_targets", &json!(["1.2.3.4", "gw.example.com"])).is_err());

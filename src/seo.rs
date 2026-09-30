@@ -13,17 +13,13 @@ use rusqlite::Connection;
 use crate::manifest::join_root;
 use crate::serve::RequestOrigin;
 use crate::sites::normalize_site_path;
-use crate::util::extname;
+use crate::mime::is_html;
 
 /// The protocol's cap on URLs per sitemap file.
 const MAX_SITEMAP_URLS: usize = 50_000;
 
 /// The most of a `robots.txt` npanel will read before serving it as it is.
 pub const MAX_ROBOTS_BYTES: u64 = 64 * 1024;
-
-fn is_html(path: &str) -> bool {
-    matches!(extname(path).to_lowercase().as_str(), ".html" | ".htm")
-}
 
 /// The one canonical spelling of a served file's URL path.
 ///
@@ -78,12 +74,7 @@ pub fn sitemap_paths(conn: &Connection, event_id: &str) -> rusqlite::Result<Vec<
         canonical.insert(canonical_path(path).to_string());
     }
 
-    // JavaScript's default sort compares UTF-16 code units, which for the
-    // characters a path holds orders the same as bytes.
-    let mut sorted: Vec<String> = canonical.into_iter().collect();
-    sorted.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
-    sorted.truncate(MAX_SITEMAP_URLS);
-    Ok(sorted)
+    Ok(canonical.into_iter().take(MAX_SITEMAP_URLS).collect())
 }
 
 /// Render a sitemap for the site as reached at `origin`.
@@ -105,9 +96,8 @@ pub fn sitemap_xml(origin: &RequestOrigin, paths: &[String], lastmod: &str) -> S
 
 /// `<lastmod>` for a version: the manifest's own date, capped at when npanel
 /// saw it, since an author can date a manifest however they please.
-pub fn version_date(created_at: i64, fetched_at: i64) -> String {
-    let seconds = created_at.min(fetched_at).max(0);
-    chrono::DateTime::from_timestamp(seconds, 0).unwrap_or_default().format("%Y-%m-%d").to_string()
+pub fn version_date(last_modified: i64) -> String {
+    chrono::DateTime::from_timestamp(last_modified, 0).unwrap_or_default().format("%Y-%m-%d").to_string()
 }
 
 /// The `robots.txt` a site gets when it published none: allow all, name the
@@ -224,7 +214,7 @@ mod tests {
         let xml = sitemap_xml(&origin(), &["/".into(), "/a&b".into()], "2026-01-02");
         assert!(xml.contains("<url><loc>https://docs.example.com/a&amp;b</loc><lastmod>2026-01-02</lastmod></url>"));
         assert!(xml.ends_with("</urlset>\n"));
-        assert_eq!(version_date(1_000_000_000, 2_000_000_000), "2001-09-09");
-        assert_eq!(version_date(i64::MAX, 0), "1970-01-01");
+        assert_eq!(version_date(1_000_000_000), "2001-09-09");
+        assert_eq!(version_date(0), "1970-01-01");
     }
 }

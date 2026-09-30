@@ -34,7 +34,7 @@ use crate::db::{BuildKind, Db, Host, HostBuild, SiteEvent, HOST_BUILD_COLUMNS};
 use crate::fields;
 use crate::inject::{inject_script, versioned_src, Placement, Script, MAX_INJECT_BYTES};
 use crate::log::{with_err, Logger};
-use crate::mime::is_compressible;
+use crate::mime::{is_compressible, is_html};
 use crate::nsite_address::NsiteAddress;
 use crate::seo::{augment_robots, robots_needs_sitemap, robots_txt, sitemap_paths, sitemap_xml, version_date, MAX_ROBOTS_BYTES};
 use crate::serve::RequestOrigin;
@@ -43,7 +43,6 @@ use crate::site_env::{env_script, host_env, ENV_PATH};
 use crate::sites::{
     active_event, host_by_id, newest_by_path, prune_deploy_log, record_blob, record_variant_sizes, version_chain, write_deploy_log,
 };
-use crate::util::extname;
 
 /// Bumped whenever what a build produces changes for the same inputs. Part of
 /// every fingerprint, so a new npanel whose builds would come out differently
@@ -385,7 +384,7 @@ impl HostBuilder {
                         origin_url(&t.origin),
                         t.event.event_id,
                         t.fingerprint,
-                        last_modified(&t.event),
+                        t.event.last_modified(),
                         now
                     ],
                 )?;
@@ -618,7 +617,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
 
     let paths: Vec<String> = files.keys().cloned().collect();
     for path in paths {
-        if !matches!(extname(&path).to_lowercase().as_str(), ".html" | ".htm") {
+        if !is_html(&path) {
             continue;
         }
         let file = files[&path].clone();
@@ -689,7 +688,7 @@ fn seo(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &mut I
         let xml = sitemap_xml(
             origin,
             &sitemap_paths(conn, &target.event.event_id)?,
-            &version_date(target.event.created_at, target.event.fetched_at),
+            &version_date(target.event.last_modified()),
         );
         let sha256 = store(conn, blobs, "/sitemap.xml", xml.as_bytes(), log)?;
         files.insert("/sitemap.xml".into(), BuildFile { sha256, event_id: None, source_sha256: None });
@@ -768,10 +767,6 @@ fn origin_url(origin: &RequestOrigin) -> String {
 /// `Last-Modified` for a build's responses: the served version's date, capped
 /// at the moment npanel saw it, since an author can date a manifest however
 /// they please.
-fn last_modified(event: &SiteEvent) -> i64 {
-    event.created_at.min(event.fetched_at).max(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

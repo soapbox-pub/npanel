@@ -895,14 +895,23 @@ impl SyncWorker {
         let id = event_id.to_string();
         let err = error.map(str::to_string);
         let ready = status == status::READY;
+        let (level, msg, fields) =
+            if ready { ("info", "deploy_ready", fields! {}) } else { ("error", "deploy_failed", fields! { "err_msg" => error }) };
 
+        // The verdict is logged in the same transaction as the status it
+        // explains, so nobody reading one sees the other missing.
         let site = self
             .db(move |conn| {
-                conn.execute(
+                let tx = conn.transaction()?;
+                tx.execute(
                     "UPDATE site_events SET status = ?, error = ?, ready_at = ? WHERE event_id = ?",
                     params![status, err, ready.then_some(now), id],
                 )?;
-                Ok(site_event(conn, &id)?.map(|row| row.address()))
+                write_deploy_log(&tx, &id, level, msg, fields)?;
+                prune_deploy_log(&tx, &id)?;
+                let site = site_event(&tx, &id)?.map(|row| row.address());
+                tx.commit()?;
+                Ok(site)
             })
             .await
             .unwrap_or_else(|error| {
@@ -913,7 +922,6 @@ impl SyncWorker {
         if ready {
             self.inner.state.lock().attempts.remove(event_id);
             self.deps().log.info("deploy_ready", fields! { "event_id" => event_id });
-            self.deploy_log(event_id, "info", "deploy_ready", fields! {}).await;
 
             // The newest ready version may just have changed, and a version is
             // only served through a build of it.
@@ -923,11 +931,7 @@ impl SyncWorker {
             }
         } else {
             self.deps().log.error("deploy_failed", fields! { "event_id" => event_id, "err_msg" => error });
-            self.deploy_log(event_id, "error", "deploy_failed", fields! { "err_msg" => error }).await;
         }
-
-        let id = event_id.to_string();
-        let _ = self.db(move |conn| Ok(prune_deploy_log(conn, &id)?)).await;
     }
 }
 
@@ -936,7 +940,7 @@ fn oversized(limit: u64, bytes: u64) -> Outcome {
     Outcome::Refused {
         reason: format!(
             "This version is larger than the {} MB a site may take up here. An admin can raise the limit under Settings.",
-            crate::util::js_round(limit as f64 / 1024f64.powi(2)) as i64
+            (limit as f64 / 1024f64.powi(2)).round() as i64
         ),
         msg: "site_too_large",
         fields: fields! { "bytes" => bytes, "limit" => limit },
@@ -945,7 +949,7 @@ fn oversized(limit: u64, bytes: u64) -> Outcome {
 
 /// A wait, as someone reading about it would say it.
 fn duration(wait: Duration) -> String {
-    let seconds = crate::util::js_round(wait.as_millis() as f64 / 1000.0).max(1.0) as i64;
+    let seconds = (wait.as_millis() as f64 / 1000.0).round().max(1.0) as i64;
     if seconds == 1 {
         "a second".into()
     } else {

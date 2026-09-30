@@ -47,13 +47,9 @@ pub fn manifest_paths(event: &Event) -> IndexMap<String, String> {
     paths
 }
 
-/// Blossom servers embedded in a manifest, tried before the author's list.
-pub fn manifest_servers(event: &Event) -> Vec<String> {
-    tag_values(event, "server")
-}
-
-/// Blossom servers from a kind 10063 list (BUD-03).
-pub fn parse_server_list(event: &Event) -> Vec<String> {
+/// Blossom servers named by `server` tags: a manifest's own, tried first,
+/// or a kind 10063 list's (BUD-03). The two use the same tag.
+pub fn server_tags(event: &Event) -> Vec<String> {
     tag_values(event, "server")
 }
 
@@ -61,7 +57,7 @@ pub fn parse_server_list(event: &Event) -> Vec<String> {
 ///
 /// npanel only ever reads, but write relays are where a user's own events
 /// land, which is exactly where their manifests will be. Both are returned.
-pub fn parse_relay_list(event: &Event) -> (Vec<String>, Vec<String>) {
+pub fn relay_list_tags(event: &Event) -> (Vec<String>, Vec<String>) {
     let mut read = Vec::new();
     let mut write = Vec::new();
 
@@ -150,6 +146,6 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(paths["/index.html"], sha);
         assert!(paths.contains_key("/about.html"));
-        assert_eq!(manifest_servers(&event), ["https://b.example.com"]);
+        assert_eq!(server_tags(&event), ["https://b.example.com"]);
     }
 }

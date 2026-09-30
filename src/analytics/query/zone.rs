@@ -161,9 +161,6 @@ pub fn is_civil_date(value: &str) -> bool {
         && bytes[7] == b'-'
         && bytes.iter().enumerate().all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
         && NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
-        // JavaScript's `Date.UTC` reads years below 100 as 1900s, so the
-        // TypeScript npanel refused them; so does this.
-        && value[..4].parse::<i32>().is_ok_and(|year| year >= 100)
 }
 
 /// An instant as ISO 8601 with the zone's offset, the way Plausible reports a
@@ -194,7 +191,7 @@ mod tests {
         assert_eq!(days_between("2026-01-01", "2026-03-01"), 59);
         assert!(is_civil_date("2026-02-28"));
         assert!(!is_civil_date("2026-02-30"));
-        assert!(!is_civil_date("0050-01-01"));
+        assert!(is_civil_date("0050-01-01"));
     }
 
     #[test]

@@ -18,7 +18,7 @@ use super::Event;
 use crate::fields;
 use crate::identifiers::parse_relay_url;
 use crate::log::Logger;
-use crate::manifest::{manifest_servers, parse_relay_list, parse_server_list};
+use crate::manifest::{relay_list_tags, server_tags};
 use crate::nsite_address::{NsiteAddress, NAMED_SITE_KIND};
 use crate::settings::Settings;
 
@@ -127,7 +127,7 @@ impl NostrService {
         for pubkey in misses {
             let newest = latest(by_author.get(pubkey.as_str()).map(Vec::as_slice).unwrap_or(&[]));
             let value = match newest {
-                Some(event) => vet_relay_hints(&parse_relay_list(event).1).await,
+                Some(event) => vet_relay_hints(&relay_list_tags(event).1).await,
                 None => Vec::new(),
             };
             self.log.debug("relay_list_fetched", fields! { "pubkey" => pubkey.as_str(), "relays" => value.len() });
@@ -151,7 +151,7 @@ impl NostrService {
             )
             .await;
         let refs: Vec<&Event> = events.iter().collect();
-        let value = latest(&refs).map(parse_server_list).unwrap_or_default();
+        let value = latest(&refs).map(server_tags).unwrap_or_default();
 
         self.log.debug("server_list_fetched", fields! { "pubkey" => pubkey, "servers" => value.len() });
         self.server_lists.lock().insert(pubkey.to_string(), CachedList { value: value.clone(), fetched_at: Instant::now() });
@@ -182,7 +182,7 @@ impl NostrSource for NostrService {
     fn blob_sources<'a>(&'a self, manifest: &'a Event, fallbacks: &'a [String], cancel: &'a CancellationToken) -> BoxFuture<'a, Vec<String>> {
         Box::pin(async move {
             let author_servers = self.get_author_servers(&manifest.pubkey, cancel).await;
-            let servers = manifest_servers(manifest)
+            let servers = server_tags(manifest)
                 .into_iter()
                 .chain(author_servers)
                 .chain(fallbacks.iter().cloned())

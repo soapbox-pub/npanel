@@ -849,14 +849,15 @@ fn compare_numbers(a: Option<f64>, b: Option<f64>) -> Ordering {
     }
 }
 
-/// Nulls sort below everything, numbers numerically, strings by code unit.
+/// Nulls sort below everything, numbers numerically, strings bytewise — which
+/// is how Plausible's ClickHouse orders them.
 fn compare_values(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Null, Value::Null) => Ordering::Equal,
         (Value::Null, _) => Ordering::Less,
         (_, Value::Null) => Ordering::Greater,
         (Value::Number(a), Value::Number(b)) => a.as_f64().partial_cmp(&b.as_f64()).unwrap_or(Ordering::Equal),
-        _ => value_string(a).encode_utf16().cmp(value_string(b).encode_utf16()),
+        _ => value_string(a).cmp(&value_string(b)),
     }
 }
 

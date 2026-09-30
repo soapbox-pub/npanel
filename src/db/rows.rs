@@ -105,6 +105,13 @@ pub const SITE_EVENT_COLUMNS: &str = "event_id, pubkey, kind, identifier, create
     files_total, files_ready, error, fetched_at, ready_at";
 
 impl SiteEvent {
+    /// When this version was last modified, as far as anyone downstream is
+    /// told: its `created_at`, but never later than npanel saw it, since an
+    /// author can date a manifest however they please.
+    pub fn last_modified(&self) -> i64 {
+        self.created_at.min(self.fetched_at).max(0)
+    }
+
     pub fn from_row(row: &Row) -> rusqlite::Result<SiteEvent> {
         Ok(SiteEvent {
             event_id: row.get(0)?,
