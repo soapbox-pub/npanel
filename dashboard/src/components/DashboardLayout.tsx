@@ -6,7 +6,6 @@ import { LoginArea } from '@/components/auth/LoginArea';
 import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
 import { Perforation } from '@/components/Perforation';
-import { ServerRack } from '@/components/ServerRack';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useMe } from '@/hooks/useNpanel';
@@ -83,7 +82,7 @@ function useActive() {
 /**
  * The sidebar: a brushed-metal panel floating inside the window's edge, like
  * the faceplate of the machine it describes, with the admin places under a
- * heading of their own and the server and the account at the foot.
+ * heading of their own and the account at the foot.
  */
 function Sidebar({ items }: { items: NavItem[] }) {
   const [main, ...admin] = items;
@@ -103,8 +102,7 @@ function Sidebar({ items }: { items: NavItem[] }) {
         {admin.length > 0 && <NavGroup title="Admin" items={admin} />}
       </nav>
 
-      <div className="space-y-2 p-2">
-        <ServerRack />
+      <div className="p-2">
         <LoginArea showName className="flex w-full" />
       </div>
     </aside>

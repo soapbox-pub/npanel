@@ -88,13 +88,6 @@
   }
 }
 
-/* A drive or network light: on, off, on — no fade, as an LED has none. */
-@keyframes rack-blink {
-  to {
-    opacity: 0.25;
-  }
-}
-
 /*
  * Perforated sheet metal, as on the front of a rack server: a grid of holes,
  * each with a lit lower lip. Laid behind the top of a page and faded out.
