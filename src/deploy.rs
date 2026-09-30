@@ -13,9 +13,8 @@
 //! and rebuilds every host whose build is out of date. That is what makes it
 //! cheap to restart, which is what happens if it ever dies.
 
-use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
@@ -29,14 +28,6 @@ use crate::nostr::service::{NostrService, NostrSource};
 use crate::nsite_address::NsiteAddress;
 use crate::settings::Settings;
 use crate::sync::{SyncWorker, SyncWorkerDeps};
-
-/// First and longest wait before restarting a deploy runtime that died.
-const RESTART_MIN: Duration = Duration::from_secs(1);
-const RESTART_MAX: Duration = Duration::from_secs(60);
-
-/// A runtime that ran this long before dying is restarted without the backoff
-/// it had built up.
-const HEALTHY_AFTER: Duration = Duration::from_secs(60);
 
 /// What the rest of npanel asks of deployments. Every method is a
 /// notification: none waits for the work it starts, which can take minutes.
@@ -161,38 +152,11 @@ pub struct DeployConfig {
 impl DeployService {
     pub fn start(config: DeployConfig) -> DeployService {
         let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let thread = std::thread::Builder::new()
-            .name("npanel-deploy".into())
-            .spawn(move || {
-                let mut delay = RESTART_MIN;
-                loop {
-                    let started = Instant::now();
-                    let runtime = tokio::runtime::Builder::new_multi_thread()
-                        .worker_threads(2)
-                        .thread_name("npanel-deploy")
-                        .enable_all()
-                        .build()
-                        .expect("a deploy runtime");
-
-                    let result = std::panic::catch_unwind(AssertUnwindSafe(|| runtime.block_on(run(&config, &mut rx))));
-                    runtime.shutdown_timeout(Duration::from_secs(5));
-
-                    match result {
-                        // Stopped, or everyone who could send has gone.
-                        Ok(()) => return,
-                        Err(_) => {
-                            if started.elapsed() > HEALTHY_AFTER {
-                                delay = RESTART_MIN;
-                            }
-                            config.log.error("deploy_thread_exited", fields! { "restart_in_ms" => delay.as_millis() as u64 });
-                            std::thread::sleep(delay);
-                            delay = (delay * 2).min(RESTART_MAX);
-                        }
-                    }
-                }
-            })
-            .expect("a deploy thread");
+        // Returning at all means stopped, or everyone who could send has gone.
+        let thread = crate::supervise::supervise("deploy", 2, config.log, move |runtime| {
+            runtime.block_on(run(&config, &mut rx));
+            Ok(())
+        });
 
         DeployService { tx, thread: Mutex::new(Some(thread)) }
     }

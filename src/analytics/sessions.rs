@@ -41,8 +41,12 @@ pub struct Session {
     pub user_id: i64,
     /// Epoch seconds of the first event.
     pub start: i64,
-    /// Epoch seconds of the latest event, which is what keeps it alive.
+    /// Epoch seconds of the latest event that counts in it — engagement
+    /// pings don't — as it is stored.
     pub timestamp: i64,
+    /// Epoch seconds of the latest event of any kind, which is what keeps it
+    /// open. Only memory needs it.
+    pub last_seen: i64,
     pub entry_page: String,
     pub exit_page: String,
     pub pageviews: i64,
@@ -70,32 +74,42 @@ pub struct SessionCache {
 }
 
 impl SessionCache {
-    /// The open session of one visitor on one site, if they were seen
-    /// recently enough.
-    pub fn find(&self, host_id: i64, user_id: i64, now: i64) -> Option<&Session> {
-        self.sessions.get(&(host_id, user_id)).filter(|s| now - s.timestamp < SESSION_TIMEOUT)
+    /// Whether one visitor on one site has a session still open.
+    pub fn is_open(&self, host_id: i64, user_id: i64, now: i64) -> bool {
+        self.get(host_id, user_id).is_some_and(|s| now - s.last_seen < SESSION_TIMEOUT)
     }
 
-    /// Remember a session under the visitor it belongs to.
-    pub fn put(&mut self, session: Session) {
-        let key = (session.host_id, session.user_id);
-        // Re-inserted at the end so the map stays in order of last activity,
-        // which is what lets both the sweep and the cap stop at the first live
-        // entry.
-        self.sessions.shift_remove(&key);
-        self.sessions.insert(key, session);
+    pub fn get(&self, host_id: i64, user_id: i64) -> Option<&Session> {
+        self.sessions.get(&(host_id, user_id))
+    }
 
-        if self.sessions.len() > MAX_SESSIONS {
-            self.sessions.shift_remove_index(0);
-        }
+    /// A session to continue, moved to the end — the map is kept in order of
+    /// last activity, which is what lets both the sweep and the cap stop at
+    /// the first live entry.
+    pub fn continue_session(&mut self, host_id: i64, user_id: i64) -> Option<&mut Session> {
+        let index = self.sessions.get_index_of(&(host_id, user_id))?;
+        let last = self.sessions.len() - 1;
+        self.sessions.move_index(index, last);
+        self.sessions.get_index_mut(last).map(|(_, session)| session)
+    }
+
+    /// Remember a new session under the visitor it belongs to. Returns the
+    /// stalest session if the cache was full and forgot it.
+    pub fn put(&mut self, session: Session) -> (&mut Session, Option<Session>) {
+        let key = (session.host_id, session.user_id);
+        self.sessions.shift_remove(&key);
+        let evicted = if self.sessions.len() >= MAX_SESSIONS { self.sessions.shift_remove_index(0).map(|(_, s)| s) } else { None };
+        let (index, _) = self.sessions.insert_full(key, session);
+        (&mut self.sessions[index], evicted)
     }
 
     /// Forget every session that can no longer be continued.
     pub fn sweep(&mut self, now: i64) {
-        let expired = self.sessions.values().take_while(|s| now - s.timestamp >= SESSION_TIMEOUT).count();
+        let expired = self.sessions.values().take_while(|s| now - s.last_seen >= SESSION_TIMEOUT).count();
         self.sessions.drain(..expired);
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
@@ -112,6 +126,7 @@ mod tests {
             user_id,
             start: timestamp,
             timestamp,
+            last_seen: timestamp,
             entry_page: "/".into(),
             exit_page: "/".into(),
             pageviews: 1,
@@ -127,10 +142,22 @@ mod tests {
         let mut cache = SessionCache::default();
         cache.put(session(1, 0));
         cache.put(session(2, 1000));
-        assert!(cache.find(1, 1, SESSION_TIMEOUT - 1).is_some());
-        assert!(cache.find(1, 1, SESSION_TIMEOUT).is_none());
+        assert!(cache.is_open(1, 1, SESSION_TIMEOUT - 1));
+        assert!(!cache.is_open(1, 1, SESSION_TIMEOUT));
         cache.sweep(SESSION_TIMEOUT + 10);
         assert_eq!(cache.len(), 1);
-        assert!(cache.find(1, 2, SESSION_TIMEOUT + 10).is_some());
+        assert!(cache.is_open(1, 2, SESSION_TIMEOUT + 10));
+    }
+
+    #[test]
+    fn continuing_moves_to_the_end() {
+        let mut cache = SessionCache::default();
+        cache.put(session(1, 0));
+        cache.put(session(2, 10));
+        cache.continue_session(1, 1).unwrap().last_seen = 2000;
+        // The sweep stops at the first live entry, so order matters.
+        cache.sweep(SESSION_TIMEOUT + 20);
+        assert_eq!(cache.len(), 1);
+        assert!(cache.get(1, 1).is_some());
     }
 }

@@ -289,8 +289,8 @@ fn answers() -> Vec<(String, Value)> {
     let log = Logger::new(LogLevel::Error);
     let site = QueryHost { id: 1, hostname: "docs.example.com".into() };
     let empty = QueryHost { id: 2, hostname: "empty.example.com".into() };
-    let recorded = |response: crate::analytics::WorkerResponse| {
-        json!({ "status": response.status, "body": serde_json::from_str::<Value>(&response.body).unwrap_or(Value::String(response.body)) })
+    let recorded = |answer: crate::analytics::Answer| {
+        json!({ "status": answer.status.as_u16(), "body": serde_json::from_str::<Value>(&answer.body).unwrap_or(Value::String(answer.body)) })
     };
 
     let mut answers = Vec::new();

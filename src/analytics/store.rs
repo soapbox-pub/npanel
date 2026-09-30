@@ -2,12 +2,10 @@
 //!
 //! Its own database file beside npanel's, so the tables that grow with every
 //! page anyone views are nowhere near the ones serving reads from. Nothing is
-//! written per request: events collect in memory and sessions are marked as
-//! changed, and every few seconds the lot goes to disk in one transaction. A
-//! crash loses those seconds, which for counting visitors is an acceptable
-//! price for never making a visitor's request wait on a disk.
-
-use std::collections::HashMap;
+//! written per request: events collect in memory (see [`super::ingest`]), and
+//! every few seconds the lot goes to disk in one transaction. A crash loses
+//! those seconds, which for counting visitors is an acceptable price for never
+//! making a visitor's request wait on a disk.
 
 use anyhow::Result;
 use rand::Rng;
@@ -45,13 +43,6 @@ pub struct EventRow {
     /// Percent, on engagement events; 255 where none was reported.
     pub scroll_depth: i64,
 }
-
-/// Events held before a flush is forced, rather than waiting for the timer.
-const FLUSH_AT: usize = 5_000;
-
-/// The most ever held. New events are dropped past it rather than old ones,
-/// because an old event is one a visitor was already told was counted.
-const MAX_BUFFERED: usize = 100_000;
 
 /// Migrations for the analytics database, as the TypeScript npanel defined
 /// them. Both tables are clustered by site and time, because every query
@@ -117,44 +108,20 @@ const SESSION_COLUMNS: &str = "host_id, start, session_id, user_id, timestamp, e
     duration, is_bounce, referrer, source, channel, utm_medium, utm_source, utm_campaign, utm_content, utm_term, \
     click_id_param, country, region, city, device, browser, browser_version, os, os_version";
 
+/// The connection analytics are written through, which only it holds.
 pub struct AnalyticsStore {
     conn: Connection,
-    events: Vec<EventRow>,
-    dirty: HashMap<i64, Session>,
-    /// Events dropped because the buffer was full, since the last flush.
-    pub dropped: usize,
 }
 
 impl AnalyticsStore {
     pub fn new(mut conn: Connection) -> Result<AnalyticsStore> {
         migrate(&mut conn)?;
-        Ok(AnalyticsStore { conn, events: Vec::new(), dirty: HashMap::new(), dropped: 0 })
+        Ok(AnalyticsStore { conn })
     }
 
-    /// Queue an event. Returns whether the buffer has grown enough to flush now.
-    pub fn add_event(&mut self, event: EventRow) -> bool {
-        if self.events.len() >= MAX_BUFFERED {
-            self.dropped += 1;
-            return false;
-        }
-        self.events.push(event);
-        self.events.len() >= FLUSH_AT
-    }
-
-    /// Mark a session as changed, so the next flush writes it.
-    pub fn touch_session(&mut self, session: &Session) {
-        self.dirty.insert(session.id, session.clone());
-    }
-
-    /// Write everything queued, in one transaction.
-    pub fn flush(&mut self) -> Result<(usize, usize)> {
-        if self.events.is_empty() && self.dirty.is_empty() {
-            return Ok((0, 0));
-        }
-
-        let events = std::mem::take(&mut self.events);
-        let sessions: Vec<Session> = std::mem::take(&mut self.dirty).into_values().collect();
-
+    /// Write a batch of events and the latest state of the sessions they
+    /// changed, in one transaction.
+    pub fn write(&mut self, events: &[EventRow], sessions: &[Session]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {
             let mut insert = tx.prepare_cached(
@@ -163,7 +130,7 @@ impl AnalyticsStore {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )?;
             let mut rng = rand::thread_rng();
-            for e in &events {
+            for e in events {
                 // Only needs to be unique among one site's events in one second.
                 let id: i64 = rng.gen_range(0..(1i64 << 48) - 1);
                 insert.execute(params![
@@ -181,7 +148,7 @@ impl AnalyticsStore {
 
             let placeholders = vec!["?"; 28].join(", ");
             let mut upsert = tx.prepare_cached(&format!("INSERT OR REPLACE INTO sessions ({SESSION_COLUMNS}) VALUES ({placeholders})"))?;
-            for s in &sessions {
+            for s in sessions {
                 let a = &s.attributes;
                 upsert.execute(params![
                     s.host_id,
@@ -216,8 +183,7 @@ impl AnalyticsStore {
             }
         }
         tx.commit()?;
-
-        Ok((events.len(), sessions.len()))
+        Ok(())
     }
 
     /// Sessions active since `since`, to pick up where a restart left off.
@@ -230,6 +196,7 @@ impl AnalyticsStore {
                 id: row.get(2)?,
                 user_id: row.get(3)?,
                 timestamp: row.get(4)?,
+                last_seen: row.get(4)?,
                 entry_page: row.get(5)?,
                 exit_page: row.get(6)?,
                 pageviews: row.get(7)?,

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use http::StatusCode;
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -11,7 +12,7 @@ use serde_json::{json, Value};
 use super::query::engine::{Number, QueryEngine, QueryHost, StatsError};
 use super::query::parse::{parse_stats_query, Dimension, Metric, QueryError, StatsQuery, VisitDimension};
 use super::query::period::{Compare, Interval, Period};
-use super::WorkerResponse;
+use super::Answer;
 use crate::fields;
 use crate::log::Logger;
 
@@ -43,14 +44,14 @@ fn suggestion_dimension(filter: &str) -> Option<Dimension> {
     Some(Dimension::Visit(visit))
 }
 
-pub fn query(conn: &Connection, log: &Logger, now: i64, host: &QueryHost, body: &Value, timezone: &str) -> WorkerResponse {
+pub fn query(conn: &Connection, log: &Logger, now: i64, host: &QueryHost, body: &Value, timezone: &str) -> Answer {
     answer(log, || {
         let query = parse_stats_query(body)?;
         QueryEngine::new(conn, now).query(host, &query, timezone)
     })
 }
 
-pub fn current_visitors(conn: &Connection, log: &Logger, now: i64, host: &QueryHost) -> WorkerResponse {
+pub fn current_visitors(conn: &Connection, log: &Logger, now: i64, host: &QueryHost) -> Answer {
     answer(log, || QueryEngine::new(conn, now).current_visitors(host))
 }
 
@@ -67,7 +68,7 @@ struct Sparkline {
 /// The last 24 hours of each site: unique visitors, their change against the
 /// 24 hours before, and the visitors of each hour. Two queries a site, since
 /// hourly buckets don't add up to a day's unique visitors.
-pub fn sparklines(conn: &Connection, log: &Logger, now: i64, hosts: &[QueryHost], timezone: &str) -> WorkerResponse {
+pub fn sparklines(conn: &Connection, log: &Logger, now: i64, hosts: &[QueryHost], timezone: &str) -> Answer {
     answer(log, || {
         let mut total = StatsQuery::new(Period::Hours24, vec![Metric::Visitors]);
         total.include.compare = Some(Compare::PreviousPeriod);
@@ -114,7 +115,7 @@ pub fn suggestions(
     filter: &str,
     params: &HashMap<String, String>,
     timezone: &str,
-) -> WorkerResponse {
+) -> Answer {
     answer(log, || {
         let Some(dimension) = suggestion_dimension(filter) else {
             return Err(QueryError(format!("There are no suggestions for '{filter}'.")).into());
@@ -143,17 +144,17 @@ pub fn suggestions(
     })
 }
 
-fn answer<T: Serialize>(log: &Logger, run: impl FnOnce() -> Result<T, StatsError>) -> WorkerResponse {
+fn answer<T: Serialize>(log: &Logger, run: impl FnOnce() -> Result<T, StatsError>) -> Answer {
     let failed = |error: &dyn std::fmt::Display| {
         log.error("analytics_query_failed", fields! { "err_msg" => error.to_string() });
-        WorkerResponse::new(500, "application/json", json!({ "error": "The analytics query failed. The server log has the details." }).to_string())
+        Answer::error(StatusCode::INTERNAL_SERVER_ERROR, "The analytics query failed. The server log has the details.")
     };
     match run() {
         Ok(body) => match serde_json::to_string(&body) {
-            Ok(body) => WorkerResponse::new(200, "application/json", body),
+            Ok(body) => Answer { status: StatusCode::OK, body },
             Err(error) => failed(&error),
         },
-        Err(StatsError::Query(error)) => WorkerResponse::new(400, "application/json", json!({ "error": error.0 }).to_string()),
+        Err(StatsError::Query(error)) => Answer::error(StatusCode::BAD_REQUEST, &error.0),
         Err(StatsError::Internal(error)) => failed(&error),
     }
 }

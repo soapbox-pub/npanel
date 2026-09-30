@@ -7,19 +7,20 @@
 //! `x-plausible-dropped` saying how many were dropped, because nothing the
 //! sender could change would make it count. Only a malformed request is a 400.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use parking_lot::Mutex;
 use rand::Rng;
 
 use super::channel::{channel, ChannelInputs};
 use super::geo::{Geo, Location};
 use super::request::{parse_event_request, EventRequest};
 use super::salts::Salts;
+use super::request::RequestErrors;
 use super::sessions::{Session, SessionAttributes, SessionCache};
 use super::source::{acquisition, is_spam_referrer, query_param};
 use super::store::{AnalyticsStore, EventKind, EventRow};
 use super::user_agent::{Device, UserAgents};
-use super::WorkerResponse;
 
 /// Ad click ids a landing URL may carry, in the order Plausible checks them.
 const CLICK_IDS: [&str; 6] = ["gclid", "gbraid", "wbraid", "msclkid", "fbclid", "twclid"];
@@ -40,26 +41,79 @@ pub struct Sender<'a> {
     pub user_agent: &'a str,
 }
 
-/// Everything recording an event touches. Owned by the analytics thread and
-/// used one event at a time.
+/// Events held before a flush is forced, rather than waiting for the timer.
+const FLUSH_AT: usize = 5_000;
+
+/// The most ever held. New events are dropped past it rather than old ones,
+/// because an old event is one a visitor was already told was counted.
+const MAX_BUFFERED: usize = 100_000;
+
+/// What happened to one request.
+pub enum Received {
+    /// Well-formed, and `dropped` of the sites it named didn't keep it.
+    Accepted { dropped: usize },
+    Invalid(RequestErrors),
+}
+
+/// What is waiting to be written.
+#[derive(Default)]
+pub struct Pending {
+    pub events: Vec<EventRow>,
+    pub sessions: Vec<Session>,
+    /// Events dropped because the buffer was full.
+    pub dropped: usize,
+}
+
+/// Everything recording an event touches. Used one event at a time, and only
+/// in memory: the store is written by whoever takes the pending writes.
 pub struct Ingest {
-    pub store: AnalyticsStore,
     pub sessions: SessionCache,
     pub salts: Salts,
     pub user_agents: UserAgents,
     pub geo: Geo,
+    events: Vec<EventRow>,
+    /// Sessions changed since the last flush, by site and visitor. Written
+    /// once each, however often they changed in between.
+    dirty: HashSet<(i64, i64)>,
+    /// Changed sessions the cache had to forget before they were written.
+    evicted: Vec<Session>,
+    dropped: usize,
 }
 
 impl Ingest {
-    /// Handle one request body. `hosts` names the sites by hostname; `flush`
-    /// is whether the buffer asked to be written now.
-    pub fn handle(&mut self, body: &str, sender: &Sender, hosts: &HashMap<String, AnalyticsHost>, now: i64) -> (WorkerResponse, bool) {
+    pub fn new(sessions: SessionCache, geo: Geo) -> Ingest {
+        Ingest {
+            sessions,
+            salts: Salts::default(),
+            user_agents: UserAgents::default(),
+            geo,
+            events: Vec::new(),
+            dirty: HashSet::new(),
+            evicted: Vec::new(),
+            dropped: 0,
+        }
+    }
+
+    /// Take everything waiting to be written.
+    pub fn take_pending(&mut self) -> Pending {
+        let mut sessions = std::mem::take(&mut self.evicted);
+        sessions.extend(self.dirty.drain().filter_map(|(host_id, user_id)| self.sessions.get(host_id, user_id).cloned()));
+        Pending { events: std::mem::take(&mut self.events), sessions, dropped: std::mem::take(&mut self.dropped) }
+    }
+
+    /// Handle one request body. `hosts` names the sites by hostname; the
+    /// flag is whether the buffer asked to be written now.
+    pub fn handle(
+        &mut self,
+        store: &Mutex<AnalyticsStore>,
+        body: &str,
+        sender: &Sender,
+        hosts: &HashMap<String, AnalyticsHost>,
+        now: i64,
+    ) -> (Received, bool) {
         let event = match parse_event_request(body) {
             Ok(event) => event,
-            Err(errors) => {
-                let body = serde_json::json!({ "errors": errors }).to_string();
-                return (WorkerResponse::new(400, "application/json", body), false);
-            }
+            Err(errors) => return (Received::Invalid(errors), false),
         };
 
         let mut dropped = 0;
@@ -73,23 +127,27 @@ impl Ingest {
                 // `d` arrives without `www.`, which a site configured under its
                 // `www` name still has to be found by.
                 let host = hosts.get(domain).or_else(|| hosts.get(&format!("www.{domain}")));
-                match self.record(&event, domain, host, sender, now) {
+                match self.record(store, &event, domain, host, sender, now) {
                     Some(full) => flush |= full,
                     None => dropped += 1,
                 }
             }
         }
 
-        let mut response = WorkerResponse::new(202, "text/plain; charset=utf-8", "ok".into());
-        if dropped > 0 {
-            response.headers.push(("x-plausible-dropped".into(), dropped.to_string()));
-        }
-        (response, flush)
+        (Received::Accepted { dropped }, flush)
     }
 
     /// Record one event for one site. `None` when it wasn't kept; otherwise
     /// whether the buffer is full enough to flush.
-    fn record(&mut self, event: &EventRequest, domain: &str, host: Option<&AnalyticsHost>, sender: &Sender, now: i64) -> Option<bool> {
+    fn record(
+        &mut self,
+        store: &Mutex<AnalyticsStore>,
+        event: &EventRequest,
+        domain: &str,
+        host: Option<&AnalyticsHost>,
+        sender: &Sender,
+        now: i64,
+    ) -> Option<bool> {
         let host = host.filter(|h| h.counting)?;
 
         let device = if sender.user_agent.is_empty() { Some(None) } else { self.user_agents.parse(sender.user_agent).map(Some) };
@@ -98,82 +156,92 @@ impl Ingest {
 
         let url_host = event.url.host_str().unwrap_or("");
         let root_domain = crate::psl::domain(url_host).filter(|d| !d.is_empty()).unwrap_or(if url_host.is_empty() { "(none)" } else { url_host });
-        let (current, previous) =
-            self.salts.user_ids(&self.store, now, &[sender.user_agent, sender.ip, domain, root_domain]).ok()?;
+        let (current, previous) = self.salts.user_ids(store, now, &[sender.user_agent, sender.ip, domain, root_domain]).ok()?;
 
-        let found = self
-            .sessions
-            .find(host.id, current, now)
-            .or_else(|| previous.and_then(|previous| self.sessions.find(host.id, previous, now)))
-            .cloned();
-
+        // A visit continued under yesterday's salt stays filed under it.
+        let open = [Some(current), previous].into_iter().flatten().find(|user| self.sessions.is_open(host.id, *user, now));
         let pageview = event.name == "pageview";
+        let engagement = event.name == "engagement";
 
-        let session = if event.name == "engagement" {
-            // Engagement only ever continues a visit: it keeps the session
-            // alive and is stored against it, but changes nothing it counts.
-            let mut session = found?;
-            session.timestamp = now;
-            self.sessions.put(session.clone());
-            session
-        } else if let Some(mut session) = found {
-            session.timestamp = now;
-            session.duration = (now - session.start).abs();
-            session.events += 1;
-            if pageview {
-                session.pageviews += 1;
-                if session.entry_page.is_empty() {
-                    session.entry_page = event.pathname.clone();
+        let session = match open {
+            Some(user) => {
+                let session = self.sessions.continue_session(host.id, user)?;
+                session.last_seen = now;
+                // Engagement only ever continues a visit: it keeps the session
+                // alive and is stored against it, but changes nothing it counts.
+                if !engagement {
+                    session.timestamp = now;
+                    session.duration = (now - session.start).abs();
+                    session.events += 1;
+                    if pageview {
+                        session.pageviews += 1;
+                        if session.entry_page.is_empty() {
+                            session.entry_page = event.pathname.clone();
+                        }
+                        session.exit_page = event.pathname.clone();
+                    }
+                    // A bounce stops being one on a second pageview or anything
+                    // the visitor actively did, and never becomes one again.
+                    if session.is_bounce {
+                        session.is_bounce = !(session.pageviews >= 2 || (event.interactive && !pageview));
+                    }
                 }
-                session.exit_page = event.pathname.clone();
+                session
             }
-            // A bounce stops being one on a second pageview or anything the
-            // visitor actively did, and never becomes one again.
-            if session.is_bounce {
-                session.is_bounce = !(session.pageviews >= 2 || (event.interactive && !pageview));
+            None if engagement => return None,
+            None => {
+                let location = self.geo.lookup(sender.ip);
+                let (session, evicted) = self.sessions.put(Session {
+                    id: rand::thread_rng().gen_range(0..(1i64 << 48) - 1),
+                    host_id: host.id,
+                    user_id: current,
+                    start: now,
+                    timestamp: now,
+                    last_seen: now,
+                    entry_page: if pageview { event.pathname.clone() } else { String::new() },
+                    exit_page: if pageview { event.pathname.clone() } else { String::new() },
+                    pageviews: i64::from(pageview),
+                    events: 1,
+                    duration: 0,
+                    is_bounce: pageview || !event.interactive,
+                    attributes: attributes(event, device.as_ref(), location),
+                });
+                if let Some(evicted) = evicted.filter(|s| self.dirty.remove(&(s.host_id, s.user_id))) {
+                    self.evicted.push(evicted);
+                }
+                session
             }
-            self.sessions.put(session.clone());
-            self.store.touch_session(&session);
-            session
-        } else {
-            let location = self.geo.lookup(sender.ip);
-            let session = Session {
-                id: rand::thread_rng().gen_range(0..(1i64 << 48) - 1),
-                host_id: host.id,
-                user_id: current,
-                start: now,
-                timestamp: now,
-                entry_page: if pageview { event.pathname.clone() } else { String::new() },
-                exit_page: if pageview { event.pathname.clone() } else { String::new() },
-                pageviews: i64::from(pageview),
-                events: 1,
-                duration: 0,
-                is_bounce: pageview || !event.interactive,
-                attributes: attributes(event, device.as_ref(), location),
-            };
-            self.sessions.put(session.clone());
-            self.store.touch_session(&session);
-            session
         };
+        let (session_id, user_id) = (session.id, session.user_id);
+
+        // An engagement ping only moved `last_seen`, which isn't written.
+        if !engagement {
+            self.dirty.insert((host.id, user_id));
+        }
 
         let kind = if pageview {
             EventKind::Pageview
-        } else if event.name == "engagement" {
+        } else if engagement {
             EventKind::Engagement
         } else {
             EventKind::Custom
         };
 
-        Some(self.store.add_event(EventRow {
+        if self.events.len() >= MAX_BUFFERED {
+            self.dropped += 1;
+            return Some(false);
+        }
+        self.events.push(EventRow {
             host_id: host.id,
             timestamp: now,
             kind,
-            session_id: session.id,
-            user_id: session.user_id,
+            session_id,
+            user_id,
             pathname: event.pathname.clone(),
             engagement_time: event.engagement_time,
             scroll_depth: event.scroll_depth,
-        }))
+        });
+        Some(self.events.len() >= FLUSH_AT)
     }
 }
 
@@ -233,59 +301,54 @@ fn attributes(event: &EventRequest, device: Option<&Device>, location: Location)
 mod tests {
     use super::*;
 
-    fn ingest(dir: &std::path::Path) -> Ingest {
-        Ingest {
-            store: AnalyticsStore::new(rusqlite::Connection::open(dir.join("a.sqlite3")).unwrap()).unwrap(),
-            sessions: SessionCache::default(),
-            salts: Salts::default(),
-            user_agents: UserAgents::default(),
-            geo: Geo::new(dir, crate::log::Logger::new(crate::log::LogLevel::Error)),
+    const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+    fn dropped(received: &Received) -> Option<usize> {
+        match received {
+            Received::Accepted { dropped } => Some(*dropped),
+            Received::Invalid(_) => None,
         }
     }
-
-    const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
     #[test]
     fn records_visits() {
         let dir = tempfile::tempdir().unwrap();
-        let mut ingest = ingest(dir.path());
+        let store = Mutex::new(AnalyticsStore::new(rusqlite::Connection::open(dir.path().join("a.sqlite3")).unwrap()).unwrap());
+        let mut ingest = Ingest::new(SessionCache::default(), Geo::new(dir.path(), crate::log::Logger::new(crate::log::LogLevel::Error)));
         let hosts: HashMap<String, AnalyticsHost> = [
             ("docs.example.com".into(), AnalyticsHost { id: 1, hostname: "docs.example.com".into(), counting: true }),
             ("off.example.com".into(), AnalyticsHost { id: 2, hostname: "off.example.com".into(), counting: false }),
         ]
         .into();
         let sender = Sender { ip: "203.0.113.5", user_agent: UA };
+        let mut handle = |body: &str, sender: &Sender, now: i64| ingest.handle(&store, body, sender, &hosts, now).0;
 
-        let (response, _) = ingest.handle(
-            r#"{"n":"pageview","u":"https://docs.example.com/?utm_source=google","d":"docs.example.com","r":null}"#,
-            &sender,
-            &hosts,
-            1000,
-        );
-        assert_eq!(response.status, 202);
-        assert!(response.headers.iter().all(|(k, _)| k != "x-plausible-dropped"));
-
-        let (response, _) = ingest.handle(r#"{"n":"pageview","u":"https://docs.example.com/about","d":"docs.example.com"}"#, &sender, &hosts, 1010);
-        assert_eq!(response.status, 202);
-
-        let (response, _) = ingest.handle(r#"{"n":"pageview","u":"https://off.example.com/","d":"off.example.com"}"#, &sender, &hosts, 1020);
-        assert!(response.headers.contains(&("x-plausible-dropped".into(), "1".into())));
-
+        let received = handle(r#"{"n":"pageview","u":"https://docs.example.com/?utm_source=google","d":"docs.example.com","r":null}"#, &sender, 1000);
+        assert_eq!(dropped(&received), Some(0));
+        let received = handle(r#"{"n":"pageview","u":"https://docs.example.com/about","d":"docs.example.com"}"#, &sender, 1010);
+        assert_eq!(dropped(&received), Some(0));
+        // Keeps the visit open without moving what is stored.
+        let received = handle(r#"{"n":"engagement","u":"https://docs.example.com/about","d":"docs.example.com","e":5000,"sd":40}"#, &sender, 1020);
+        assert_eq!(dropped(&received), Some(0));
+        let received = handle(r#"{"n":"pageview","u":"https://off.example.com/","d":"off.example.com"}"#, &sender, 1030);
+        assert_eq!(dropped(&received), Some(1));
         let bot = Sender { ip: "203.0.113.5", user_agent: "Googlebot/2.1" };
-        let (response, _) = ingest.handle(r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#, &bot, &hosts, 1030);
-        assert!(response.headers.contains(&("x-plausible-dropped".into(), "1".into())));
+        let received = handle(r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#, &bot, 1040);
+        assert_eq!(dropped(&received), Some(1));
+        assert!(dropped(&handle("{", &sender, 1050)).is_none());
 
-        assert_eq!(ingest.store.flush().unwrap(), (2, 1));
-        let sessions = ingest.store.open_sessions(0).unwrap();
+        let pending = ingest.take_pending();
+        assert_eq!((pending.events.len(), pending.sessions.len()), (3, 1));
+        store.lock().write(&pending.events, &pending.sessions).unwrap();
+        assert_eq!(ingest.take_pending().events.len(), 0);
+
+        let sessions = store.lock().open_sessions(0).unwrap();
         assert_eq!(sessions.len(), 1);
         let s = &sessions[0];
-        assert_eq!((s.pageviews, s.is_bounce, s.duration), (2, false, 10));
+        assert_eq!((s.pageviews, s.is_bounce, s.duration, s.timestamp), (2, false, 10, 1010));
         assert_eq!((s.entry_page.as_str(), s.exit_page.as_str()), ("/", "/about"));
         assert_eq!(s.attributes.source, "Google");
         assert_eq!(s.attributes.channel, "Organic Search");
         assert_eq!(s.attributes.browser, "Chrome");
-
-        let (response, _) = ingest.handle("{", &sender, &hosts, 1040);
-        assert_eq!(response.status, 400);
     }
 }

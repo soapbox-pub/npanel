@@ -23,7 +23,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 
 use crate::analytics::query::engine::QueryHost;
-use crate::analytics::{Analytics, WorkerResponse};
+use crate::analytics::{Analytics, Answer};
 use crate::auth::verify_nip98;
 use crate::builds::current_build;
 use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, HOST_COLUMNS, SITE_EVENT_COLUMNS};
@@ -1231,8 +1231,8 @@ async fn delete_env(State(deps): State<Deps>, user: AuthUser, Path((hostname, na
     ok(json!({ "variables": variables }))
 }
 
-fn relay(response: WorkerResponse) -> ApiResult {
-    Ok(response.into_response(&[]))
+fn relay(answer: Answer) -> ApiResult {
+    Ok(answer.into_response())
 }
 
 async fn stats_host(deps: &Deps, user: &AuthUser, hostname: &str) -> Result<QueryHost, ApiError> {

@@ -10,6 +10,7 @@
 
 use anyhow::Result;
 use hmac::{Hmac, Mac};
+use parking_lot::Mutex;
 use sha2::Sha256;
 
 use super::store::AnalyticsStore;
@@ -26,13 +27,14 @@ pub struct Salts {
 
 impl Salts {
     /// Rotate if the current salt is from before today. Cheap enough to call
-    /// per event.
-    pub fn refresh(&mut self, store: &AnalyticsStore, now: i64) -> Result<()> {
+    /// per event: the store is only locked on the first event of a day.
+    pub fn refresh(&mut self, store: &Mutex<AnalyticsStore>, now: i64) -> Result<()> {
         let today = now - now.rem_euclid(DAY);
         if self.day == today && !self.current.is_empty() {
             return Ok(());
         }
 
+        let store = store.lock();
         let stored = store.salts()?;
         match stored.first() {
             Some((salt, created_at)) if *created_at >= today => {
@@ -52,7 +54,7 @@ impl Salts {
     /// A visitor's id under the current salt, and under the previous one if
     /// there is one: 48 bits of an HMAC, enough that two visitors to one site
     /// on one day colliding is a one-in-millions event.
-    pub fn user_ids(&mut self, store: &AnalyticsStore, now: i64, parts: &[&str]) -> Result<(i64, Option<i64>)> {
+    pub fn user_ids(&mut self, store: &Mutex<AnalyticsStore>, now: i64, parts: &[&str]) -> Result<(i64, Option<i64>)> {
         self.refresh(store, now)?;
         let input = parts.concat();
         Ok((hash(&self.current, &input), self.previous.as_ref().map(|salt| hash(salt, &input))))
@@ -73,7 +75,7 @@ mod tests {
     #[test]
     fn rotates_daily() {
         let dir = tempfile::tempdir().unwrap();
-        let store = AnalyticsStore::new(rusqlite::Connection::open(dir.path().join("a.sqlite3")).unwrap()).unwrap();
+        let store = Mutex::new(AnalyticsStore::new(rusqlite::Connection::open(dir.path().join("a.sqlite3")).unwrap()).unwrap());
         let mut salts = Salts::default();
 
         let (a, previous) = salts.user_ids(&store, 1000, &["ua", "ip"]).unwrap();
@@ -88,6 +90,6 @@ mod tests {
         // A restart picks the same salts back up.
         let mut again = Salts::default();
         assert_eq!(again.user_ids(&store, DAY + 10, &["ua", "ip"]).unwrap(), (b, Some(a)));
-        assert_eq!(store.salts().unwrap().len(), 2);
+        assert_eq!(store.lock().salts().unwrap().len(), 2);
     }
 }

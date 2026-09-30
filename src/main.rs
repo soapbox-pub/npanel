@@ -37,6 +37,7 @@ mod site_csp;
 mod site_env;
 mod site_preview;
 mod sites;
+mod supervise;
 mod sync;
 mod tls_check;
 mod tor;
