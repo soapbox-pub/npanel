@@ -50,14 +50,6 @@ pub struct Script<'a> {
     pub connects: bool,
 }
 
-fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
-    cell.get_or_init(|| Regex::new(pattern).expect("regex"))
-}
-
-/// Whitespace as JavaScript's `\s` reads a Latin-1 string: the ASCII set plus
-/// the no-break space, which is byte 0xA0.
-const SPACE: &str = r"[\t\n\x0B\x0C\r \xA0]";
-
 /// A page with the script added, or `None` for one that isn't a document.
 ///
 /// Edited as bytes rather than parsed and re-serialized, so everything the
@@ -104,45 +96,126 @@ pub fn inject_script(html: &[u8], script: &Script) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Where the head begins, from a document's lowercased bytes.
-fn head_start(lower: &[u8]) -> Option<usize> {
-    static HEAD: OnceLock<Regex> = OnceLock::new();
-    static HTML: OnceLock<Regex> = OnceLock::new();
-    static DOCTYPE: OnceLock<Regex> = OnceLock::new();
-    for opening in [
-        regex(&HEAD, &format!(r"(?-u)<head(?:{SPACE}[^>]*)?>")),
-        regex(&HTML, &format!(r"(?-u)<html(?:{SPACE}[^>]*)?>")),
-        regex(&DOCTYPE, r"(?-u)<!doctype[^>]*>"),
-    ] {
-        if let Some(found) = opening.find(lower) {
-            return Some(found.end());
-        }
-    }
-
-    static BODY: OnceLock<Regex> = OnceLock::new();
-    regex(&BODY, &format!(r"(?-u)<body(?:{SPACE}|>)")).find(lower).map(|found| found.start())
+/// Whitespace as HTML's tokenizer reads it between a tag's name and its
+/// attributes.
+fn is_space(byte: u8) -> bool {
+    matches!(byte, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')
 }
 
-/// Where the head ends, from a document's lowercased bytes.
-fn head_end(lower: &[u8]) -> Option<usize> {
-    if let Some(at) = find(lower, b"</head") {
-        return Some(at);
-    }
+/// One piece of markup a page's tokenizer would see.
+#[derive(Debug, PartialEq, Eq)]
+enum Token {
+    /// `<name …>`, by its lowercased name.
+    Start(Vec<u8>),
+    /// `</name …>`.
+    End(Vec<u8>),
+    /// `<!doctype …>`.
+    Doctype,
+}
 
-    static BODY: OnceLock<Regex> = OnceLock::new();
-    if let Some(found) = regex(&BODY, &format!(r"(?-u)<body(?:{SPACE}|>)")).find(lower) {
-        return Some(found.start());
-    }
+/// The tags of a document, from its lowercased bytes, with where each begins
+/// and ends — found the way a browser's tokenizer finds them, so a `</head>`
+/// in a comment or an inline script is not the end of the head, `</header>`
+/// is not `</head>`, and a `>` inside a quoted attribute doesn't end its tag.
+///
+/// Not a parser: nothing is built from the tags, and no tag is implied. Only
+/// what the tokenizer decides matters here, and all of it is ASCII, so the
+/// site's own bytes need no decoding.
+fn tags(lower: &[u8]) -> Vec<(usize, usize, Token)> {
+    let mut tags = Vec::new();
+    let mut at = 0;
 
-    static HTML: OnceLock<Regex> = OnceLock::new();
-    static DOCTYPE: OnceLock<Regex> = OnceLock::new();
-    for opening in [regex(&HTML, &format!(r"(?-u)<html(?:{SPACE}|>)[^>]*>|<html>")), regex(&DOCTYPE, r"(?-u)<!doctype[^>]*>")] {
-        if let Some(found) = opening.find(lower) {
-            return Some(found.end());
+    while let Some(offset) = lower[at..].iter().position(|&b| b == b'<') {
+        let start = at + offset;
+        let rest = &lower[start..];
+
+        if rest.starts_with(b"<!--") {
+            at = find(&lower[start + 4..], b"-->").map_or(lower.len(), |end| start + 4 + end + 3);
+            continue;
+        }
+        if rest.starts_with(b"<!") || rest.starts_with(b"<?") {
+            let end = find(rest, b">").map_or(lower.len(), |end| start + end + 1);
+            if rest.starts_with(b"<!doctype") {
+                tags.push((start, end, Token::Doctype));
+            }
+            at = end;
+            continue;
+        }
+
+        let closing = rest.get(1) == Some(&b'/');
+        let name_start = start + 1 + usize::from(closing);
+        if !lower.get(name_start).is_some_and(u8::is_ascii_alphabetic) {
+            at = start + 1;
+            continue;
+        }
+        let name_end = lower[name_start..].iter().position(|&b| is_space(b) || b == b'/' || b == b'>').map_or(lower.len(), |n| name_start + n);
+        let name = lower[name_start..name_end].to_vec();
+
+        // Attribute values may hold a `>` when quoted.
+        let mut end = name_end;
+        let mut quote = None;
+        while end < lower.len() {
+            match (quote, lower[end]) {
+                (None, b'>') => break,
+                (None, q @ (b'"' | b'\'')) if !closing => quote = Some(q),
+                (Some(q), b) if b == q => quote = None,
+                _ => {}
+            }
+            end += 1;
+        }
+        end = (end + 1).min(lower.len());
+
+        if closing {
+            tags.push((start, end, Token::End(name)));
+            at = end;
+            continue;
+        }
+
+        // The text of these is not markup, whatever it looks like.
+        let raw = matches!(name.as_slice(), b"script" | b"style" | b"textarea" | b"title" | b"xmp" | b"iframe" | b"noembed" | b"noframes");
+        let closer = [b"</".as_slice(), &name].concat();
+        tags.push((start, end, Token::Start(name)));
+        at = end;
+        if raw {
+            let mut search = end;
+            at = lower.len();
+            while let Some(found) = find(&lower[search..], &closer) {
+                let after = search + found + closer.len();
+                if lower.get(after).is_none_or(|&b| is_space(b) || b == b'/' || b == b'>') {
+                    at = search + found;
+                    break;
+                }
+                search = after;
+            }
         }
     }
 
-    None
+    tags
+}
+
+/// Where the head begins, from a document's lowercased bytes: after `<head>`,
+/// or failing that after `<html>` or the doctype, or before `<body>`.
+fn head_start(lower: &[u8]) -> Option<usize> {
+    let tags = tags(lower);
+    let start = |name: &[u8]| tags.iter().find(|(_, _, t)| *t == Token::Start(name.to_vec()));
+
+    start(b"head")
+        .or_else(|| start(b"html"))
+        .or_else(|| tags.iter().find(|(_, _, t)| *t == Token::Doctype))
+        .map(|(_, end, _)| *end)
+        .or_else(|| start(b"body").map(|(at, _, _)| *at))
+}
+
+/// Where the head ends, from a document's lowercased bytes: before `</head>`,
+/// or failing that before `<body>`, or after `<html>` or the doctype.
+fn head_end(lower: &[u8]) -> Option<usize> {
+    let tags = tags(lower);
+    let find_tag = |token: Token| tags.iter().find(|(_, _, t)| *t == token);
+
+    find_tag(Token::End(b"head".to_vec()))
+        .or_else(|| find_tag(Token::Start(b"body".to_vec())))
+        .map(|(at, _, _)| *at)
+        .or_else(|| find_tag(Token::Start(b"html".to_vec())).or_else(|| find_tag(Token::Doctype)).map(|(_, end, _)| *end))
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -152,20 +225,19 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Every `<meta http-equiv="Content-Security-Policy">` in `head`, widened.
 /// Also reports whether any of them trusts scripts by hash alone.
 fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
-    static META: OnceLock<Regex> = OnceLock::new();
     static ATTRIBUTE: OnceLock<Regex> = OnceLock::new();
-    let meta = regex(&META, r#"(?i-u)<meta\b[^>]*>"#);
-    let attribute = regex(
-        &ATTRIBUTE,
-        &format!(r#"(?-u)([^\t\n\x0B\x0C\r \xA0"'=/>]+)(?:{SPACE}*={SPACE}*(?:"([^"]*)"|'([^']*)'|([^\t\n\x0B\x0C\r \xA0"'>]+)))?"#),
-    );
+    let attribute = ATTRIBUTE.get_or_init(|| {
+        Regex::new(r#"(?-u)([^\t\n\x0C\r "'=/>]+)(?:[\t\n\x0C\r ]*=[\t\n\x0C\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\x0C\r "'>]+)))?"#)
+            .expect("regex")
+    });
 
     let mut strict_dynamic = false;
     let mut out = Vec::with_capacity(head.len());
     let mut last = 0;
 
-    for found in meta.find_iter(head) {
-        let tag = found.as_bytes();
+    let metas = tags(&head.to_ascii_lowercase()).into_iter().filter(|(_, _, token)| *token == Token::Start(b"meta".to_vec()));
+    for (start, end, _) in metas {
+        let tag = &head[start..end];
         let mut http_equiv = None;
         let mut content: Option<(String, usize, usize)> = None;
 
@@ -181,33 +253,22 @@ fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
             }
         }
 
-        let rewritten = (|| {
-            if http_equiv.as_deref() != Some("content-security-policy") {
-                return None;
-            }
-            let (value, start, end) = content?;
-            let policy = decode_attribute(&value);
-            // Nothing a policy can say is outside printable ASCII, and
-            // anything that is would not survive being written back.
-            if policy.chars().any(|c| c != '\t' && !(' '..='~').contains(&c)) {
-                return None;
-            }
-            if uses_strict_dynamic(&policy) {
-                strict_dynamic = true;
-            }
+        let policy = match (http_equiv.as_deref(), content) {
+            (Some("content-security-policy"), Some((value, from, to))) => Some((decode_attribute(&value), from, to)),
+            _ => None,
+        };
+        // Nothing a policy can say is outside printable ASCII, and anything
+        // that is would not survive being written back.
+        let policy = policy.filter(|(policy, ..)| policy.chars().all(|c| c == '\t' || (' '..='~').contains(&c)));
+        strict_dynamic |= policy.as_ref().is_some_and(|(policy, ..)| uses_strict_dynamic(policy));
+        let rewritten = policy.and_then(|(policy, from, to)| {
             let widened = allow_script(&policy, script);
-            if widened == policy {
-                return None;
-            }
-            let mut tag_out = tag[..start].to_vec();
-            tag_out.extend_from_slice(format!("content=\"{}\"", escape_attribute(&widened)).as_bytes());
-            tag_out.extend_from_slice(&tag[end..]);
-            Some(tag_out)
-        })();
+            (widened != policy).then(|| [&tag[..from], format!("content=\"{}\"", escape_attribute(&widened)).as_bytes(), &tag[to..]].concat())
+        });
 
-        out.extend_from_slice(&head[last..found.start()]);
+        out.extend_from_slice(&head[last..start]);
         out.extend_from_slice(rewritten.as_deref().unwrap_or(tag));
-        last = found.end();
+        last = end;
     }
     out.extend_from_slice(&head[last..]);
 
@@ -388,6 +449,23 @@ mod tests {
         assert_eq!(env("<!DOCTYPE html><script src=/a.js></script>").unwrap(), format!("<!DOCTYPE html>{tag}<script src=/a.js></script>"));
         assert_eq!(env("<p>hi</p><body>").unwrap(), format!("<p>hi</p>{tag}<body>"));
         assert_eq!(env("<div>fragment</div>"), None);
+    }
+
+    #[test]
+    fn finds_tags_as_a_browser_does() {
+        let tag = r#"<script type="module" src="/.npanel/script.js?v=1"></script>"#;
+        // `</header>` is not `</head>`, and `<html>` is one tag, not two.
+        assert_eq!(inject("<html><header>x</header><p>y").unwrap(), format!("<html>{tag}<header>x</header><p>y"));
+        assert_eq!(inject("<html><p>x").unwrap(), format!("<html>{tag}<p>x"));
+        // A `</head>` in a comment or a script is text, not the end of the head.
+        assert_eq!(
+            inject(r#"<head><!-- </head> --><script>document.write("</head>")</script></head>"#).unwrap(),
+            format!(r#"<head><!-- </head> --><script>document.write("</head>")</script>{tag}</head>"#)
+        );
+        // A quoted `>` doesn't end a tag.
+        assert_eq!(inject(r#"<html data-x="a>b"><body>"#).unwrap(), format!(r#"<html data-x="a>b">{tag}<body>"#));
+        // No-break space is not HTML whitespace, so this is no head.
+        assert_eq!(inject_with("<head\u{a0}x><p>", &ENV), None);
     }
 
     #[test]

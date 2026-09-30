@@ -50,9 +50,12 @@ use crate::sites::{
 /// every fingerprint, so a new npanel whose builds would come out differently
 /// rebuilds every host at startup.
 ///
-/// The same number as the TypeScript npanel's: this port builds the same
-/// bytes, so a gateway moving from one to the other rebuilds nothing.
-pub const BUILDER_VERSION: i64 = 3;
+/// Up to 3 this was the TypeScript npanel's number too, and the two built the
+/// same bytes. 4 is where they part: pages are edited at tags found the way a
+/// browser's tokenizer finds them, rather than by patterns that took
+/// `</header>` for `</head>`. A gateway moving from one to the other rebuilds
+/// every host once, which is all a mismatch costs.
+pub const BUILDER_VERSION: i64 = 4;
 
 /// Wait before a second attempt at a build. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -799,8 +802,8 @@ fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &L
 /// request and deliberately left out, so flipping one rebuilds nothing.
 ///
 /// `window.ENV` is left out too unless the host has variables, which the
-/// TypeScript npanel knows nothing of: a host without any keeps the
-/// fingerprint it had there, and one with some gets a build of its own.
+/// TypeScript npanel knows nothing of: a host without any hashes as it would
+/// there, given the same builder version.
 fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, env: Option<&str>) -> String {
     // A struct rather than `json!`, so the key order is fixed by the
     // declaration and not by a crate-wide serde_json feature.
@@ -864,10 +867,12 @@ mod tests {
             updated_at: 0,
         };
         let origin = RequestOrigin { hostname: "docs.example.com".into(), scheme: "https" };
-        // sha256 of {"builder":3,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}
+        // The TypeScript npanel's serialization, down to the key order.
         assert_eq!(
             fingerprint(&host, &origin, &["e1".into()], false, None),
-            sha(r#"{"builder":3,"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}"#)
+            sha(&format!(
+                r#"{{"builder":{BUILDER_VERSION},"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}}"#
+            ))
         );
     }
 

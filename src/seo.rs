@@ -133,8 +133,7 @@ pub fn robots_needs_sitemap(text: &str) -> bool {
 pub fn augment_robots(text: &str, origin: &RequestOrigin) -> String {
     let sitemap = format!("Sitemap: {}\n", absolute_url(origin, "/sitemap.xml"));
 
-    // `\s*$` as JavaScript reads `\s`: ASCII and Unicode whitespace alike.
-    let body = text.trim_end_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    let body = text.trim_end();
     if body.is_empty() {
         return sitemap;
     }

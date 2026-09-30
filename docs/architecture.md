@@ -238,7 +238,10 @@ output — is hashed into a fingerprint, and a host is rebuilt only where that
 differs from the build it is serving. Flipping a switch that only changes
 headers (`csp`, `spa`) therefore rebuilds nothing, and a new npanel whose
 builds would come out differently bumps `BUILDER_VERSION` and rebuilds
-everything at startup. A rename keeps the old build serving until the new one
+everything at startup. The fingerprint is serialized exactly as the TypeScript
+npanel serializes it; the two shared a `BUILDER_VERSION` until 4, when this
+one began finding tags in a page the way a browser's tokenizer does, so moving
+between them now rebuilds every host once. A rename keeps the old build serving until the new one
 names the new hostname.
 
 A build carries every file row it serves and references its versions by id
@@ -582,10 +585,8 @@ The tag loads the script at a versioned URL, like every script npanel adds
 (see [builds](#builds)), so a changed value reaches visitors at once.
 
 The variables are part of the build's fingerprint, so changing one rebuilds the
-host and nothing else. They enter the fingerprint only when there are some,
-which keeps every host without them at the fingerprint the TypeScript npanel
-gives it: its builds stay current, and it rebuilds a host that has variables
-without them, which is right, since it serves none.
+host and nothing else. They enter the fingerprint only when there are some, so
+a host without them hashes exactly as it did before variables existed.
 
 Everything in the script is public. It is served to every visitor, and nothing
 secret belongs in it — the dashboard says so beside the list.
