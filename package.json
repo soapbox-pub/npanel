@@ -25,7 +25,6 @@
     "entities": "^8.0.0",
     "hono": "^4.13.1",
     "kysely": "^0.29.5",
-    "mmdb-lib": "^3.0.3",
     "node-device-detector": "^2.2.7",
     "node-html-parser": "^9.0.1",
     "nostr-tools": "^2.24.1",

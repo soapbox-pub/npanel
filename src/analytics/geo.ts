@@ -1,12 +1,12 @@
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, rename, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
-import { type CityResponse, Reader } from "mmdb-lib";
 import { type Logger, errFields } from "../log.ts";
+import { MmdbFile } from "./mmdb.ts";
 
 /** Where a visitor was, as far as their address says. Empty strings mean unknown. */
 export interface Location {
@@ -16,6 +16,13 @@ export interface Location {
   region: string;
   /** English name of the city. */
   city: string;
+}
+
+/** The fields of a City database record that a location is made of. */
+interface CityRecord {
+  country?: { iso_code?: string };
+  subdivisions?: { names?: { en?: string } }[];
+  city?: { names?: { en?: string } };
 }
 
 const UNKNOWN: Location = { country: "", region: "", city: "" };
@@ -41,12 +48,12 @@ const CHECK_EVERY = 24 * 60 * 60 * 1000;
  * on, and replaced once a month; until the first download lands, visits are
  * counted without a location rather than waited on.
  *
- * The file is read whole into memory, which is the cost of lookups that never
- * touch the disk: a bit over a hundred megabytes, paid by the analytics
- * thread alone. The address itself is used for the lookup and nothing else.
+ * The file is a bit over a hundred megabytes and a lookup reads a few
+ * kilobytes of it, so it is read a page at a time (`mmdb.ts`) rather than held
+ * in memory. The address itself is used for the lookup and nothing else.
  */
 export class Geo {
-  private reader: Reader<CityResponse> | undefined;
+  private reader: MmdbFile | undefined;
   private checking: Promise<void> | undefined;
   private lastCheck = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -59,8 +66,11 @@ export class Geo {
   /** Load whatever database is already on disk. */
   async load(): Promise<void> {
     try {
-      this.reader = new Reader<CityResponse>(await readFile(join(this.dir, FILE)));
-      this.log.info("geo_loaded", { built: this.reader.metadata.buildEpoch.toISOString() });
+      const reader = new MmdbFile(join(this.dir, FILE));
+      // An open descriptor would go on reading the file a download just renamed over.
+      this.reader?.close();
+      this.reader = reader;
+      this.log.info("geo_loaded", { built: reader.metadata.buildEpoch.toISOString() });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.log.warn("geo_load_failed", errFields(error));
@@ -83,14 +93,16 @@ export class Geo {
   stop(): void {
     clearInterval(this.timer);
     this.timer = undefined;
+    this.reader?.close();
+    this.reader = undefined;
   }
 
   lookup(ip: string): Location {
     if (!this.reader || !isIP(ip)) return UNKNOWN;
 
-    let record: CityResponse | null;
+    let record: CityRecord | null;
     try {
-      record = this.reader.get(ip);
+      record = this.reader.get(ip) as CityRecord | null;
     } catch {
       return UNKNOWN;
     }
