@@ -30,7 +30,7 @@ import { activeEvent, newestByPath, versionChain } from "./sites.ts";
  * differently rebuilds every host at startup — the same "redeploy" any other
  * change to a build's inputs causes.
  */
-export const BUILDER_VERSION = 1;
+export const BUILDER_VERSION = 2;
 
 /** Wait before a second attempt at a build, in ms. It doubles after that. */
 const RETRY_BACKOFF = 5_000;

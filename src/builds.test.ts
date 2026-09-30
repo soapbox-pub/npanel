@@ -290,6 +290,9 @@ test("the tracker is served from the site, reporting under the site's name", asy
 
   const plain = await (await harness.site("docs.example.com", "/.npanel/script.js")).text();
   assert.match(plain, /init\(\{"domain":"docs\.example\.com","endpoint":"\/\.npanel\/api\/event"/);
+  // GNU LibreJS blocks an external script unless the license block spans all of it.
+  assert.match(plain, /^\/\/ @license magnet:\S+&dn=expat\.txt Expat\n/);
+  assert.match(plain, /\n\/\/ @license-end\s*$/);
 });
 
 test("a site's own policy is widened in its page and in the header it is served under", async () => {
