@@ -1,5 +1,6 @@
 //! Manifest events: which site one belongs to, and what it lists.
 
+use crate::hash::BlobHash;
 use indexmap::IndexMap;
 
 use crate::nostr::Event;
@@ -23,7 +24,7 @@ pub fn manifest_address(event: &Event) -> NsiteAddress {
 ///
 /// Tags whose hash isn't a sha256 are dropped rather than failing the whole
 /// deploy — a single malformed tag shouldn't take a site offline.
-pub fn manifest_paths(event: &Event) -> IndexMap<String, String> {
+pub fn manifest_paths(event: &Event) -> IndexMap<String, BlobHash> {
     let mut paths = IndexMap::new();
 
     for tag in &event.tags {
@@ -36,10 +37,9 @@ pub fn manifest_paths(event: &Event) -> IndexMap<String, String> {
         if path.is_empty() || hash.is_empty() {
             continue;
         }
-        let sha256 = hash.to_lowercase();
-        if !crate::nostr::is_hex64(&sha256) {
+        let Some(sha256) = BlobHash::parse(hash) else {
             continue;
-        }
+        };
         // A later tag for the same path wins, and keeps the first one's place.
         paths.insert(join_root(path), sha256);
     }
@@ -144,7 +144,7 @@ mod tests {
         };
         let paths = manifest_paths(&event);
         assert_eq!(paths.len(), 2);
-        assert_eq!(paths["/index.html"], sha);
+        assert_eq!(paths["/index.html"].to_string(), sha);
         assert!(paths.contains_key("/about.html"));
         assert_eq!(server_tags(&event), ["https://b.example.com"]);
     }

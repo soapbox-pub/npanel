@@ -14,6 +14,7 @@ mod dashboard;
 mod db;
 mod deploy;
 mod dns;
+mod hash;
 #[cfg(test)]
 mod e2e;
 mod hostname;

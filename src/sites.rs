@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::blobs::Variants;
+use crate::hash::BlobHash;
 use crate::db::{DeployStatus, Host, SiteEvent, HOST_COLUMNS, HOST_COLUMN_COUNT, SITE_EVENT_COLUMNS};
 use crate::hostname::is_onion_address;
 use crate::log::Fields;
@@ -145,7 +146,7 @@ pub fn version_chain(conn: &Connection, host: &Host, active: &SiteEvent) -> rusq
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedFile {
     pub path: String,
-    pub sha256: String,
+    pub sha256: BlobHash,
     /// A file the site really has (200), or its not-found page (404).
     pub status: u16,
     /// The blob's sizes, when a deploy has recorded them. `None` for rows that
@@ -199,20 +200,20 @@ pub fn resolve_site_path(
     let mut values: Vec<&dyn rusqlite::ToSql> = vec![&build_id];
     values.extend(candidates.iter().map(|c| c as &dyn rusqlite::ToSql));
 
-    let found: HashMap<String, (String, Option<Variants>)> = conn
+    let found: HashMap<String, (BlobHash, Option<Variants>)> = conn
         .prepare_cached(&sql)?
         .query_map(values.as_slice(), |row| {
             let size: Option<i64> = row.get(2)?;
             let br: Option<i64> = row.get(3)?;
             let gzip: Option<i64> = row.get(4)?;
-            Ok((row.get::<_, String>(0)?, (row.get::<_, String>(1)?, recorded_variants(size, br, gzip))))
+            Ok((row.get::<_, String>(0)?, (row.get(1)?, recorded_variants(size, br, gzip))))
         })?
         .collect::<rusqlite::Result<_>>()?;
 
     let resolved = |path: &str, status: u16| {
         found.get(path).map(|(sha256, variants)| ResolvedFile {
             path: path.to_string(),
-            sha256: sha256.clone(),
+            sha256: *sha256,
             status,
             variants: *variants,
         })
@@ -310,7 +311,7 @@ pub fn normalize_site_path(request_path: &str) -> String {
 
 /// The `blobs` row for a stored blob: its size, and that something still
 /// wants it.
-pub fn record_blob(conn: &Connection, sha256: &str, size: u64) -> rusqlite::Result<()> {
+pub fn record_blob(conn: &Connection, sha256: BlobHash, size: u64) -> rusqlite::Result<()> {
     let now = crate::util::now();
     conn.prepare_cached(
         "INSERT INTO blobs (sha256, size, seen_at) VALUES (?1, ?2, ?3)
@@ -323,7 +324,7 @@ pub fn record_blob(conn: &Connection, sha256: &str, size: u64) -> rusqlite::Resu
 /// Record which compressed copies a blob has, so serving never has to look.
 /// Recorded for every blob, not only the compressible ones: a JPEG's row
 /// saying -1 is what lets a request for it skip the stat too.
-pub fn record_variant_sizes(conn: &Connection, sha256: &str, variants: Variants) -> rusqlite::Result<()> {
+pub fn record_variant_sizes(conn: &Connection, sha256: BlobHash, variants: Variants) -> rusqlite::Result<()> {
     conn.prepare_cached("UPDATE blobs SET br_size = ?, gzip_size = ? WHERE sha256 = ?")?.execute(params![
         variants.br.map_or(-1, |s| s as i64),
         variants.gzip.map_or(-1, |s| s as i64),

@@ -10,6 +10,7 @@ use parking_lot::Mutex;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
+use crate::hash::BlobHash;
 use crate::blobs::BlobStore;
 use crate::db::{Host, HostBuild};
 use crate::site_csp::MAX_HTML_BYTES;
@@ -89,8 +90,8 @@ fn score(rank: f64, size: u32) -> f64 {
 /// an entry while each resolves relative URLs against its own hostname.
 pub struct SitePreviews {
     blobs: BlobStore,
-    documents: Mutex<lru::LruCache<String, RawMeta>>,
-    manifests: Mutex<lru::LruCache<String, Vec<ManifestIcon>>>,
+    documents: Mutex<lru::LruCache<BlobHash, RawMeta>>,
+    manifests: Mutex<lru::LruCache<BlobHash, Vec<ManifestIcon>>>,
 }
 
 impl SitePreviews {
@@ -113,11 +114,11 @@ impl SitePreviews {
         let page = index.filter(|file| file.status == 200).map(|file| file.sha256);
 
         let mut lookup_stmt = conn.prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = ?")?;
-        let mut lookup = |path: &str| -> Option<String> {
+        let mut lookup = |path: &str| -> Option<BlobHash> {
             lookup_stmt.query_row(rusqlite::params![build.id, path], |row| row.get(0)).optional().ok().flatten()
         };
 
-        let meta = page.as_deref().map(|sha| self.meta(sha)).unwrap_or_default();
+        let meta = page.map(|sha| self.meta(sha)).unwrap_or_default();
         let icon = self.icon(&meta, &origin, &mut lookup);
 
         Ok(SitePreview {
@@ -132,7 +133,7 @@ impl SitePreviews {
     /// site declares, ranked by kind and then by size, and the best one the
     /// build can actually serve. An icon on the site's own domain counts only
     /// if the build has the file, so a stale link never becomes a broken image.
-    fn icon(&self, meta: &RawMeta, origin: &url::Url, lookup: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+    fn icon(&self, meta: &RawMeta, origin: &url::Url, lookup: &mut dyn FnMut(&str) -> Option<BlobHash>) -> Option<String> {
         let mut candidates: Vec<(String, url::Url, f64)> = meta
             .icons
             .iter()
@@ -158,7 +159,7 @@ impl SitePreviews {
         &self,
         href: &str,
         origin: &url::Url,
-        lookup: &mut dyn FnMut(&str) -> Option<String>,
+        lookup: &mut dyn FnMut(&str) -> Option<BlobHash>,
     ) -> Vec<(String, url::Url, f64)> {
         // A manifest elsewhere would have to be fetched, and nothing here fetches.
         let Some(url) = same_origin(href, origin) else {
@@ -170,7 +171,7 @@ impl SitePreviews {
 
         let cached = self.manifests.lock().get(&sha256).cloned();
         let icons = cached.unwrap_or_else(|| {
-            let icons = extract_manifest_icons(&self.blobs.read_text(&sha256, MAX_MANIFEST_BYTES));
+            let icons = extract_manifest_icons(&self.blobs.read_text(sha256, MAX_MANIFEST_BYTES));
             self.manifests.lock().put(sha256, icons.clone());
             icons
         });
@@ -179,19 +180,19 @@ impl SitePreviews {
         icons.into_iter().map(|icon| (icon.src, url.clone(), score(RANK_MANIFEST, icon.size))).collect()
     }
 
-    fn meta(&self, sha256: &str) -> RawMeta {
-        if let Some(meta) = self.documents.lock().get(sha256) {
+    fn meta(&self, sha256: BlobHash) -> RawMeta {
+        if let Some(meta) = self.documents.lock().get(&sha256) {
             return meta.clone();
         }
         let meta = extract_meta(&self.blobs.read_text(sha256, MAX_HTML_BYTES));
-        self.documents.lock().put(sha256.to_string(), meta.clone());
+        self.documents.lock().put(sha256, meta.clone());
         meta
     }
 }
 
 /// An icon reference as a URL the dashboard can show: one on another https
 /// host as it stands, one on the site's own domain only if the build has it.
-fn usable(href: &str, base: &url::Url, lookup: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+fn usable(href: &str, base: &url::Url, lookup: &mut dyn FnMut(&str) -> Option<BlobHash>) -> Option<String> {
     let url = resolve_image(Some(href), base)?;
     let Some(own) = same_origin(&url, base) else {
         return Some(url);

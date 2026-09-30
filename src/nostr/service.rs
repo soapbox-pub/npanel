@@ -267,7 +267,7 @@ fn latest<'a>(events: &[&'a Event]) -> Option<&'a Event> {
 }
 
 /// Order-preserving deduplication.
-pub fn dedupe(values: impl IntoIterator<Item = String>) -> Vec<String> {
+pub fn dedupe<T: Clone + Eq + std::hash::Hash>(values: impl IntoIterator<Item = T>) -> Vec<T> {
     let mut seen = std::collections::HashSet::new();
     values.into_iter().filter(|value| seen.insert(value.clone())).collect()
 }

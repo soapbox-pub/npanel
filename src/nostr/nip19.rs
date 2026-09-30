@@ -84,6 +84,9 @@ pub fn decode(value: &str) -> Result<Decoded, Error> {
     }
 }
 
+/// A pubkey's npub. Every pubkey npanel holds was checked where it entered,
+/// so anything that isn't 32 bytes of hex is a bug upstream, and gets an empty
+/// string — plainly wrong — rather than a valid-looking npub of nothing.
 pub fn npub_encode(pubkey_hex: &str) -> String {
     encode_key("npub", pubkey_hex)
 }
@@ -102,14 +105,17 @@ pub fn nprofile_encode(pubkey_hex: &str, relays: &[String]) -> String {
     for relay in relays {
         push_tlv(&mut data, 1, relay.as_bytes());
     }
-    push_tlv(&mut data, 0, &hex::decode(pubkey_hex).unwrap_or_default());
+    let Some(pubkey) = key_bytes(pubkey_hex) else { return String::new() };
+    push_tlv(&mut data, 0, &pubkey);
     bech32_encode("nprofile", &data)
 }
 
+/// An address's naddr; empty for a pubkey that isn't one, as [`npub_encode`].
 pub fn naddr_encode(pubkey_hex: &str, kind: u32, identifier: &str, relays: &[String]) -> String {
+    let Some(pubkey) = key_bytes(pubkey_hex) else { return String::new() };
     let mut data = Vec::new();
     push_tlv(&mut data, 3, &kind.to_be_bytes());
-    push_tlv(&mut data, 2, &hex::decode(pubkey_hex).unwrap_or_default());
+    push_tlv(&mut data, 2, &pubkey);
     for relay in relays {
         push_tlv(&mut data, 1, relay.as_bytes());
     }
@@ -118,7 +124,14 @@ pub fn naddr_encode(pubkey_hex: &str, kind: u32, identifier: &str, relays: &[Str
 }
 
 fn encode_key(hrp: &str, hex_key: &str) -> String {
-    bech32_encode(hrp, &hex::decode(hex_key).unwrap_or_default())
+    key_bytes(hex_key).map_or_else(String::new, |key| bech32_encode(hrp, &key))
+}
+
+/// A key's 32 bytes, from exactly 64 hex digits.
+fn key_bytes(hex_key: &str) -> Option<[u8; 32]> {
+    let mut bytes = [0u8; 32];
+    hex::decode_to_slice(hex_key, &mut bytes).ok()?;
+    Some(bytes)
 }
 
 fn key(bytes: &[u8]) -> Result<String, Error> {
@@ -326,5 +339,12 @@ mod tests {
         npub.push('q');
         assert!(decode(&npub).is_err());
         assert!(decode("npub1").is_err());
+    }
+
+    #[test]
+    fn refuses_to_encode_what_is_not_a_key() {
+        assert_eq!(npub_encode(""), "");
+        assert_eq!(npub_encode("abc"), "");
+        assert_eq!(naddr_encode(&"z".repeat(64), 35128, "docs", &[]), "");
     }
 }

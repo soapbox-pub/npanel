@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::hash::BlobHash;
 use crate::net::{is_public_address, PublicResolver};
-use crate::nostr::is_hex64;
 
 /// Compressed copies npanel stores alongside a blob.
 ///
@@ -158,7 +158,7 @@ struct Inner {
     /// Only tests turn this off: their Blossom servers listen on loopback,
     /// which is exactly what the real check refuses.
     public_only: bool,
-    mapped: Mutex<lru::LruCache<(String, Option<Encoding>), Bytes>>,
+    mapped: Mutex<lru::LruCache<(BlobHash, Option<Encoding>), Bytes>>,
 }
 
 impl BlobStore {
@@ -193,19 +193,20 @@ impl BlobStore {
     }
 
     /// Filesystem path a blob occupies, whether or not it exists.
-    pub fn path(&self, sha256: &str) -> PathBuf {
-        debug_assert!(is_hex64(sha256));
-        self.inner.dir.join(&sha256[..2]).join(&sha256[2..4]).join(sha256)
+    pub fn path(&self, sha256: BlobHash) -> PathBuf {
+        let hex = sha256.hex();
+        let name = hex.as_str();
+        self.inner.dir.join(&name[..2]).join(&name[2..4]).join(name)
     }
 
     /// Filesystem path one of a blob's compressed copies occupies.
-    pub fn variant_path(&self, sha256: &str, encoding: Encoding) -> PathBuf {
+    pub fn variant_path(&self, sha256: BlobHash, encoding: Encoding) -> PathBuf {
         let mut path = self.path(sha256).into_os_string();
         path.push(encoding.suffix());
         path.into()
     }
 
-    fn file_path(&self, sha256: &str, encoding: Option<Encoding>) -> PathBuf {
+    fn file_path(&self, sha256: BlobHash, encoding: Option<Encoding>) -> PathBuf {
         match encoding {
             Some(encoding) => self.variant_path(sha256, encoding),
             None => self.path(sha256),
@@ -213,20 +214,17 @@ impl BlobStore {
     }
 
     /// Size in bytes, or `None` when the blob isn't stored.
-    pub fn size(&self, sha256: &str) -> Option<u64> {
-        if !is_hex64(sha256) {
-            return None;
-        }
+    pub fn size(&self, sha256: BlobHash) -> Option<u64> {
         size_of(&self.path(sha256))
     }
 
-    pub fn has(&self, sha256: &str) -> bool {
+    pub fn has(&self, sha256: BlobHash) -> bool {
         self.size(sha256).is_some()
     }
 
     /// Sizes of a blob and every compressed copy it has, or `None` when the
     /// blob isn't stored.
-    pub fn variants(&self, sha256: &str) -> Option<Variants> {
+    pub fn variants(&self, sha256: BlobHash) -> Option<Variants> {
         let identity = self.size(sha256)?;
         Some(Variants {
             identity,
@@ -238,7 +236,7 @@ impl BlobStore {
     /// The first `max_bytes` of a blob, for a build that rewrites it or a
     /// reader that scrapes it. The cap is the point: a site may publish a file
     /// of any size at any name.
-    pub fn read_bytes(&self, sha256: &str, max_bytes: u64) -> Vec<u8> {
+    pub fn read_bytes(&self, sha256: BlobHash, max_bytes: u64) -> Vec<u8> {
         let Ok(file) = std::fs::File::open(self.path(sha256)) else {
             return Vec::new();
         };
@@ -249,14 +247,14 @@ impl BlobStore {
 
     /// The first `max_bytes` of a blob, decoded as UTF-8 with anything invalid
     /// replaced, as `Buffer.toString("utf8")` does.
-    pub fn read_text(&self, sha256: &str, max_bytes: u64) -> String {
+    pub fn read_text(&self, sha256: BlobHash, max_bytes: u64) -> String {
         String::from_utf8_lossy(&self.read_bytes(sha256, max_bytes)).into_owned()
     }
 
     /// A blob or copy an earlier [`BlobStore::open`] mapped and kept, found
     /// without touching the disk — so without leaving a runtime thread.
-    pub fn mapped(&self, sha256: &str, encoding: Option<Encoding>) -> Option<Bytes> {
-        self.inner.mapped.lock().get(&(sha256.to_string(), encoding)).cloned()
+    pub fn mapped(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Option<Bytes> {
+        self.inner.mapped.lock().get(&(sha256, encoding)).cloned()
     }
 
     /// A blob, or one of its compressed copies, for a response body.
@@ -266,11 +264,11 @@ impl BlobStore {
     /// file costs no system call at all to send again. Stored files are only
     /// ever replaced by rename, never rewritten, so a mapping can't change
     /// under a reader.
-    pub fn open(&self, sha256: &str, encoding: Option<Encoding>) -> Result<Bytes> {
+    pub fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Result<Bytes> {
         if let Some(bytes) = self.mapped(sha256, encoding) {
             return Ok(bytes);
         }
-        let key = (sha256.to_string(), encoding);
+        let key = (sha256, encoding);
 
         let file = std::fs::File::open(self.file_path(sha256, encoding))?;
         let len = file.metadata()?.len();
@@ -291,7 +289,7 @@ impl BlobStore {
     ///
     /// Returns the encodings written by this call. CPU-bound, so callers on a
     /// runtime run it on the blocking pool.
-    pub fn ensure_variants(&self, sha256: &str) -> Result<Vec<Encoding>> {
+    pub fn ensure_variants(&self, sha256: BlobHash) -> Result<Vec<Encoding>> {
         let Some(size) = self.size(sha256) else {
             return Ok(Vec::new());
         };
@@ -315,11 +313,8 @@ impl BlobStore {
     }
 
     /// Store bytes already in memory, verifying them against `sha256`.
-    pub fn put(&self, sha256: &str, bytes: &[u8]) -> Result<u64> {
-        if !is_hex64(sha256) {
-            bail!("Not a sha256 hash: {sha256}");
-        }
-        let digest = hex::encode(Sha256::digest(bytes));
+    pub fn put(&self, sha256: BlobHash, bytes: &[u8]) -> Result<u64> {
+        let digest = BlobHash::of(bytes);
         if digest != sha256 {
             bail!(fail(format!("Expected {sha256}, got {digest}"), DownloadReason::HashMismatch, None));
         }
@@ -338,14 +333,10 @@ impl BlobStore {
     pub async fn download(
         &self,
         url: &str,
-        sha256: &str,
+        sha256: BlobHash,
         max_size: u64,
         cancel: &CancellationToken,
     ) -> Result<u64, DownloadError> {
-        if !is_hex64(sha256) {
-            return Err(fail(format!("Not a sha256 hash: {sha256}"), DownloadReason::Blocked, None));
-        }
-
         let work = self.download_inner(url, sha256, max_size);
         tokio::select! {
             result = tokio::time::timeout(DOWNLOAD_TIMEOUT, work) => match result {
@@ -356,7 +347,7 @@ impl BlobStore {
         }
     }
 
-    async fn download_inner(&self, url: &str, sha256: &str, max_size: u64) -> Result<u64, DownloadError> {
+    async fn download_inner(&self, url: &str, sha256: BlobHash, max_size: u64) -> Result<u64, DownloadError> {
         let mut response = self.request(url).await?;
 
         let status = response.status().as_u16();
@@ -397,7 +388,7 @@ impl BlobStore {
             }
             file.flush().await.map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
 
-            let digest = hex::encode(hash.finalize());
+            let digest = BlobHash::from_bytes(hash.finalize().into());
             if digest != sha256 {
                 return Err(fail(
                     format!("Expected {sha256}, server returned {digest}"),
@@ -486,23 +477,23 @@ impl BlobStore {
     }
 
     /// Remove a blob and its compressed copies. Returns whether it existed.
-    pub fn delete(&self, sha256: &str) -> bool {
+    pub fn delete(&self, sha256: BlobHash) -> bool {
         let existed = self.has(sha256);
         let _ = std::fs::remove_file(self.path(sha256));
         for encoding in Encoding::ALL {
             let _ = std::fs::remove_file(self.variant_path(sha256, encoding));
         }
         let mut mapped = self.inner.mapped.lock();
-        mapped.pop(&(sha256.to_string(), None));
+        mapped.pop(&(sha256, None));
         for encoding in Encoding::ALL {
-            mapped.pop(&(sha256.to_string(), Some(encoding)));
+            mapped.pop(&(sha256, Some(encoding)));
         }
         existed
     }
 
     /// Every sha256 currently stored. Compressed sidecars are skipped by the
     /// same test that keeps stray files out: their names aren't 64 hex digits.
-    pub fn list(&self) -> Vec<String> {
+    pub fn list(&self) -> Vec<BlobHash> {
         let mut out = Vec::new();
         let Ok(outer) = std::fs::read_dir(&self.inner.dir) else {
             return out;
@@ -515,9 +506,9 @@ impl BlobStore {
             }
             for second in std::fs::read_dir(first.path()).into_iter().flatten().flatten() {
                 for entry in std::fs::read_dir(second.path()).into_iter().flatten().flatten() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    if is_hex64(&name) {
-                        out.push(name);
+                    // A sidecar's `.br` or `.gz` makes it no hash at all.
+                    if let Some(hash) = entry.file_name().to_str().and_then(BlobHash::parse) {
+                        out.push(hash);
                     }
                 }
             }
@@ -535,7 +526,7 @@ impl BlobStore {
         Ok(self.inner.tmp.join(crate::util::random_hex(16)))
     }
 
-    fn commit(&self, tmp: &Path, sha256: &str) -> Result<()> {
+    fn commit(&self, tmp: &Path, sha256: BlobHash) -> Result<()> {
         let target = self.path(sha256);
         if let Some(dir) = target.parent() {
             std::fs::create_dir_all(dir)?;
@@ -547,7 +538,7 @@ impl BlobStore {
     /// Compress one blob into one encoding. Returns whether the result was
     /// worth keeping. Streamed through a temp file, for the same reason
     /// downloads are: an interrupted pass must not leave a truncated variant.
-    fn write_variant(&self, sha256: &str, encoding: Encoding, size: u64) -> Result<bool> {
+    fn write_variant(&self, sha256: BlobHash, encoding: Encoding, size: u64) -> Result<bool> {
         let tmp = self.temp_path()?;
 
         let result = (|| -> Result<bool> {
@@ -616,32 +607,32 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = BlobStore::new(dir.path());
         let text = "hello world ".repeat(200);
-        let sha = hex::encode(Sha256::digest(text.as_bytes()));
+        let sha = BlobHash::of(text.as_bytes());
 
-        assert!(store.put(&"0".repeat(64), text.as_bytes()).is_err());
-        assert_eq!(store.put(&sha, text.as_bytes()).unwrap(), text.len() as u64);
-        assert_eq!(store.size(&sha), Some(text.len() as u64));
+        assert!(store.put(BlobHash::from_bytes([0; 32]), text.as_bytes()).is_err());
+        assert_eq!(store.put(sha, text.as_bytes()).unwrap(), text.len() as u64);
+        assert_eq!(store.size(sha), Some(text.len() as u64));
 
-        let written = store.ensure_variants(&sha).unwrap();
+        let written = store.ensure_variants(sha).unwrap();
         assert_eq!(written, [Encoding::Br, Encoding::Gzip]);
-        assert!(store.ensure_variants(&sha).unwrap().is_empty());
+        assert!(store.ensure_variants(sha).unwrap().is_empty());
 
-        let variants = store.variants(&sha).unwrap();
+        let variants = store.variants(sha).unwrap();
         assert!(variants.br.unwrap() < variants.identity);
         assert!(variants.gzip.unwrap() < variants.identity);
 
         let mut decoded = String::new();
-        flate2::read::GzDecoder::new(&store.open(&sha, Some(Encoding::Gzip)).unwrap()[..]).read_to_string(&mut decoded).unwrap();
+        flate2::read::GzDecoder::new(&store.open(sha, Some(Encoding::Gzip)).unwrap()[..]).read_to_string(&mut decoded).unwrap();
         assert_eq!(decoded, text);
         let mut decoded = Vec::new();
-        brotli::BrotliDecompress(&mut &store.open(&sha, Some(Encoding::Br)).unwrap()[..], &mut decoded).unwrap();
+        brotli::BrotliDecompress(&mut &store.open(sha, Some(Encoding::Br)).unwrap()[..], &mut decoded).unwrap();
         assert_eq!(decoded, text.as_bytes());
 
-        assert_eq!(&store.open(&sha, None).unwrap()[..], text.as_bytes());
+        assert_eq!(&store.open(sha, None).unwrap()[..], text.as_bytes());
         assert_eq!(store.list(), std::slice::from_ref(&sha));
-        assert!(store.delete(&sha));
-        assert!(!store.has(&sha));
-        assert!(store.variants(&sha).is_none());
+        assert!(store.delete(sha));
+        assert!(!store.has(sha));
+        assert!(store.variants(sha).is_none());
     }
 
     #[test]
@@ -649,15 +640,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = BlobStore::new(dir.path());
         let small = b"tiny";
-        let sha = hex::encode(Sha256::digest(small));
-        store.put(&sha, small).unwrap();
-        assert!(store.ensure_variants(&sha).unwrap().is_empty());
+        let sha = BlobHash::of(small);
+        store.put(sha, small).unwrap();
+        assert!(store.ensure_variants(sha).unwrap().is_empty());
 
         let noise: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
-        let sha = hex::encode(Sha256::digest(&noise));
-        store.put(&sha, &noise).unwrap();
-        store.ensure_variants(&sha).unwrap();
-        let variants = store.variants(&sha).unwrap();
+        let sha = BlobHash::of(&noise);
+        store.put(sha, &noise).unwrap();
+        store.ensure_variants(sha).unwrap();
+        let variants = store.variants(sha).unwrap();
         assert!(variants.br.is_none_or(|br| (br as f64) <= 4096.0 * 0.95));
     }
 
@@ -666,9 +657,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = BlobStore::new(dir.path());
         let cancel = CancellationToken::new();
-        let error = store.download("http://127.0.0.1:1/x", &"a".repeat(64), 1000, &cancel).await.unwrap_err();
+        let hash = BlobHash::from_bytes([0xaa; 32]);
+        let error = store.download("http://127.0.0.1:1/x", hash, 1000, &cancel).await.unwrap_err();
         assert_eq!(error.reason, DownloadReason::Blocked);
-        let error = store.download("ftp://example.com/x", &"a".repeat(64), 1000, &cancel).await.unwrap_err();
+        let error = store.download("ftp://example.com/x", hash, 1000, &cancel).await.unwrap_err();
         assert_eq!(error.reason, DownloadReason::Blocked);
     }
 }

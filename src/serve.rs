@@ -28,6 +28,7 @@ use crate::blobs::{BlobStore, Encoding, Variants};
 use crate::builds::current_build;
 use crate::db::{BuildKind, Db};
 use crate::fields;
+use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
 use crate::log::{with_err, Logger};
@@ -294,13 +295,13 @@ impl SiteServer {
         let variants = match file.variants {
             Some(variants) => Some(variants),
             None => {
-                let (blobs, sha) = (self.deps.blobs.clone(), file.sha256.clone());
-                tokio::task::spawn_blocking(move || blobs.variants(&sha)).await.ok().flatten()
+                let (blobs, sha) = (self.deps.blobs.clone(), file.sha256);
+                tokio::task::spawn_blocking(move || blobs.variants(sha)).await.ok().flatten()
             }
         };
         let Some(variants) = variants else {
             // The build is ready, so this means the blob was removed underneath us.
-            log.error("blob_missing", fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.as_str() });
+            log.error("blob_missing", fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.to_string() });
             return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
         };
 
@@ -308,7 +309,7 @@ impl SiteServer {
         // blob: its size, its `ETag`, and the bytes a `Range` counts from.
         let encoding = negotiate_encoding(header_str(&request.headers, header::ACCEPT_ENCODING), &variants);
         let size = variants.size(encoding);
-        let etag = etag_for(&file.sha256, encoding);
+        let etag = etag_for(file.sha256, encoding);
 
         let mut builder = Response::builder()
             .header(header::CONTENT_TYPE, content_type(&file.path))
@@ -367,12 +368,12 @@ impl SiteServer {
             return Ok(builder.status(status).body(Body::empty()).expect("response"));
         }
 
-        let bytes = match self.open(&file.sha256, encoding).await {
+        let bytes = match self.open(file.sha256, encoding).await {
             Ok(bytes) => bytes,
             Err(error) => {
                 log.error(
                     "blob_missing",
-                    fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.as_str(), "err_msg" => error.to_string() },
+                    fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.to_string(), "err_msg" => error.to_string() },
                 );
                 return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
             }
@@ -389,7 +390,7 @@ impl SiteServer {
                     "hostname" => hostname,
                     "path" => path,
                     "status" => status.as_u16(),
-                    "sha256" => file.sha256.as_str(),
+                    "sha256" => file.sha256.to_string(),
                     "bytes" => size,
                     "encoding" => encoding.map(Encoding::as_str),
                 },
@@ -401,12 +402,12 @@ impl SiteServer {
 
     /// A blob's bytes for a response body. A kept mapping answers right
     /// here, with no system call; a new one is opened off the runtime threads.
-    async fn open(&self, sha256: &str, encoding: Option<Encoding>) -> anyhow::Result<Bytes> {
+    async fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> anyhow::Result<Bytes> {
         if let Some(bytes) = self.deps.blobs.mapped(sha256, encoding) {
             return Ok(bytes);
         }
-        let (blobs, sha) = (self.deps.blobs.clone(), sha256.to_string());
-        tokio::task::spawn_blocking(move || blobs.open(&sha, encoding)).await?
+        let blobs = self.deps.blobs.clone();
+        tokio::task::spawn_blocking(move || blobs.open(sha256, encoding)).await?
     }
 
     async fn resolve(&self, build_id: i64, path: &str, spa: bool) -> anyhow::Result<Option<ResolvedFile>> {
@@ -663,7 +664,7 @@ fn parse_accept_encoding(header: &str) -> Accepted {
 /// The `ETag` for one representation of a blob. Encodings need tags of their
 /// own, or a shared cache holding the brotli copy would hand it to a client
 /// whose `If-None-Match` matched, however little brotli that client speaks.
-pub fn etag_for(sha256: &str, encoding: Option<Encoding>) -> String {
+pub fn etag_for(sha256: BlobHash, encoding: Option<Encoding>) -> String {
     match encoding {
         Some(encoding) => format!("\"{sha256}-{}\"", encoding.as_str()),
         None => format!("\"{sha256}\""),
@@ -773,7 +774,8 @@ mod tests {
         assert!(matches_etag(Some("W/\"abc\", \"def\""), "\"abc\""));
         assert!(matches_etag(Some("*"), "\"x\""));
         assert!(!matches_etag(Some("\"abc-br\""), "\"abc\""));
-        assert_eq!(etag_for("abc", Some(Encoding::Gzip)), "\"abc-gzip\"");
+        let hash = BlobHash::of(b"abc");
+        assert_eq!(etag_for(hash, Some(Encoding::Gzip)), format!("\"{hash}-gzip\""));
     }
 
     #[test]

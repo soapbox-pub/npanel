@@ -31,6 +31,7 @@ use crate::blobs::BlobStore;
 use crate::builds::HostBuilder;
 use crate::db::{DeployStatus, Db};
 use crate::fields;
+use crate::hash::BlobHash;
 use crate::log::{with_err, Fields, Logger};
 use crate::manifest::{is_site_manifest, manifest_address};
 use crate::mime::is_compressible;
@@ -569,7 +570,7 @@ impl SyncWorker {
         let event: Event = serde_json::from_str(&row.event)?;
 
         let id = event_id.to_string();
-        let files: Vec<(String, String)> = self
+        let files: Vec<(BlobHash, String)> = self
             .db(move |conn| {
                 conn.execute("UPDATE site_events SET status = ?, error = NULL WHERE event_id = ?", params![DeployStatus::FetchingBlobs, id])?;
                 Ok(conn
@@ -582,9 +583,8 @@ impl SyncWorker {
         // Paths come along because the store is keyed by hash and so can't
         // tell markup from a JPEG, while whether a blob is worth compressing
         // is a question about the file it is served as.
-        let compressible: HashSet<String> =
-            files.iter().filter(|(_, path)| is_compressible(path)).map(|(sha, _)| sha.clone()).collect();
-        let hashes = dedupe(files.iter().map(|(sha, _)| sha.clone()));
+        let compressible: HashSet<BlobHash> = files.iter().filter(|(_, path)| is_compressible(path)).map(|(sha, _)| *sha).collect();
+        let hashes = dedupe(files.iter().map(|(sha, _)| *sha));
 
         self.deploy_log(event_id, "info", "deploy_started", fields! { "files" => row.files_total, "blobs" => hashes.len() }).await;
 
@@ -598,10 +598,10 @@ impl SyncWorker {
                 let (mut present, mut missing, mut stored) = (Vec::new(), Vec::new(), 0u64);
                 let tx = conn.transaction()?;
                 for sha256 in all {
-                    match blobs.size(&sha256) {
+                    match blobs.size(sha256) {
                         None => missing.push(sha256),
                         Some(size) => {
-                            record_blob(&tx, &sha256, size)?;
+                            record_blob(&tx, sha256, size)?;
                             stored += size;
                             present.push(sha256);
                         }
@@ -613,13 +613,13 @@ impl SyncWorker {
             .await?;
 
         // Already on disk, but not necessarily compressed.
-        for sha256 in present.iter().filter(|sha| compressible.contains(*sha)) {
+        for &sha256 in present.iter().filter(|sha| compressible.contains(*sha)) {
             self.compress(event_id, sha256).await;
         }
         let blobs = deps.blobs.clone();
         self.db(move |conn| {
             let tx = conn.transaction()?;
-            for sha256 in &present {
+            for &sha256 in &present {
                 if let Some(variants) = blobs.variants(sha256) {
                     record_variant_sizes(&tx, sha256, variants)?;
                 }
@@ -675,7 +675,7 @@ impl SyncWorker {
         }
 
         if !failed.is_empty() {
-            let sample = failed.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            let sample = failed.iter().take(3).map(BlobHash::to_string).collect::<Vec<_>>().join(", ");
             return Ok(Some(Outcome::Failed(format!(
                 "{} of {} blobs could not be downloaded from {} server(s): {sample}{}",
                 failed.len(),
@@ -698,12 +698,12 @@ impl SyncWorker {
     async fn download_all(
         &self,
         event_id: &str,
-        missing: Vec<String>,
+        missing: Vec<BlobHash>,
         servers: &[String],
-        compressible: &HashSet<String>,
+        compressible: &HashSet<BlobHash>,
         already: i64,
         budget: u64,
-    ) -> (Vec<String>, usize, u64) {
+    ) -> (Vec<BlobHash>, usize, u64) {
         let max_file_size = self.deps().settings.get().max_file_size as u64;
         let mut queue = missing.into_iter();
         let mut downloading = FuturesUnordered::new();
@@ -714,7 +714,7 @@ impl SyncWorker {
                 let Some(sha256) = queue.next() else { break };
                 let compress = compressible.contains(&sha256);
                 downloading.push(async move {
-                    let size = self.download_blob(event_id, &sha256, servers, max_file_size, compress).await;
+                    let size = self.download_blob(event_id, sha256, servers, max_file_size, compress).await;
                     (sha256, size)
                 });
             }
@@ -734,11 +734,11 @@ impl SyncWorker {
 
     /// Try each server in turn for one blob. Returns its size, or `None` if no
     /// server had it.
-    async fn download_blob(&self, event_id: &str, sha256: &str, servers: &[String], max_size: u64, compress: bool) -> Option<u64> {
+    async fn download_blob(&self, event_id: &str, sha256: BlobHash, servers: &[String], max_size: u64, compress: bool) -> Option<u64> {
         let cancel = self.cancel_token();
 
         for server in servers {
-            let url = blob_url(server, sha256);
+            let url = blob_url(server, sha256.hex().as_str());
             match self.deps().blobs.download(&url, sha256, max_size, &cancel).await {
                 Ok(size) => {
                     self.deploy_log(event_id, "debug", "blob_downloaded", fields! { "sha256" => sha256, "server" => server.as_str(), "size" => size })
@@ -747,12 +747,12 @@ impl SyncWorker {
                         self.compress(event_id, sha256).await;
                     }
                     // Recorded with whichever copies it now has, in one trip.
-                    let (blobs, sha) = (self.deps().blobs.clone(), sha256.to_string());
+                    let blobs = self.deps().blobs.clone();
                     let recorded = self
                         .db(move |conn| {
-                            record_blob(conn, &sha, size)?;
-                            if let Some(variants) = blobs.variants(&sha) {
-                                record_variant_sizes(conn, &sha, variants)?;
+                            record_blob(conn, sha256, size)?;
+                            if let Some(variants) = blobs.variants(sha256) {
+                                record_variant_sizes(conn, sha256, variants)?;
                             }
                             Ok(())
                         })
@@ -782,10 +782,9 @@ impl SyncWorker {
 
     /// Store compressed copies of a blob. Never fatal: a site served
     /// uncompressed is a slower site rather than a broken one.
-    async fn compress(&self, event_id: &str, sha256: &str) {
+    async fn compress(&self, event_id: &str, sha256: BlobHash) {
         let blobs = self.deps().blobs.clone();
-        let sha = sha256.to_string();
-        let result = tokio::task::spawn_blocking(move || blobs.ensure_variants(&sha)).await;
+        let result = tokio::task::spawn_blocking(move || blobs.ensure_variants(sha256)).await;
         match result {
             Ok(Ok(written)) => {
                 if !written.is_empty() {
@@ -798,7 +797,7 @@ impl SyncWorker {
         }
     }
 
-    async fn compress_failed(&self, event_id: &str, sha256: &str, message: String) {
+    async fn compress_failed(&self, event_id: &str, sha256: BlobHash, message: String) {
         let fields = fields! { "sha256" => sha256, "err_msg" => message };
         self.deploy_log(event_id, "warn", "blob_compress_failed", fields.clone()).await;
         self.deps().log.warn("blob_compress_failed", fields);

@@ -61,11 +61,11 @@ impl SiteCsp {
         let policy = self
             .db
             .call(move |conn| {
-                let index: Option<String> = conn
+                let index: Option<crate::hash::BlobHash> = conn
                     .prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'")?
                     .query_row([build_id], |row| row.get(0))
                     .optional()?;
-                let policy = index.and_then(|sha256| extract_csp(&blobs.read_text(&sha256, MAX_HTML_BYTES)));
+                let policy = index.and_then(|sha256| extract_csp(&blobs.read_text(sha256, MAX_HTML_BYTES)));
                 // Only printable ASCII gets this far, which is always a valid header.
                 Ok(policy.and_then(|policy| HeaderValue::from_str(&policy).ok()))
             })

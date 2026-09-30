@@ -33,6 +33,7 @@ use crate::analytics::tracker::{tracker_script, tracker_sha256, TRACKER_PATH};
 use crate::blobs::BlobStore;
 use crate::db::{BuildKind, Db, Host, HostBuild, SiteEvent, HOST_BUILD_COLUMNS};
 use crate::fields;
+use crate::hash::BlobHash;
 use crate::inject::{inject_script, versioned_src, Placement, Script, MAX_INJECT_BYTES};
 use crate::log::{with_err, Logger};
 use crate::mime::{is_compressible, is_html};
@@ -59,11 +60,11 @@ pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
 /// One path of a build, as it goes into `host_build_files`.
 #[derive(Clone, Debug)]
 pub struct BuildFile {
-    pub sha256: String,
+    pub sha256: BlobHash,
     /// The version that published it, or `None` for a file npanel generated.
     pub event_id: Option<String>,
     /// The published blob it was rewritten from, if it was.
-    pub source_sha256: Option<String>,
+    pub source_sha256: Option<BlobHash>,
 }
 
 /// Everything one build of a host is made from.
@@ -594,7 +595,7 @@ impl HostBuilder {
 /// Every path the build answers, and the blob behind each. Blocking.
 fn assemble(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, log: &Logger) -> Result<IndexMap<String, BuildFile>> {
     let placeholders = vec!["?"; target.chain.len()].join(", ");
-    let rows: Vec<(String, String, String)> = conn
+    let rows: Vec<(String, BlobHash, String)> = conn
         .prepare(&format!("SELECT path, sha256, event_id FROM site_files WHERE event_id IN ({placeholders})"))?
         .query_map(rusqlite::params_from_iter(&target.chain), |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
@@ -666,7 +667,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
 
     // Per published blob: the page it became, if any script reached it, and
     // which ones did.
-    let mut rewritten: HashMap<String, (Option<String>, Vec<bool>)> = HashMap::new();
+    let mut rewritten: HashMap<BlobHash, (Option<BlobHash>, Vec<bool>)> = HashMap::new();
     let mut pages = vec![0; additions.len()];
     let mut skipped = vec![0; additions.len()];
 
@@ -677,11 +678,11 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
         }
         let file = files[&path].clone();
 
-        if !rewritten.contains_key(&file.sha256) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = rewritten.entry(file.sha256) {
             let mut added = vec![false; additions.len()];
             let mut sha256 = None;
-            if blobs.size(&file.sha256).is_some_and(|size| size <= MAX_INJECT_BYTES) {
-                let mut page = blobs.read_bytes(&file.sha256, MAX_INJECT_BYTES);
+            if blobs.size(file.sha256).is_some_and(|size| size <= MAX_INJECT_BYTES) {
+                let mut page = blobs.read_bytes(file.sha256, MAX_INJECT_BYTES);
                 for (i, addition) in additions.iter().enumerate() {
                     let script = Script {
                         src: &addition.src,
@@ -699,7 +700,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
                     sha256 = Some(store(conn, blobs, &path, &page, log)?);
                 }
             }
-            rewritten.insert(file.sha256.clone(), (sha256, added));
+            slot.insert((sha256, added));
         }
 
         let (sha256, added) = &rewritten[&file.sha256];
@@ -711,7 +712,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
             }
         }
         if let Some(sha256) = sha256 {
-            files.insert(path, BuildFile { sha256: sha256.clone(), event_id: file.event_id, source_sha256: Some(file.sha256) });
+            files.insert(path, BuildFile { sha256: *sha256, event_id: file.event_id, source_sha256: Some(file.sha256) });
         }
     }
 
@@ -755,10 +756,10 @@ fn seo(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &mut I
         return Ok(());
     };
 
-    if blobs.size(&robots.sha256).is_none_or(|size| size > MAX_ROBOTS_BYTES) {
+    if blobs.size(robots.sha256).is_none_or(|size| size > MAX_ROBOTS_BYTES) {
         return Ok(());
     }
-    let published = blobs.read_text(&robots.sha256, MAX_ROBOTS_BYTES);
+    let published = blobs.read_text(robots.sha256, MAX_ROBOTS_BYTES);
     if !robots_needs_sitemap(&published) {
         return Ok(());
     }
@@ -772,21 +773,21 @@ fn seo(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &mut I
 /// that comes out the same as last build's is already on disk with its
 /// compressed copies, and costs nothing but the hash. Compression failing is
 /// never fatal: an uncompressed file is a slower site, not a broken one.
-fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &Logger) -> Result<String> {
-    let sha256 = hex::encode(Sha256::digest(bytes));
+fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &Logger) -> Result<BlobHash> {
+    let sha256 = BlobHash::of(bytes);
 
-    if !blobs.has(&sha256) {
-        blobs.put(&sha256, bytes)?;
+    if !blobs.has(sha256) {
+        blobs.put(sha256, bytes)?;
     }
-    record_blob(conn, &sha256, bytes.len() as u64)?;
+    record_blob(conn, sha256, bytes.len() as u64)?;
 
     if is_compressible(path) {
-        if let Err(error) = blobs.ensure_variants(&sha256) {
-            log.warn("blob_compress_failed", with_err(fields! { "sha256" => sha256.as_str() }, error));
+        if let Err(error) = blobs.ensure_variants(sha256) {
+            log.warn("blob_compress_failed", with_err(fields! { "sha256" => sha256 }, error));
         }
     }
-    let variants = blobs.variants(&sha256).ok_or_else(|| anyhow!("{sha256} vanished after it was stored"))?;
-    record_variant_sizes(conn, &sha256, variants)?;
+    let variants = blobs.variants(sha256).ok_or_else(|| anyhow!("{sha256} vanished after it was stored"))?;
+    record_variant_sizes(conn, sha256, variants)?;
 
     Ok(sha256)
 }
@@ -879,7 +880,7 @@ mod tests {
         let counter = changed.clone();
 
         let page = "<html><head><title>Hi</title></head><body>hello</body></html>";
-        blobs.put(&sha(page), page.as_bytes()).unwrap();
+        blobs.put(BlobHash::of(page.as_bytes()), page.as_bytes()).unwrap();
         let address = NsiteAddress { pubkey: "a".repeat(64), kind: 15128, identifier: String::new() };
         let host_id = t
             .db
@@ -938,7 +939,7 @@ mod tests {
             .unwrap();
         assert_eq!(index.1.as_deref(), Some(sha(page).as_str()));
         let tracker = versioned_src(TRACKER_PATH, tracker_script("docs.example.com").as_bytes());
-        assert!(blobs.read_text(&index.0, 10_000).contains(&format!(r#"<script type="module" src="{tracker}"></script></head>"#)));
+        assert!(blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000).contains(&format!(r#"<script type="module" src="{tracker}"></script></head>"#)));
 
         // A variable too: both scripts, in one rewrite of the published page.
         t.db.with(|conn| Ok(conn.execute("INSERT INTO host_env (host_id, name, value, created_at, updated_at) VALUES (?, 'A', 'b', 0, 0)", [host_id])?))
@@ -955,7 +956,7 @@ mod tests {
         assert_eq!(index.1.as_deref(), Some(sha(page).as_str()));
         let src = versioned_src(ENV_PATH, env_script(&[("A".into(), "b".into())]).as_bytes());
         assert_eq!(
-            blobs.read_text(&index.0, 10_000),
+            blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000),
             format!(r#"<html><head><script src="{src}"></script><title>Hi</title><script type="module" src="{tracker}"></script></head><body>hello</body></html>"#)
         );
 

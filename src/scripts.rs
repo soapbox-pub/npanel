@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use anyhow::{bail, Result};
 use rusqlite::{params, OptionalExtension};
 
+use crate::hash::BlobHash;
 use crate::blobs::BlobStore;
 use crate::config::Config;
 use crate::db::Db;
@@ -114,14 +115,17 @@ pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()>
             println!("{} {removed} old version(s), keeping {keep} per site.", if dry_run { "Would remove" } else { "Removed" });
         }
 
-        let mut referenced: HashSet<String> = HashSet::new();
+        // Read as text and parsed, so a row that names no real hash references
+        // nothing rather than stopping the prune: only hashes on disk are ever
+        // deleted, and those always parse.
+        let mut referenced: HashSet<BlobHash> = HashSet::new();
         for sql in ["SELECT DISTINCT sha256 FROM site_files", "SELECT DISTINCT sha256 FROM host_build_files"] {
             for sha in conn.prepare(sql)?.query_map([], |r| r.get::<_, String>(0))? {
-                referenced.insert(sha?);
+                referenced.extend(BlobHash::parse(&sha?));
             }
         }
         for sha in conn.prepare("SELECT sha256 FROM blobs WHERE seen_at > ?")?.query_map([crate::util::now() - GRACE_SECONDS], |r| r.get::<_, String>(0))? {
-            referenced.insert(sha?);
+            referenced.extend(BlobHash::parse(&sha?));
         }
 
         let (mut deleted, mut bytes) = (0, 0u64);
@@ -130,12 +134,12 @@ pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()>
                 continue;
             }
             // Compressed copies go with the blob, so they count too.
-            if let Some(v) = blobs.variants(&sha256) {
+            if let Some(v) = blobs.variants(sha256) {
                 bytes += v.identity + v.br.unwrap_or(0) + v.gzip.unwrap_or(0);
             }
             if !dry_run {
-                blobs.delete(&sha256);
-                conn.execute("DELETE FROM blobs WHERE sha256 = ?", [&sha256])?;
+                blobs.delete(sha256);
+                conn.execute("DELETE FROM blobs WHERE sha256 = ?", [sha256])?;
             }
             deleted += 1;
         }
@@ -152,10 +156,11 @@ pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<
     let blobs = BlobStore::new(&config.blobs_dir());
 
     // The same rule a deploy uses: the paths a blob is served under decide.
-    let rows: Vec<(String, String)> = db.with(|conn| {
+    let rows: Vec<(BlobHash, String)> = db.with(|conn| {
         let mut rows = Vec::new();
         for sql in ["SELECT sha256, path FROM site_files", "SELECT sha256, path FROM host_build_files"] {
-            rows.extend(conn.prepare(sql)?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<(String, String)>>>()?);
+            let found = conn.prepare(sql)?.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get(1)?)))?.collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+            rows.extend(found.into_iter().filter_map(|(sha, path)| Some((BlobHash::parse(&sha)?, path))));
         }
         Ok(rows)
     })?;
@@ -164,7 +169,7 @@ pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<
     let mut referenced = indexmap::IndexSet::new();
     for (sha, path) in rows {
         if is_compressible(&path) {
-            candidates.insert(sha.clone());
+            candidates.insert(sha);
         }
         referenced.insert(sha);
     }
@@ -177,7 +182,7 @@ pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<
         for _ in 0..4 {
             scope.spawn(|| loop {
                 let Some(sha256) = queue.lock().pop_front() else { return };
-                let Some(mut variants) = blobs.variants(&sha256) else { continue };
+                let Some(mut variants) = blobs.variants(sha256) else { continue };
                 let wanted = candidates.contains(&sha256) && (variants.br.is_none() || variants.gzip.is_none());
 
                 if dry_run {
@@ -188,9 +193,9 @@ pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<
                 }
 
                 if wanted {
-                    match blobs.ensure_variants(&sha256) {
+                    match blobs.ensure_variants(sha256) {
                         Ok(written) if !written.is_empty() => {
-                            variants = blobs.variants(&sha256).unwrap_or(variants);
+                            variants = blobs.variants(sha256).unwrap_or(variants);
                             let smallest = variants.identity.min(variants.br.unwrap_or(u64::MAX)).min(variants.gzip.unwrap_or(u64::MAX));
                             let added: u64 = written.iter().filter_map(|e| variants.get(*e)).sum();
                             let mut s = stats.lock();
@@ -203,7 +208,7 @@ pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<
                 }
 
                 // The same record a deploy writes. A no-op for blobs with no row.
-                let _ = db.with(|conn| Ok(record_variant_sizes(conn, &sha256, variants)?));
+                let _ = db.with(|conn| Ok(record_variant_sizes(conn, sha256, variants)?));
             });
         }
     });
