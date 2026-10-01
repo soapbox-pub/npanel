@@ -1,11 +1,20 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+// The server's version, so a dashboard served apart from it (as an nsite) can
+// tell when it is talking to an older one.
+const version = /^version\s*=\s*"([^"]+)"/m.exec(readFileSync(path.resolve(import.meta.dirname, "../Cargo.toml"), "utf8"))?.[1];
+if (!version) throw new Error("No version in ../Cargo.toml.");
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
+  define: {
+    __NPANEL_VERSION__: JSON.stringify(version),
+  },
   server: {
     host: "::",
     port: 8080,

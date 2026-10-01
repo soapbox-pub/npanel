@@ -84,12 +84,26 @@ redirect with no freshness of its own until they restart, which would outlive
 an admin turning the redirect back off; crawlers still take the `301` itself as
 the permanent answer.
 
-The dashboard is otherwise served straight off disk, with one exception:
-`index.html` is read into memory and its `og:image` and `og:url` tags are
-rewritten from site-relative paths to absolute URLs built from `DASHBOARD_HOST`
-(`src/dashboard.rs`). A built static file cannot know its own origin, and
-link-preview crawlers are inconsistent about resolving relative ones. The
-result is cached until the file's mtime changes.
+The dashboard is otherwise served as built, with one exception: `index.html`
+has its `og:image` and `og:url` tags rewritten from site-relative paths to
+absolute URLs built from `DASHBOARD_HOST` (`src/dashboard.rs`). A built static
+file cannot know its own origin, and link-preview crawlers are inconsistent
+about resolving relative ones.
+
+Where the files come from depends on the build. A release binary is built with
+the `embedded-dashboard` feature, and `build.rs` compiles every file of
+`dashboard/dist` into it, so a server and its dashboard can't come from
+different versions. Without the feature they are read off disk, from
+`dashboard/dist` under the working directory, beside the binary, or in the
+source tree, and the rewritten `index.html` is cached until its mtime changes,
+which is what lets a developer rebuild the dashboard under a running server.
+
+The same build is also published as an nsite, where nothing serves the API on
+its origin. It finds its server at startup (`dashboard/src/lib/server.ts`): if
+`/api/instance` on its own origin answers as npanel, that is the server;
+otherwise it asks the reader for one, and remembers it. Every API response
+allows any origin, and NIP-98 binds a request to the API's URL rather than the
+page's, so a dashboard on another origin needs nothing else from the server.
 
 ## The nsite model
 

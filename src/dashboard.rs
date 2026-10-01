@@ -2,6 +2,11 @@
 //!
 //! Unknown paths fall back to `index.html` so client-side routes work on a
 //! hard refresh. Hashed Vite assets are immutable; `index.html` never is.
+//!
+//! A release binary carries its dashboard (the `embedded-dashboard` feature,
+//! see build.rs), so the two can't come from different versions. Without the
+//! feature it is read from disk, which is what lets a developer rebuild it
+//! while npanel runs.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -18,7 +23,12 @@ use crate::fields;
 use crate::log::Logger;
 use crate::mime::content_type;
 
-/// A file resolved inside the dashboard directory.
+#[cfg(feature = "embedded-dashboard")]
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/dashboard_files.rs"));
+}
+
+/// A file resolved inside the dashboard.
 struct DashboardFile {
     path: PathBuf,
     size: u64,
@@ -26,6 +36,28 @@ struct DashboardFile {
     /// Fingerprinted by Vite, so it can be cached forever.
     immutable: bool,
     html: bool,
+    /// The bytes, when they were compiled in rather than left on disk.
+    embedded: Option<&'static [u8]>,
+}
+
+/// Where the dashboard's files come from.
+pub enum Source {
+    /// A directory on disk: the first of these with an `index.html`, best
+    /// first. Looked for until found, so building the dashboard while npanel
+    /// runs needs no restart. Only tests build one when the dashboard is
+    /// embedded.
+    #[cfg_attr(feature = "embedded-dashboard", allow(dead_code))]
+    Disk { candidates: Vec<PathBuf>, root: OnceLock<PathBuf> },
+    /// Compiled into the binary.
+    #[cfg(feature = "embedded-dashboard")]
+    Embedded,
+}
+
+impl Source {
+    #[cfg_attr(feature = "embedded-dashboard", allow(dead_code))]
+    pub fn disk(candidates: Vec<PathBuf>) -> Source {
+        Source::Disk { candidates, root: OnceLock::new() }
+    }
 }
 
 pub struct Dashboard {
@@ -35,17 +67,14 @@ pub struct Dashboard {
 }
 
 struct Inner {
-    /// Where a built dashboard may be, best first.
-    candidates: Vec<PathBuf>,
-    /// The one found, once a request has found it.
-    root: OnceLock<PathBuf>,
+    source: Source,
     origin: String,
     /// File contents by path, reused until the file on disk changes. HTML is
     /// held already rewritten.
     cache: Mutex<HashMap<PathBuf, (SystemTime, u64, Bytes)>>,
 }
 
-/// What a request found on disk.
+/// What a request found.
 enum Found {
     File(DashboardFile, Bytes),
     NotBuilt,
@@ -53,8 +82,8 @@ enum Found {
 }
 
 impl Dashboard {
-    pub fn new(candidates: Vec<PathBuf>, dashboard_host: &str, log: Logger) -> Dashboard {
-        let inner = Inner { candidates, root: OnceLock::new(), origin: origin_for(dashboard_host), cache: Mutex::new(HashMap::new()) };
+    pub fn new(source: Source, dashboard_host: &str, log: Logger) -> Dashboard {
+        let inner = Inner { source, origin: origin_for(dashboard_host), cache: Mutex::new(HashMap::new()) };
         Dashboard { inner: Arc::new(inner), log, warned: AtomicBool::new(false) }
     }
 
@@ -69,7 +98,13 @@ impl Dashboard {
             Found::Unreadable => return Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).expect("response"),
             Found::NotBuilt => {
                 if !self.warned.swap(true, Ordering::Relaxed) {
-                    let dirs = self.inner.candidates.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(" ");
+                    // An embedded dashboard always has its index.html: build.rs
+                    // refuses to embed one without.
+                    let dirs = match &self.inner.source {
+                        Source::Disk { candidates, .. } => candidates.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(" "),
+                        #[cfg(feature = "embedded-dashboard")]
+                        Source::Embedded => String::new(),
+                    };
                     self.log.warn("dashboard_not_built", fields! { "dirs" => dirs });
                 }
                 return Response::builder()
@@ -93,21 +128,10 @@ impl Dashboard {
 }
 
 impl Inner {
-    /// The built dashboard's directory. Looked for until found, so building
-    /// the dashboard while npanel runs needs no restart.
-    fn root(&self) -> Option<&Path> {
-        if let Some(root) = self.root.get() {
-            return Some(root);
-        }
-        let found = self.candidates.iter().find(|dir| dir.join("index.html").is_file())?;
-        Some(self.root.get_or_init(|| found.clone()))
-    }
-
     /// The file a URL path names, falling back to `index.html` for the SPA's
     /// own routes.
     fn load(&self, path: &str) -> Found {
-        let Some(root) = self.root() else { return Found::NotBuilt };
-        let Some(file) = self.find(root, path).or_else(|| self.find(root, "/index.html")) else { return Found::NotBuilt };
+        let Some(file) = self.find(&normalize(path)).or_else(|| self.find(Path::new("index.html"))) else { return Found::NotBuilt };
         match self.contents(&file) {
             Ok(body) => Found::File(file, body),
             Err(_) => Found::Unreadable,
@@ -116,43 +140,80 @@ impl Inner {
 
     /// A file's bytes, with HTML rewritten, cached until the file changes.
     fn contents(&self, file: &DashboardFile) -> std::io::Result<Bytes> {
+        if let (Some(bytes), false) = (file.embedded, file.html) {
+            return Ok(Bytes::from_static(bytes));
+        }
         if let Some((modified, size, bytes)) = self.cache.lock().get(&file.path) {
             if *modified == file.modified && *size == file.size {
                 return Ok(bytes.clone());
             }
         }
 
-        let raw = std::fs::read(&file.path)?;
+        let raw = match file.embedded {
+            Some(bytes) => bytes.to_vec(),
+            None => std::fs::read(&file.path)?,
+        };
         let bytes = if file.html { Bytes::from(rewrite_preview_urls(&String::from_utf8_lossy(&raw), &self.origin)) } else { Bytes::from(raw) };
 
         self.cache.lock().insert(file.path.clone(), (file.modified, file.size, bytes.clone()));
         Ok(bytes)
     }
 
-    /// Resolve a URL path to a file inside the dashboard directory. `..` can't
-    /// escape it: the path is normalized before it is joined.
-    fn find(&self, root: &Path, path: &str) -> Option<DashboardFile> {
-        let mut relative = PathBuf::new();
-        for component in Path::new(path).components() {
-            match component {
-                Component::Normal(part) => relative.push(part),
-                Component::ParentDir => {
-                    relative.pop();
-                }
-                _ => {}
+    /// The file at a normalized relative path, if the dashboard has one.
+    fn find(&self, relative: &Path) -> Option<DashboardFile> {
+        let html = relative.extension().is_some_and(|ext| ext == "html");
+        let immutable = relative.starts_with("assets");
+        match &self.source {
+            Source::Disk { candidates, root } => {
+                let root = match root.get() {
+                    Some(root) => root,
+                    None => {
+                        let found = candidates.iter().find(|dir| dir.join("index.html").is_file())?;
+                        root.get_or_init(|| found.clone())
+                    }
+                };
+                let candidate = root.join(relative);
+                let metadata = std::fs::metadata(&candidate).ok().filter(|m| m.is_file())?;
+                Some(DashboardFile {
+                    html,
+                    immutable,
+                    size: metadata.len(),
+                    modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    path: candidate,
+                    embedded: None,
+                })
+            }
+            #[cfg(feature = "embedded-dashboard")]
+            Source::Embedded => {
+                let name = relative.to_str()?;
+                let (_, bytes) = embedded::FILES.iter().find(|(path, _)| *path == name)?;
+                Some(DashboardFile {
+                    html,
+                    immutable,
+                    size: bytes.len() as u64,
+                    modified: SystemTime::UNIX_EPOCH,
+                    path: relative.to_path_buf(),
+                    embedded: Some(bytes),
+                })
             }
         }
-
-        let candidate = root.join(&relative);
-        let metadata = std::fs::metadata(&candidate).ok().filter(|m| m.is_file())?;
-        Some(DashboardFile {
-            html: candidate.extension().is_some_and(|ext| ext == "html"),
-            immutable: relative.starts_with("assets"),
-            size: metadata.len(),
-            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            path: candidate,
-        })
     }
+}
+
+/// A URL path as a path relative to the dashboard's root. `..` can't escape
+/// it: the path is normalized before anything joins it.
+fn normalize(path: &str) -> PathBuf {
+    let mut relative = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => relative.push(part),
+            Component::ParentDir => {
+                relative.pop();
+            }
+            _ => {}
+        }
+    }
+    relative
 }
 
 /// Rewrite link-preview meta tags whose content has to be an absolute URL.
@@ -177,15 +238,22 @@ fn origin_for(hostname: &str) -> String {
     format!("{}://{hostname}", if loopback { "http" } else { "https" })
 }
 
-/// Where a built dashboard may be: `dashboard/dist` under the working
-/// directory, beside the binary, or in the source tree it was built from.
-pub fn candidates() -> Vec<PathBuf> {
-    let mut candidates = vec![std::path::absolute("dashboard/dist").unwrap_or_else(|_| PathBuf::from("dashboard/dist"))];
-    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
-        candidates.push(dir.join("dashboard/dist"));
+/// Where this build's dashboard comes from: compiled in, or else
+/// `dashboard/dist` under the working directory, beside the binary, or in the
+/// source tree it was built from.
+pub fn source() -> Source {
+    #[cfg(feature = "embedded-dashboard")]
+    return Source::Embedded;
+
+    #[cfg(not(feature = "embedded-dashboard"))]
+    {
+        let mut candidates = vec![std::path::absolute("dashboard/dist").unwrap_or_else(|_| PathBuf::from("dashboard/dist"))];
+        if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+            candidates.push(dir.join("dashboard/dist"));
+        }
+        candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("dashboard/dist"));
+        Source::disk(candidates)
     }
-    candidates.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("dashboard/dist"));
-    candidates
 }
 
 #[cfg(test)]
@@ -210,7 +278,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("assets")).unwrap();
         std::fs::write(dir.path().join("index.html"), "<p>app</p>").unwrap();
         std::fs::write(dir.path().join("assets/app-1.js"), "js").unwrap();
-        let dashboard = Dashboard::new(vec![dir.path().join("missing"), dir.path().to_path_buf()], "panel.example.com", Logger::new(crate::log::LogLevel::Error));
+        let dashboard = Dashboard::new(Source::disk(vec![dir.path().join("missing"), dir.path().to_path_buf()]), "panel.example.com", Logger::new(crate::log::LogLevel::Error));
 
         let get = |path: &str| Request::get(path).body(()).unwrap().into_parts().0;
         let response = dashboard.serve(&get("/assets/app-1.js")).await;
@@ -220,5 +288,20 @@ mod tests {
         assert_eq!(response.headers()["cache-control"], "no-cache");
         let response = dashboard.serve(&get("/../../etc/passwd")).await;
         assert_eq!(response.headers()["content-type"], "text/html; charset=utf-8");
+    }
+
+    #[cfg(feature = "embedded-dashboard")]
+    #[tokio::test]
+    async fn serves_the_embedded_dashboard() {
+        let dashboard = Dashboard::new(Source::Embedded, "panel.example.com", Logger::new(crate::log::LogLevel::Error));
+        let get = |path: &str| Request::get(path).body(()).unwrap().into_parts().0;
+
+        let response = dashboard.serve(&get("/some/route")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/html; charset=utf-8");
+
+        let (asset, _) = embedded::FILES.iter().find(|(path, _)| path.starts_with("assets/")).expect("a built asset");
+        let response = dashboard.serve(&get(&format!("/{asset}"))).await;
+        assert_eq!(response.headers()["cache-control"], "public, max-age=31536000, immutable");
     }
 }

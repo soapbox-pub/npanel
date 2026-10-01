@@ -1,6 +1,6 @@
 [package]
 name = "npanel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Self-hostable nsite gateway with a team dashboard"
 license = "AGPL-3.0-or-later"
@@ -48,6 +48,11 @@ tokio-util = "0.7"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tower = { version = "0.5", features = ["util"] }
 url = "2"
+
+[features]
+# Compile dashboard/dist into the binary (see build.rs). Release builds use it;
+# without it the dashboard is read from disk, so it can be rebuilt live.
+embedded-dashboard = []
 
 [dev-dependencies]
 tempfile = "3"

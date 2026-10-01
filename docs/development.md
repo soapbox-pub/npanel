@@ -100,7 +100,9 @@ curl -H 'Host: example.org' http://localhost:3000/
 ## What differs from production
 
 **`http://localhost:3000` answers `503`** until the dashboard is built. That is
-the server serving `dashboard/dist`, which `bun run dev` never builds. The
+the server serving `dashboard/dist` off disk, which `bun run dev` never builds
+(a release binary is built with `embedded-dashboard` and carries its own; see
+[deployment](deployment.md#from-source)). The
 dashboard is at `:8080`. Run `bun run build` in `dashboard/` if you want to
 check the production SPA — that path serves the built `index.html`, rewrites its
 link-preview meta tags, and caches Vite's hashed assets forever, none of which
@@ -141,6 +143,10 @@ cargo test --manifest-path vendor/device-detector/Cargo.toml
 (cd dashboard && bun run test)          # tsc, eslint, vitest, and a production build
 ```
 
+`.ngit/act/workflows/test.yml` runs the same on every push and Nostr PR, plus
+clippy and the dashboard tests with `--features embedded-dashboard`, which
+needs `dashboard/dist` built first.
+
 Server tests live beside their subject in a `#[cfg(test)]` module.
 `src/e2e.rs` assembles a whole gateway the way `main` does, with a fake Nostr
 source and a Blossom server on loopback, and drives a deploy from a manifest to
@@ -148,6 +154,48 @@ a served site and the API — the place for a test that crosses subsystems.
 
 Note the `run` in `bun run test`: a bare `bun test` starts Bun's own test runner
 instead of the script, and the dashboard's tests need Vitest's DOM environment.
+
+## The dashboard on another origin
+
+The dashboard published as an nsite has no API on its own origin, and asks
+which server to manage. To try that locally, serve a production build from
+anywhere else and point it at the dev server:
+
+```sh
+(cd dashboard && bun run build && cd dist && python3 -m http.server 8099)
+```
+
+Open `http://127.0.0.1:8099`, and connect to `http://localhost:3000`. The
+dashboard's Content Security Policy admits `http://localhost:*` and
+`http://127.0.0.1:*` for exactly this; everything else has to be https.
+
+## Releasing
+
+A tag `vX.Y.Z` runs `.ngit/act/workflows/release.yml`, which builds the static
+binary, publishes it as a NIP-82 release with `ngit release publish` (what to
+publish is in `.ngit/release.yaml`), and publishes the dashboard nsite with
+`ngit nsite publish` (`.nsite/config.json`). Before tagging:
+
+1. Bump `version` in `Cargo.toml`. The workflow refuses a tag that disagrees
+   with it, and the dashboard stamps it in at build time to compare with the
+   server's.
+2. Add a `## [X.Y.Z]` section to `CHANGELOG.md`. It becomes the release notes,
+   and the workflow refuses a tag without one.
+3. Commit, tag with `git tag -a vX.Y.Z`, and push both.
+
+A tag with a suffix, like `v0.3.0-rc.1`, publishes to the `beta` channel rather
+than `main`. Both are signed by the `NSYTE_BUNKER` session provisioned for the
+repository, and that key owns the application: every release after the first
+has to be signed by it.
+
+To build the release binary locally, which needs `musl-tools` (for `musl-gcc`)
+and the target:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+(cd dashboard && bun run build)
+cargo build --release --target x86_64-unknown-linux-musl --features embedded-dashboard
+```
 
 ## Housekeeping
 

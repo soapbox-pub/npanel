@@ -1,4 +1,4 @@
-import { Globe, History, Lock, Settings as SettingsIcon, Users } from 'lucide-react';
+import { Globe, History, Lock, Settings as SettingsIcon, TriangleAlert, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -8,8 +8,10 @@ import { Logo } from '@/components/Logo';
 import { Perforation } from '@/components/Perforation';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
-import { useMe } from '@/hooks/useNpanel';
+import { useInstance, useMe } from '@/hooks/useNpanel';
+import { useServer } from '@/hooks/useServer';
 import { safeNpub } from '@/lib/format';
+import { DASHBOARD_VERSION, serverIsBehind } from '@/lib/server';
 import { cn } from '@/lib/utils';
 import { HomePage } from '@/pages/HomePage';
 
@@ -64,11 +66,38 @@ export function DashboardLayout() {
             items.length > 1 && 'pb-28 md:pb-12',
           )}
         >
+          <OutdatedServer />
           <Outlet />
         </div>
       </main>
 
       {items.length > 1 && <TabBar items={items} />}
+    </div>
+  );
+}
+
+/**
+ * A dashboard opened apart from its server tracks the latest release, and the
+ * server it manages may not. Say so, since a page that needs a newer API would
+ * otherwise just fail.
+ */
+function OutdatedServer() {
+  const { standalone, origin } = useServer();
+  const instance = useInstance();
+  if (!standalone || !instance.data || !serverIsBehind(instance.data.version)) return null;
+
+  return (
+    <div role="status" className="mb-6 flex items-start gap-3 rounded-xl bg-card p-4 text-sm surface">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-[#ff9f0a]" aria-hidden />
+      <p className="text-muted-foreground">
+        {new URL(origin).host} runs npanel {instance.data.version ?? 'older than 0.2.0'}, and this dashboard is{' '}
+        {DASHBOARD_VERSION}. Anything newer than the server won't work until it is upgraded — or use the dashboard
+        the server itself serves, at{' '}
+        <a href={origin} className="font-medium text-primary hover:opacity-80">
+          {new URL(origin).host}
+        </a>
+        .
+      </p>
     </div>
   );
 }

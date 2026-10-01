@@ -1,0 +1,32 @@
+# npanel under systemd, for the release binary. See docs/deployment.md.
+#
+# Expects /usr/local/bin/npanel, an `npanel` system user, its configuration in
+# /etc/npanel/.env (read from the working directory), and DATA_DIR set there to
+# /var/lib/npanel.
+
+[Unit]
+Description=npanel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=npanel
+Group=npanel
+WorkingDirectory=/etc/npanel
+ExecStart=/usr/local/bin/npanel
+Restart=on-failure
+RestartSec=5s
+
+# Logs are one JSON object per line on stdout.
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/npanel
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+# What `ngit release publish` publishes for a version tag: the NIP-82
+# application, release, and asset events, with the files on Blossom. Run by
+# .ngit/act/workflows/release.yml once the files below are built.
+schema: 1
+application: npanel
+name: npanel
+summary: Self-hostable nsite gateway with a team dashboard
+description: |
+  Map hostnames to nsites in a web dashboard. npanel downloads each site's
+  files from Blossom servers and serves them from its own disk, with TLS,
+  analytics, and onion addresses. One binary and one SQLite file.
+tags: [nostr, nsite, blossom, gateway]
+license: AGPL-3.0-or-later
+repository: nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel
+icon: dashboard/public/icon-512.png
+release_notes: CHANGELOG.md
+publication:
+  # The same servers and relays as the dashboard's nsite (.nsite/config.json).
+  blossom_servers:
+    - https://blossom.ditto.pub
+    - https://blossom.dreamith.to
+    - https://blossom.primal.net
+  relays:
+    - wss://relay.ditto.pub
+    - wss://relay.dreamith.to
+    - wss://relay.primal.net
+assets:
+  - file: target/x86_64-unknown-linux-musl/release/npanel
+    filename: npanel-{version}-linux-x86_64
+    platforms: [linux-x86_64]
+  - file: contrib/npanel.service
+    platform_agnostic: true

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://nsyte.run/schemas/config.schema.json",
+  "id": "npanel",
+  "title": "npanel",
+  "description": "The npanel dashboard, for managing any npanel server.",
+  "source": "https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel",
+  "fallback": "/index.html",
+  "relays": [
+    "wss://relay.ditto.pub",
+    "wss://relay.dreamith.to",
+    "wss://relay.primal.net"
+  ],
+  "servers": [
+    "https://blossom.ditto.pub",
+    "https://blossom.dreamith.to",
+    "https://blossom.primal.net"
+  ]
+}

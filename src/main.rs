@@ -184,7 +184,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     let app = Arc::new(App {
         dashboard_host: config.dashboard_host.clone(),
         site,
-        dashboard: dashboard::Dashboard::new(dashboard::candidates(), &config.dashboard_host, log),
+        dashboard: dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log),
         api,
     });
     let main_server = tokio::spawn(server::serve(

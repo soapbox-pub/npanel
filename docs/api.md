@@ -32,6 +32,12 @@ The `u` tag is checked against `DASHBOARD_HOST` and the request path, not
 against the URL the process sees, so a reverse proxy rewriting the scheme or
 port is fine. Host and path must match exactly.
 
+Every response allows any origin (`Access-Control-Allow-Origin: *`), and
+preflights are answered. The signature, not the origin, is what grants access,
+so a dashboard served from somewhere else — the [published
+nsite](deployment.md#the-dashboard-as-an-nsite), say — works against any
+server, as long as its `u` tags name that server's `DASHBOARD_HOST`.
+
 A valid signature from a pubkey that isn't in the `users` table gets `403`, not
 `401` — npanel is permissioned, and signing proves who you are, not that you're
 allowed in.
@@ -67,13 +73,15 @@ Unauthenticated, for the logged-out homepage, which introduces npanel to
 whoever landed on it and names the person running this copy.
 
 ```json
-{ "contact_npub": "npub1...", "dashboard_host": "panel.example.com" }
+{ "contact_npub": "npub1...", "dashboard_host": "panel.example.com", "version": "0.2.0" }
 ```
 
 `contact_npub` is `null` when no admin has set
 [`contact_npub`](configuration.md#contact_npub). Nothing here is private: the
 npub is published to be shown, and the hostname is the one the caller used to
-reach this route.
+reach this route. `version` is the server's, so a dashboard served from
+somewhere else can tell it is newer than the API it is talking to; servers
+before 0.2.0 leave it out.
 
 ### `GET /api/sites`
 

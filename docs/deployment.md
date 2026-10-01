@@ -6,7 +6,7 @@ front of it.
 
 DNS is the same either way. For the other two, pick one path: [Docker
 Compose](#docker-compose), which brings up npanel and Caddy together, or
-sections 2–5, which install from a checkout under systemd.
+sections 2–5, which install the release binary under systemd.
 
 ## 1. DNS
 
@@ -138,56 +138,82 @@ docker run --rm -v npanel_npanel-data:/data -v "$PWD:/backup" alpine:3 sh -c \
    sqlite3 /data/npanel.sqlite3 ".backup /backup/npanel-$(date +%F).sqlite3"'
 ```
 
-## 2. Install and build
+## 2. Install
 
-npanel is one binary. Build it from a checkout with a Rust toolchain (1.85 or
-newer), then build the dashboard it serves, which is a separate TypeScript SPA
-built with [Bun](https://bun.sh):
-
-```sh
-sudo useradd --system --home /opt/npanel --shell /usr/sbin/nologin npanel
-sudo mkdir -p /opt/npanel
-sudo chown npanel:npanel /opt/npanel
-
-sudo -u npanel git clone <your-repo-url> /opt/npanel
-cd /opt/npanel
-sudo -u npanel cargo build --release
-(cd dashboard && sudo -u npanel bun install && sudo -u npanel bun run build)
-```
-
-The server serves `dashboard/dist` as a static SPA, so it must exist or the
-dashboard hostname returns 503 with an explanatory message. npanel looks for it
-under its working directory, beside the binary, and in the source tree the
-binary was built from, and picks it up without a restart once it is built.
-
-Nothing else is needed at runtime: the Matomo device database, the Public
-Suffix List, the analytics tracker and the time zone data are all compiled into
-the binary.
-
-Configure:
+npanel is one static binary, with the dashboard compiled in. Each release
+publishes one for x86_64 Linux, which runs on any distribution, alongside a
+sample systemd unit. Find them under the repository's releases on
+[gitworkshop.dev](https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel),
+or with [ngit](https://ngit.dev) from a clone:
 
 ```sh
-sudo -u npanel cp .env.example .env
-sudo -u npanel $EDITOR .env
+ngit release view npanel@0.2.0 --verify
 ```
 
-At minimum set `DASHBOARD_HOST`. Set `DATA_DIR` to somewhere durable —
-`/var/lib/npanel` is a good choice on a machine where the checkout might be
-replaced:
+The release is signed, and every file in it is addressed by its SHA-256, so any
+Blossom server holding a copy serves the same bytes. Download
+`npanel-<version>-linux-x86_64` and `npanel.service`, then:
 
 ```sh
-sudo mkdir -p /var/lib/npanel
-sudo chown npanel:npanel /var/lib/npanel
+sudo install -m 755 npanel-0.2.0-linux-x86_64 /usr/local/bin/npanel
+sudo install -m 644 npanel.service /etc/systemd/system/npanel.service
+
+sudo useradd --system --home /var/lib/npanel --shell /usr/sbin/nologin npanel
+sudo install -d -o npanel -g npanel /var/lib/npanel
+sudo install -d /etc/npanel
 ```
+
+Nothing else is needed at runtime: the dashboard, the Matomo device database,
+the Public Suffix List, the analytics tracker and the time zone data are all
+inside the binary.
+
+Configure. npanel reads `.env` from its working directory, which the unit sets
+to `/etc/npanel`:
+
+```sh
+sudo $EDITOR /etc/npanel/.env
+```
+
+```
+DASHBOARD_HOST="panel.example.com"
+DATA_DIR="/var/lib/npanel"
+```
+
+`DASHBOARD_HOST` is the one you must set, and `DATA_DIR` has to match the
+unit's `ReadWritePaths`. The rest have sensible defaults; see
+[configuration](configuration.md) or `.env.example`.
+
+### From source
+
+On another architecture, or to run unreleased code, build it. You need Rust
+1.85 or newer and [Bun](https://bun.sh) 1.3 or newer:
+
+```sh
+git clone <your-repo-url> npanel && cd npanel
+(cd dashboard && bun install && bun run build)
+cargo build --release --features embedded-dashboard
+sudo install -m 755 target/release/npanel /usr/local/bin/npanel
+sudo install -m 644 contrib/npanel.service /etc/systemd/system/npanel.service
+```
+
+and carry on from `useradd` above. The dashboard has to be built first:
+`embedded-dashboard` compiles `dashboard/dist` into the binary and refuses to
+build without it.
+
+Leave the feature off and npanel reads the dashboard from disk instead —
+`dashboard/dist` under its working directory, beside the binary, or in the
+source tree it was built from — and picks up a rebuild without a restart. That
+is what development wants; a server is better off with one file that can't
+disagree with itself.
 
 ## 3. Bootstrap the first admin
 
 npanel is not permissionless: an unknown pubkey gets a 403, and user management
 in the dashboard is admin-only. So the first account has to come from the
-command line.
+command line, run where the unit runs npanel so that it finds the same `.env`:
 
 ```sh
-cd /opt/npanel && sudo -u npanel ./target/release/npanel make-admin npub1yourkeyhere
+cd /etc/npanel && sudo -u npanel npanel make-admin npub1yourkeyhere
 ```
 
 It accepts an npub, nprofile, or hex pubkey, and promotes an existing user if
@@ -195,7 +221,8 @@ they're already there. Everyone after that is added from the Users page.
 
 ## 4. systemd
 
-`/etc/systemd/system/npanel.service`:
+The release's `npanel.service`, also at `contrib/npanel.service` in the
+repository, installed above as `/etc/systemd/system/npanel.service`:
 
 ```ini
 [Unit]
@@ -207,8 +234,8 @@ Wants=network-online.target
 Type=simple
 User=npanel
 Group=npanel
-WorkingDirectory=/opt/npanel
-ExecStart=/opt/npanel/target/release/npanel
+WorkingDirectory=/etc/npanel
+ExecStart=/usr/local/bin/npanel
 Restart=on-failure
 RestartSec=5s
 
@@ -226,14 +253,19 @@ ReadWritePaths=/var/lib/npanel
 WantedBy=multi-user.target
 ```
 
-Adjust `ReadWritePaths` to your `DATA_DIR`. `.env` is read from the working
-directory, so `WorkingDirectory` is where the configuration lives too.
+Adjust `ReadWritePaths` if your `DATA_DIR` is elsewhere. `.env` is read from
+the working directory, so `WorkingDirectory` is where the configuration lives.
 
 ```sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now npanel
 sudo journalctl -u npanel -f -o cat | jq
 ```
+
+An npanel installed from a checkout by an earlier version of this guide runs
+`/opt/npanel/target/release/npanel` with `/opt/npanel` as its working
+directory. That keeps working; to move to the release binary, copy its `.env`
+to `/etc/npanel/`, install the new unit, and restart.
 
 ## 5. TLS with Caddy
 
@@ -287,9 +319,8 @@ there is nothing left for Caddy to compress, and compressing here would only
 help the visitors who arrive through it. Visitors on a site's onion address
 never touch Caddy at all, and they are the ones on the slowest connections.
 
-The dashboard block keeps its `encode`: that's npanel's own built SPA served
-off the local disk, not an nsite, so it isn't part of what gets compressed at
-deploy time.
+The dashboard block keeps its `encode`: that's npanel's own SPA, not an
+nsite, so it isn't part of what gets compressed at deploy time.
 
 If you are upgrading an npanel that has already been running, compress what it
 downloaded before you take `encode` out of the site block. Otherwise every site
@@ -504,6 +535,25 @@ resolves to the site's `/404.html` gets a `404` rather than a `206`, an empty
 file is a `200` rather than a `204`, and a `HEAD` response carries the length
 its `GET` would have.
 
+## The dashboard as an nsite
+
+Every release also publishes its dashboard as a named nsite, `npanel`, signed by
+the same key as the release. It is the same build the binary carries, and it can
+manage any npanel server: opened anywhere but on a server's own dashboard host,
+it asks for the server's address, remembers it, and talks to the API across
+origins. NIP-98 signs each request for the server's URL, so the server needs no
+configuration for it.
+
+Nothing about a server changes, and its own dashboard keeps working; this is a
+second way in. It suits someone who manages several servers, or who would
+rather load the dashboard from a gateway they trust than from the server it
+manages.
+
+The nsite follows the latest release, and a server may be behind it. A server
+older than the dashboard gets a notice saying so, since a page built for a newer
+API may fail against it. Servers before 0.2.0 don't report a version, and are
+always flagged.
+
 ## Adding a site
 
 In the dashboard: **Add site**, give it a domain and an nsite address. The
@@ -536,13 +586,15 @@ named by hash, so incremental syncs are cheap.
 
 ## Upgrading
 
+Install the new release's binary over the old one and restart:
+
 ```sh
-cd /opt/npanel
-sudo -u npanel git pull
-sudo -u npanel cargo build --release
-(cd dashboard && sudo -u npanel bun install && sudo -u npanel bun run build)
+sudo install -m 755 npanel-0.3.0-linux-x86_64 /usr/local/bin/npanel
 sudo systemctl restart npanel
 ```
+
+From source, `git pull`, rebuild the dashboard and the binary as in
+[section 2](#from-source), and install it the same way.
 
 Migrations run automatically at startup. Back up the database first. On Docker
 this is [`docker compose up -d --build`](#upgrading-the-containers) instead.
@@ -558,8 +610,9 @@ Every version of every site is kept, along with its files. On a site that
 deploys often this adds up.
 
 ```sh
-sudo -u npanel ./target/release/npanel prune-blobs --keep 10 --dry-run
-sudo -u npanel ./target/release/npanel prune-blobs --keep 10
+cd /etc/npanel
+sudo -u npanel npanel prune-blobs --keep 10 --dry-run
+sudo -u npanel npanel prune-blobs --keep 10
 ```
 
 On Docker, `docker compose exec npanel npanel prune-blobs --keep 10`.
@@ -581,8 +634,9 @@ deployed have no reason to deploy again and would otherwise go on being served
 raw indefinitely.
 
 ```sh
-sudo -u npanel ./target/release/npanel compress-blobs --dry-run
-sudo -u npanel ./target/release/npanel compress-blobs
+cd /etc/npanel
+sudo -u npanel npanel compress-blobs --dry-run
+sudo -u npanel npanel compress-blobs
 ```
 
 On Docker, `docker compose exec npanel npanel compress-blobs`.
@@ -593,10 +647,12 @@ there is no harm in leaving it in a maintenance script.
 
 ## Troubleshooting
 
-**The dashboard returns 503 "The dashboard has not been built."** Run
-`bun install && bun run build` in `dashboard/`. The server logs
-`dashboard_not_built` once with the directories it looked in. The image builds it, so on Docker this means the
-container is running a stale image — `docker compose up -d --build`.
+**The dashboard returns 503 "The dashboard has not been built."** Only a
+binary built without `embedded-dashboard` can say this, and it means it found
+no `dashboard/dist`. Run `bun install && bun run build` in `dashboard/`. The
+server logs `dashboard_not_built` once with the directories it looked in. The
+image builds it, so on Docker this means the container is running a stale image
+— `docker compose up -d --build`.
 
 **A site returns 503 "This site has not finished deploying yet."** No version is
 ready. Check the version list and its deploy log in the dashboard.

@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowUpRight, ChevronRight, Globe, Signpost, Upload } from 'lucide-react';
+import { ArrowLeftRight, ArrowUpRight, ChevronRight, Globe, Signpost, Upload } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -12,6 +12,7 @@ import { buttonVariants } from '@/components/ui/button-variants';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthor } from '@/hooks/useAuthor';
 import { useInstance, usePublicSites } from '@/hooks/useNpanel';
+import { useServer } from '@/hooks/useServer';
 import type { SiteCard } from '@/lib/api-types';
 import { decodePubkey, shorten } from '@/lib/format';
 import { profileUrl, SOURCE_URL } from '@/lib/links';
@@ -38,6 +39,7 @@ export function HomePage() {
             <Logo className="size-7" />
             <span className="text-[15px] font-semibold tracking-tight">npanel</span>
           </span>
+          <SwitchServer />
         </div>
       </header>
 
@@ -53,6 +55,24 @@ export function HomePage() {
         npanel is free software.
       </footer>
     </div>
+  );
+}
+
+/** When the dashboard was opened apart from its server, the way back to choosing another. */
+function SwitchServer() {
+  const { origin, standalone, disconnect } = useServer();
+  if (!standalone) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={disconnect}
+      className="flex min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+    >
+      <span className="truncate">{new URL(origin).host}</span>
+      <ArrowLeftRight className="size-3.5 shrink-0" aria-hidden />
+      <span className="sr-only">Switch server</span>
+    </button>
   );
 }
 
@@ -86,7 +106,8 @@ function Hero() {
 /** Whose gateway this is — the one thing a visitor from a served site needs to know. */
 function Operator() {
   const instance = useInstance();
-  const host = instance.data?.dashboard_host ?? window.location.hostname;
+  const { origin } = useServer();
+  const host = instance.data?.dashboard_host ?? new URL(origin).hostname;
 
   if (instance.isLoading) return <Skeleton className="mx-auto h-9 w-64 rounded-full" />;
 

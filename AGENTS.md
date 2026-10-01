@@ -45,7 +45,7 @@ src/
   site_preview.rs       link-preview metadata, read from a site's own index.html
   seo.rs                sitemaps, robots.txt, canonical links
   serve.rs              serving an nsite request, and its caches
-  dashboard.rs          serving the built SPA
+  dashboard.rs          serving the built SPA, from disk or compiled in
   auth.rs               NIP-98
   api.rs                the JSON API
   dns.rs                what staff should point a hostname at
@@ -53,12 +53,20 @@ src/
   db/                   pool, migrations, rows
   scripts.rs            make-admin, prune-blobs, compress-blobs
   e2e.rs                end-to-end tests with a fake Nostr and Blossom
+build.rs                compiles dashboard/dist in, with `embedded-dashboard`
 vendor/device-detector/ Matomo's device detector, vendored and fixed (see its README)
 assets/                 data compiled into the binary: the PSL, Matomo's
                         database, Plausible's tracker and source lists
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api, development
+contrib/npanel.service  the systemd unit each release ships
+.ngit/                  CI workflows, and what a release publishes
+.nsite/config.json      where the dashboard's nsite is published
+CHANGELOG.md            release notes, one section per version
 ```
+
+Releases are cut by tagging; see "Releasing" in docs/development.md. A tag
+needs a matching `Cargo.toml` version and `CHANGELOG.md` section.
 
 ## Conventions
 
@@ -92,6 +100,7 @@ cargo clippy --all-targets    # no warnings
 cargo test
 cargo test --manifest-path vendor/device-detector/Cargo.toml
 (cd dashboard && bun run test)
+cargo clippy --all-targets --features embedded-dashboard   # needs dashboard/dist
 ```
 
 From inside `dashboard/` it has to be `bun run test` rather than `bun test`: a

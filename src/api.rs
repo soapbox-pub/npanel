@@ -302,12 +302,14 @@ fn with_cors(mut response: Reply) -> Reply {
 }
 
 /// Who runs this instance, for the logged-out homepage. Nothing here is
-/// private: the contact npub is published by an admin to be shown.
+/// private: the contact npub is published by an admin to be shown. The
+/// version is for a dashboard served from elsewhere, which may be newer.
 async fn instance(State(deps): State<Deps>) -> ApiResult {
     let contact = deps.settings.get().contact_npub.clone();
     ok(json!({
         "contact_npub": if contact.is_empty() { Value::Null } else { Value::String(contact) },
         "dashboard_host": deps.dashboard_host,
+        "version": env!("CARGO_PKG_VERSION"),
     }))
 }
 

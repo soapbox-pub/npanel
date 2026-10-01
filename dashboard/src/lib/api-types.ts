@@ -198,6 +198,8 @@ export interface Instance {
   /** Whoever runs this instance, or null when no admin has said. */
   contact_npub: string | null;
   dashboard_host: string;
+  /** The server's version. Missing from servers before 0.2.0. */
+  version?: string;
 }
 
 export interface AuditEntry {

@@ -42,10 +42,14 @@ export class ApiError extends Error {
  * be replayed against another endpoint.
  */
 export class ApiClient {
-  constructor(private readonly signer: NostrSigner) {}
+  /** `origin` is the server's dashboard origin, which need not be the page's. */
+  constructor(
+    private readonly signer: NostrSigner,
+    private readonly origin: string,
+  ) {}
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const url = new URL(path, window.location.origin);
+    const url = new URL(path, this.origin);
     const payload = body === undefined ? undefined : JSON.stringify(body);
 
     const tags: string[][] = [
@@ -231,8 +235,8 @@ export class ApiClient {
  * instance to a visitor who has no Nostr key at all — hence a bare function
  * rather than an {@link ApiClient} method, which would need a signer.
  */
-export async function fetchInstance(): Promise<Instance> {
-  const response = await fetch(new URL('/api/instance', window.location.origin));
+export async function fetchInstance(origin: string): Promise<Instance> {
+  const response = await fetch(new URL('/api/instance', origin));
 
   if (!response.ok) {
     throw new ApiError(await errorMessage(response), response.status);
@@ -247,8 +251,8 @@ export async function fetchInstance(): Promise<Instance> {
  * Empty unless an admin turned the public list on, so the homepage can call it
  * unconditionally and simply render nothing.
  */
-export async function fetchSites(): Promise<{ sites: SiteCard[] }> {
-  const response = await fetch(new URL('/api/sites', window.location.origin));
+export async function fetchSites(origin: string): Promise<{ sites: SiteCard[] }> {
+  const response = await fetch(new URL('/api/sites', origin));
 
   if (!response.ok) {
     throw new ApiError(await errorMessage(response), response.status);

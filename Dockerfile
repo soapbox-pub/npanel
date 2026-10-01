@@ -12,6 +12,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY vendor ./vendor
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release --locked && rm -rf src
 
+COPY build.rs ./
 COPY assets ./assets
 COPY src ./src
 RUN touch src/main.rs && cargo build --release --locked
@@ -26,6 +27,8 @@ COPY dashboard/package.json dashboard/bun.lock ./
 RUN bun install --frozen-lockfile
 
 COPY dashboard ./
+# The build stamps the server's version into the dashboard.
+COPY Cargo.toml /app/Cargo.toml
 RUN bun run build
 
 FROM debian:bookworm-slim

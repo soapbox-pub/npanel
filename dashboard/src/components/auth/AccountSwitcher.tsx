@@ -1,4 +1,4 @@
-import { ChevronsUpDown, LogOut, UserPlus } from 'lucide-react';
+import { ArrowLeftRight, ChevronsUpDown, LogOut, UserPlus } from 'lucide-react';
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar.tsx';
 import {
@@ -10,6 +10,7 @@ import {
 } from '@/components/ui/dropdown-menu.tsx';
 import { Skeleton } from '@/components/ui/skeleton.tsx';
 import { type Account, useLoggedInAccounts } from '@/hooks/useLoggedInAccounts';
+import { useServer } from '@/hooks/useServer';
 import { cn } from '@/lib/utils';
 
 interface AccountSwitcherProps {
@@ -40,6 +41,7 @@ function AccountAvatar({ account, pending, className }: { account: Account; pend
 
 export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcherProps) {
   const { currentUser, otherUsers, isLoading, setLogin, removeLogin } = useLoggedInAccounts();
+  const server = useServer();
 
   if (!currentUser) return null;
 
@@ -99,6 +101,16 @@ export function AccountSwitcher({ onAddAccountClick, showName }: AccountSwitcher
           <LogOut className="size-4" />
           Sign Out
         </DropdownMenuItem>
+        {server.standalone && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={server.disconnect} className="cursor-pointer gap-2 p-2">
+              <ArrowLeftRight className="size-4" />
+              <span className="min-w-0 flex-1 truncate">Switch Server…</span>
+              <span className="max-w-24 truncate text-xs text-muted-foreground">{new URL(server.origin).host}</span>
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

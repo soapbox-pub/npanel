@@ -57,8 +57,9 @@ TypeScript code asked for; they are listed in the deployment guide.
 
 ## Requirements
 
-- Rust 1.85+ to build the server, and [Bun](https://bun.sh) 1.3+ to build the
-  dashboard. At runtime npanel is one binary and the built dashboard.
+- Linux. Releases are a static x86_64 binary with the dashboard inside, which
+  runs on any distribution. Elsewhere, build it: Rust 1.85+ for the server and
+  [Bun](https://bun.sh) 1.3+ for the dashboard.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included.
 
@@ -79,18 +80,26 @@ docker compose exec npanel npanel make-admin npub1yourkeyhere
 
 Point DNS at the box first — certificates are issued on the first visit.
 
-## Quick start from source
+## Quick start from a release
+
+Releases are published over Nostr with [ngit](https://ngit.dev): the binary,
+`npanel-<version>-linux-x86_64`, and a systemd unit.
 
 ```sh
-cd npanel-rs
-cargo build --release
-(cd dashboard && bun install && bun run build)
+chmod +x npanel-0.2.0-linux-x86_64
 
 cp .env.example .env
 $EDITOR .env          # set DASHBOARD_HOST at minimum
 
-./target/release/npanel make-admin npub1yourkeyhere
-./target/release/npanel
+./npanel-0.2.0-linux-x86_64 make-admin npub1yourkeyhere
+./npanel-0.2.0-linux-x86_64
+```
+
+To build it instead:
+
+```sh
+(cd dashboard && bun install && bun run build)
+cargo build --release --features embedded-dashboard
 ```
 
 Then put Caddy in front of it:
@@ -134,11 +143,12 @@ recorded in the audit log. See [docs/configuration.md](docs/configuration.md).
 
 ## Documentation
 
-- [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups, upgrades
+- [Deployment](docs/deployment.md) — Docker, systemd, TLS, backups, upgrades,
+  and the dashboard as an nsite
 - [Configuration](docs/configuration.md) — env vars and runtime settings
 - [Architecture](docs/architecture.md) — how sync, storage, and serving work
 - [API](docs/api.md) — the JSON API behind the dashboard
-- [Development](docs/development.md) — running npanel locally
+- [Development](docs/development.md) — running npanel locally, and releasing it
 
 ## License
 

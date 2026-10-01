@@ -1,0 +1,146 @@
+name: Release
+
+# A version tag (vX.Y.Z) publishes:
+#
+#   - a static x86_64 Linux binary with the dashboard compiled in, and the
+#     sample systemd unit, as a NIP-82 release (.ngit/release.yaml, notes from
+#     CHANGELOG.md);
+#   - the same dashboard build as the named nsite "npanel" (.nsite/config.json),
+#     which manages any npanel server across origins.
+#
+# One job, in order, so nothing is handed between containers and the nsite only
+# moves once the release it belongs to is out. The nsite follows tags rather
+# than main because servers lag behind it: a dashboard built from main could
+# lean on API nobody has deployed yet.
+#
+# ── Secrets ──────────────────────────────────────────────────────────────────
+#   NSYTE_BUNKER   nbunksec1... — a pre-established NIP-46 session, the same
+#                  secret Armada's nsite deploys use. Its key owns the npanel
+#                  application (every later release must be signed by it) and
+#                  is the nsite's address.
+#
+# act enforces a step's `timeout-minutes` but not a job's, so the steps that
+# talk to the network carry their own.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before any building, so a forgotten bump or changelog entry costs
+      # seconds rather than a whole build.
+      - name: Check the tag against Cargo.toml and CHANGELOG.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "Tag $TAG does not match Cargo.toml's version $version. Bump Cargo.toml, or tag v$version." >&2
+            exit 1
+          fi
+          if ! grep -qE "^## \[?v?$version\]?( |$)" CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $version. Add one and tag again." >&2
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.12
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      # ring and the bundled SQLite are C, so the musl target needs musl's C
+      # compiler as well as Rust's.
+      - name: Install musl-tools
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools >/dev/null
+
+      - name: Restore the Rust build cache
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: release-musl-${{ hashFiles('Cargo.lock') }}
+          restore-keys: release-musl-
+
+      - name: Build the dashboard
+        working-directory: dashboard
+        run: |
+          set -eu
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Build the binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl --features embedded-dashboard
+
+      # A musl binary that still asks for a dynamic loader fails on glibc hosts
+      # with a misleading "No such file or directory"; refuse to publish one.
+      - name: Check the binary is static
+        run: |
+          set -eu
+          bin=target/x86_64-unknown-linux-musl/release/npanel
+          if readelf -l "$bin" | grep -q 'program interpreter'; then
+            echo "$bin is dynamically linked." >&2
+            exit 1
+          fi
+          ls -lh "$bin"
+
+      - uses: danconwaydev/setup-ngit@v3
+        with:
+          version: 3.0.3
+
+      # A file rather than the command line, so the session stays out of the
+      # process list.
+      - name: Write the signer
+        env:
+          NSYTE_BUNKER: ${{ secrets.NSYTE_BUNKER }}
+        run: |
+          set -eu
+          # No apostrophes in that message: bash reads one inside ${var:?word}
+          # as opening a quoted section, even within double quotes.
+          : "${NSYTE_BUNKER:?NSYTE_BUNKER is not set. Provision it for this repository.}"
+          umask 077
+          printf '%s' "$NSYTE_BUNKER" > "$RUNNER_TEMP/nbunksec"
+
+      # A tag with a suffix (v0.3.0-rc.1) is a pre-release, on its own channel
+      # so that clients following main never offer it.
+      - name: Publish the release
+        timeout-minutes: 20
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          channel=main
+          case "$TAG" in *-*) channel=beta ;; esac
+          ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" release publish \
+            --repo nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel \
+            --tag "$TAG" \
+            --commit "$GITHUB_SHA" \
+            --channel "$channel" \
+            --defaults
+
+      - name: Publish the dashboard nsite
+        timeout-minutes: 15
+        run: |
+          set -eu
+          ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" nsite publish dashboard/dist \
+            --repo nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel \
+            --defaults
+
+      - name: Remove the signer
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/nbunksec"

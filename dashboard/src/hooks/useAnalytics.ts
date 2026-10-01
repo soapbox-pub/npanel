@@ -2,6 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-qu
 
 import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useServer } from '@/hooks/useServer';
 import type { StatsQueryBody } from '@/lib/analytics/query';
 
 /** How often the live view refreshes, as Plausible's does. */
@@ -12,7 +13,8 @@ export const DETAILS_PAGE = 100;
 
 function useKey(...parts: unknown[]) {
   const { user } = useCurrentUser();
-  return ['npanel', user?.pubkey ?? 'anonymous', 'stats', ...parts];
+  const { origin } = useServer();
+  return ['npanel', origin, user?.pubkey ?? 'anonymous', 'stats', ...parts];
 }
 
 /**

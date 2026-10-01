@@ -190,7 +190,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     let app = App {
         dashboard_host: "panel.example.com".into(),
         site,
-        dashboard: crate::dashboard::Dashboard::new(vec![dir.path().join("no-dashboard")], "panel.example.com", log),
+        dashboard: crate::dashboard::Dashboard::new(crate::dashboard::Source::disk(vec![dir.path().join("no-dashboard")]), "panel.example.com", log),
         api,
     };
 
@@ -418,6 +418,33 @@ async fn a_missing_blob_fails_the_deploy_and_says_why() {
     assert!(messages.contains(&"blob_unavailable"), "{messages:?}");
     assert_eq!(messages.last(), Some(&"deploy_failed"));
     assert_eq!(log["entries"][messages.iter().position(|m| *m == "blob_download_failed").unwrap()]["fields"]["status"], 404);
+
+    gw.deployer.stop().await;
+}
+
+/// What the dashboard published as an nsite does: talks to the API from an
+/// origin that isn't the dashboard's, signing for the API's own URL.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dashboard_on_another_origin_can_use_the_api() {
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![]), server: blossom(HashMap::new()).await });
+    let gw = gateway(nostr).await;
+    let origin = ("origin", "https://npanel.nsite.example");
+
+    let (status, headers, body) = gw.request("GET", "panel.example.com", "/api/instance", &[origin], None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap()["version"], env!("CARGO_PKG_VERSION"));
+
+    let preflight = [origin, ("access-control-request-method", "GET"), ("access-control-request-headers", "authorization")];
+    let (status, headers, _) = gw.request("OPTIONS", "panel.example.com", "/api/me", &preflight, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(headers["access-control-allow-headers"], "authorization");
+
+    let auth = sign_nip98(ADMIN, "GET", "https://panel.example.com/api/me", None, crate::util::now());
+    let (status, headers, _) = gw.request("GET", "panel.example.com", "/api/me", &[origin, ("authorization", &auth)], None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["access-control-allow-origin"], "*");
 
     gw.deployer.stop().await;
 }

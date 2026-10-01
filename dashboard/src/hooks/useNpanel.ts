@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
+import { useServer } from '@/hooks/useServer';
 import { fetchInstance, fetchSites } from '@/lib/api';
 import type { HostPatch, Settings } from '@/lib/api-types';
 
@@ -10,7 +11,8 @@ const LIVE_INTERVAL = 5000;
 
 function useKey(...parts: (string | number)[]) {
   const { user } = useCurrentUser();
-  return ['npanel', user?.pubkey ?? 'anonymous', ...parts];
+  const { origin } = useServer();
+  return ['npanel', origin, user?.pubkey ?? 'anonymous', ...parts];
 }
 
 export function useMe() {
@@ -30,9 +32,11 @@ export function useMe() {
  * in, and the answer is the same for everyone.
  */
 export function useInstance() {
+  const { origin } = useServer();
+
   return useQuery({
-    queryKey: ['npanel', 'instance'],
-    queryFn: () => fetchInstance(),
+    queryKey: ['npanel', origin, 'instance'],
+    queryFn: () => fetchInstance(origin),
     staleTime: Infinity,
   });
 }
@@ -84,9 +88,11 @@ export function useHosts() {
  * {@link useInstance}, because the homepage asks before anyone signs in.
  */
 export function usePublicSites() {
+  const { origin } = useServer();
+
   return useQuery({
-    queryKey: ['npanel', 'sites'],
-    queryFn: async () => (await fetchSites()).sites,
+    queryKey: ['npanel', origin, 'sites'],
+    queryFn: async () => (await fetchSites(origin)).sites,
   });
 }
 

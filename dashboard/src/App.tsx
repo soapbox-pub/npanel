@@ -10,6 +10,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { NostrLoginProvider } from '@nostrify/react/login';
 import { AppProvider } from '@/components/AppProvider';
+import { ServerProvider } from '@/components/ServerProvider';
 import { AppConfig } from '@/contexts/AppContext';
 import { APP_RELAYS } from '@/lib/appRelays';
 import AppRouter from './AppRouter';
@@ -52,9 +53,11 @@ export function App() {
             <NostrProvider>
               <TooltipProvider>
                 <Toaster />
-                <Suspense>
-                  <AppRouter />
-                </Suspense>
+                <ServerProvider>
+                  <Suspense>
+                    <AppRouter />
+                  </Suspense>
+                </ServerProvider>
               </TooltipProvider>
             </NostrProvider>
           </NostrLoginProvider>
