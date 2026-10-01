@@ -343,6 +343,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     eventually("the variables going live", async || gw.request("GET", "docs.example.com", "/_npanel/env.js", &[], None).await.0 == StatusCode::OK).await;
     let (_, headers, script) = gw.request("GET", "docs.example.com", "/_npanel/env.js?v=anything", &[], None).await;
     assert_eq!(headers["content-type"], "text/javascript; charset=utf-8");
+    assert_eq!(headers["cache-control"], "public, max-age=0, stale-while-revalidate=31536000");
     let script = String::from_utf8(script).unwrap();
     assert!(script.contains("\nself.ENV = {\"API_URL\":\"https://api.example.com\"};\n"), "{script}");
     let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;

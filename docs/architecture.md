@@ -212,11 +212,12 @@ is built, rather than on a request. Only headers are decided per request.
 
 Every script npanel adds to a page — `window.ENV` and the tracker — is loaded
 at a URL versioned by its contents, `/_npanel/script.js?v=<hash>`. The path
-answers whatever the query says, and the script is cached for an hour like any
+answers whatever the query says, and the tracker is cached for an hour like any
 other asset; the version is what lets a change reach visitors at once, since
 the pages naming it revalidate on every request and each change names a URL no
 cache has seen. An `ETag` alone would not do it: nothing asks for the script
-again until its hour is up.
+again until its hour is up. The env script is cached differently, for reasons
+of its own — see [environment variables](#environment-variables).
 
 The invariant goes up a level with it: **a host serves only its newest ready
 build**. A version that finishes deploying goes live on a host once that
@@ -587,6 +588,26 @@ there is no `window` but there is a `self`, so a site's service worker can
 
 The tag loads the script at a versioned URL, like every script npanel adds
 (see [builds](#builds)), so a changed value reaches visitors at once.
+
+Blocking the parser has a price: a browser puts no timeout on a script, so a
+request that hangs — on a connection that drops packets rather than failing —
+leaves the page blank for as long as it does. So the script is served with
+`max-age=0, stale-while-revalidate` for a year: a browser that has a copy runs
+it at once and refreshes it in the background, and never waits on the network
+for it. Only a first visit, or one after the browser evicted it, fetches the
+script before the page goes on, over the connection that has just delivered
+the page.
+
+A page from the network loses nothing by this. It names the current version,
+and a changed value is a new URL nothing has cached, fetched there and then.
+The difference is for a site with an offline shell, whose service worker hands
+back a page naming the version it was installed with: that page runs the copy
+it has, and sees a change one load later — the same lag the shell's own code
+has when it updates. Offline, it runs the last values it saw.
+
+Chrome and Edge 75, Firefox 68 and Safari 14 understand the directive. A
+browser that doesn't treats the script as `no-cache`, and waits on it every
+load as it waits on the page itself.
 
 The variables are part of the build's fingerprint, so changing one rebuilds the
 host and nothing else. They enter the fingerprint only when there are some, so

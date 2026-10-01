@@ -36,6 +36,7 @@ use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
 use crate::seo::canonical_link;
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
+use crate::site_env::ENV_PATH;
 use crate::sites::{find_host, normalize_site_path, resolve_site_path, ResolvedFile, ServedHost};
 use crate::util::{http_date, lowercase_extname};
 
@@ -58,6 +59,14 @@ pub struct RequestOrigin {
 /// only ever fetched by a document that revalidated first, so they get an hour.
 const CACHE_CONTROL: &str = "public, no-cache";
 const ASSET_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
+
+/// The env script blocks the parser, and a request for it that hangs has no
+/// timeout, so a browser holding a copy should never wait on the network for
+/// it: it runs what it has, for up to a year, and refreshes in the background.
+/// A page from the network names a new version when the values change, which
+/// nothing has cached, so it still gets them at once; only an offline shell
+/// naming the old version sees a change one load late.
+const ENV_CACHE_CONTROL: &str = "public, max-age=0, stale-while-revalidate=31536000";
 
 /// How long a browser may reuse a preflight result, in seconds.
 const PREFLIGHT_MAX_AGE: &str = "86400";
@@ -747,6 +756,9 @@ pub fn parse_range(header: Option<&str>, size: u64) -> Range {
 
 /// How long a file may be cached, by what kind of file it is.
 pub fn cache_control(path: &str) -> &'static str {
+    if path == ENV_PATH {
+        return ENV_CACHE_CONTROL;
+    }
     match &*lowercase_extname(path) {
         ".html" | ".htm" | ".xhtml" | ".json" | ".webmanifest" | ".xml" | ".txt" | ".md" => CACHE_CONTROL,
         _ => ASSET_CACHE_CONTROL,
@@ -809,6 +821,13 @@ mod tests {
         assert!(!matches_etag(Some("\"abc-br\""), "\"abc\""));
         let hash = BlobHash::of(b"abc");
         assert_eq!(etag_for(hash, Some(Encoding::Gzip)), format!("\"{hash}-gzip\""));
+    }
+
+    #[test]
+    fn caches() {
+        assert_eq!(cache_control("/index.html"), CACHE_CONTROL);
+        assert_eq!(cache_control("/app.js"), ASSET_CACHE_CONTROL);
+        assert_eq!(cache_control(ENV_PATH), ENV_CACHE_CONTROL);
     }
 
     #[test]
