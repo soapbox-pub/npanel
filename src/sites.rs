@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use indexmap::IndexMap;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
@@ -273,7 +274,12 @@ pub fn newest_by_path<T>(rows: Vec<T>, event_ids: &[String], key: impl Fn(&T) ->
 
 /// Record a manifest event and its file list. Returns false when the event
 /// was already stored, so callers can skip redeploying something already seen.
-pub fn store_manifest(conn: &mut Connection, event: &Event) -> rusqlite::Result<bool> {
+///
+/// A list longer than `max_files` is not expanded: the version is recorded,
+/// so its deploy can say why it was refused, but a row per file of a list
+/// nobody will deploy is the author's to make the gateway store, as often as
+/// they publish. [`expand_manifest_files`] fills it in if the limit is raised.
+pub fn store_manifest(conn: &mut Connection, event: &Event, max_files: i64) -> rusqlite::Result<bool> {
     let existing: Option<String> = conn
         .prepare_cached("SELECT event_id FROM site_events WHERE event_id = ?")?
         .query_row([&event.id], |row| row.get(0))
@@ -292,15 +298,30 @@ pub fn store_manifest(conn: &mut Connection, event: &Event) -> rusqlite::Result<
         &format!("INSERT INTO site_events ({SITE_EVENT_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, NULL)"),
         params![event.id, address.pubkey, address.kind, address.identifier, event.created_at, json, DeployStatus::Pending, paths.len() as i64, now],
     )?;
-    {
-        let mut insert = tx.prepare_cached("INSERT INTO site_files (event_id, path, sha256) VALUES (?, ?, ?)")?;
-        for (path, sha256) in &paths {
-            insert.execute(params![event.id, path, sha256])?;
-        }
+    if paths.len() as i64 <= max_files {
+        insert_files(&tx, &event.id, &paths)?;
     }
     tx.commit()?;
 
     Ok(true)
+}
+
+/// Record a stored version's file list, if [`store_manifest`] left it out.
+pub fn expand_manifest_files(conn: &mut Connection, event: &Event) -> rusqlite::Result<()> {
+    let tx = conn.transaction()?;
+    let present: bool = tx.prepare_cached("SELECT EXISTS (SELECT 1 FROM site_files WHERE event_id = ?)")?.query_row([&event.id], |r| r.get(0))?;
+    if !present {
+        insert_files(&tx, &event.id, &manifest_paths(event))?;
+    }
+    tx.commit()
+}
+
+fn insert_files(conn: &Connection, event_id: &str, paths: &IndexMap<String, BlobHash>) -> rusqlite::Result<()> {
+    let mut insert = conn.prepare_cached("INSERT INTO site_files (event_id, path, sha256) VALUES (?, ?, ?)")?;
+    for (path, sha256) in paths {
+        insert.execute(params![event_id, path, sha256])?;
+    }
+    Ok(())
 }
 
 /// A request path as resolution sees it: percent-decoded and rooted, so it
@@ -472,11 +493,36 @@ mod tests {
             sig: "0".repeat(128),
         };
         t.db.with(|conn| {
-            assert!(store_manifest(conn, &event)?);
-            assert!(!store_manifest(conn, &event)?);
+            assert!(store_manifest(conn, &event, 100)?);
+            assert!(!store_manifest(conn, &event, 100)?);
             let newest = newest_event(conn, &address())?.unwrap();
             assert_eq!(newest.files_total, 1);
             assert!(newest_ready_event(conn, &address())?.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn leaves_long_file_lists_until_wanted() {
+        let t = crate::db::testing::temp_db();
+        let event = Event {
+            id: "e".repeat(64),
+            pubkey: "a".repeat(64),
+            created_at: 5,
+            kind: 15128,
+            tags: vec![vec!["path".into(), "/a".into(), "d".repeat(64)], vec!["path".into(), "/b".into(), "f".repeat(64)]],
+            content: String::new(),
+            sig: "0".repeat(128),
+        };
+        let count = |conn: &Connection| conn.query_row("SELECT COUNT(*) FROM site_files", [], |r| r.get::<_, i64>(0));
+        t.db.with(|conn| {
+            assert!(store_manifest(conn, &event, 1)?);
+            assert_eq!(newest_event(conn, &address())?.unwrap().files_total, 2);
+            assert_eq!(count(conn)?, 0);
+            expand_manifest_files(conn, &event)?;
+            expand_manifest_files(conn, &event)?;
+            assert_eq!(count(conn)?, 2);
             Ok(())
         })
         .unwrap();

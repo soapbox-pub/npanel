@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::blobs::BlobStore;
+use crate::blobs::{BlobStore, DownloadReason};
 use crate::builds::HostBuilder;
 use crate::db::{DeployStatus, Db};
 use crate::fields;
@@ -41,12 +41,22 @@ use crate::nostr::Event;
 use crate::nsite_address::{NsiteAddress, SITE_KINDS};
 use crate::settings::Settings;
 use crate::sites::{
-    list_configured_sites, newest_event, prune_deploy_log, record_blob, record_variant_sizes, site_event, store_manifest,
-    write_deploy_log,
+    expand_manifest_files, list_configured_sites, newest_event, prune_deploy_log, record_blob, record_variant_sizes, site_event,
+    store_manifest, write_deploy_log,
 };
 
 /// Blobs downloaded in parallel within one deploy.
 const BLOB_CONCURRENCY: usize = 4;
+
+/// Blobs in a row no server could supply before a deploy stops trying the
+/// rest. Deploys take turns, and every attempt at a server that doesn't
+/// answer can take the download timeout, so a version whose servers are all
+/// dead would otherwise hold up every other site's for hours.
+const MAX_FAILURES_IN_A_ROW: usize = 16;
+
+/// Connection failures after which a server is skipped for the rest of a
+/// deploy.
+const MAX_SERVER_STRIKES: u32 = 3;
 
 /// Wait before a second attempt at a deploy. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -260,6 +270,7 @@ impl SyncWorker {
 
         let address = manifest_address(&event);
         let log = self.deps().log;
+        let max_files = self.deps().settings.get().max_site_files;
         let stored = {
             let event = event.clone();
             self.db(move |conn| {
@@ -271,7 +282,7 @@ impl SyncWorker {
                     log.debug("manifest_ignored", fields! { "pubkey" => event.pubkey.as_str(), "kind" => event.kind });
                     return Ok(false);
                 }
-                Ok(store_manifest(conn, &event)?)
+                Ok(store_manifest(conn, &event, max_files)?)
             })
             .await?
         };
@@ -570,8 +581,11 @@ impl SyncWorker {
         let event: Event = serde_json::from_str(&row.event)?;
 
         let id = event_id.to_string();
+        let manifest = event.clone();
         let files: Vec<(BlobHash, String)> = self
             .db(move |conn| {
+                // Left out when the version was stored under a lower limit.
+                expand_manifest_files(conn, &manifest)?;
                 conn.execute("UPDATE site_events SET status = ?, error = NULL WHERE event_id = ?", params![DeployStatus::FetchingBlobs, id])?;
                 Ok(conn
                     .prepare("SELECT sha256, path FROM site_files WHERE event_id = ?")?
@@ -659,13 +673,25 @@ impl SyncWorker {
             .await;
 
         let already = (hashes.len() - missing.len()) as i64;
-        let (failed, abandoned, bytes) =
+        let Downloads { failed, abandoned, bytes, downloaded, gave_up } =
             self.download_all(event_id, missing, &servers, &compressible, already, max_size.saturating_sub(stored)).await;
 
         // Ahead of the shutdown check: a deploy stopped for its size is
-        // finished, and resuming it would only download more of what it can't have.
+        // finished, and resuming it would only download more of what it can't
+        // have. What it did download is nobody else's, and would otherwise sit
+        // on disk until someone prunes: an author could publish one oversized
+        // version after another.
         if stored + bytes > max_size {
+            self.discard(event_id, downloaded).await;
             return Ok(Some(oversized(max_size, stored + bytes)));
+        }
+
+        if gave_up {
+            return Ok(Some(Outcome::Failed(format!(
+                "{} blobs in a row could not be downloaded from {} server(s), so npanel stopped trying the other {abandoned}.",
+                failed.len(),
+                servers.len(),
+            ))));
         }
 
         if abandoned > 0 {
@@ -688,13 +714,12 @@ impl SyncWorker {
         Ok(Some(Outcome::Ready))
     }
 
-    /// Download missing blobs with bounded concurrency. Returns the blobs no
-    /// server could supply, how many were never attempted because the worker
-    /// stopped, and the bytes downloaded.
+    /// Download missing blobs with bounded concurrency.
     ///
     /// Nothing new is started once the downloads pass `budget` bytes: a
     /// manifest doesn't say how big its blobs are, so the limit is found by
-    /// crossing it, and the downloads under way bound the overshoot.
+    /// crossing it, and the downloads under way bound the overshoot. Nor once
+    /// [`MAX_FAILURES_IN_A_ROW`] blobs have failed with none succeeding.
     async fn download_all(
         &self,
         event_id: &str,
@@ -703,18 +728,20 @@ impl SyncWorker {
         compressible: &HashSet<BlobHash>,
         already: i64,
         budget: u64,
-    ) -> (Vec<BlobHash>, usize, u64) {
+    ) -> Downloads {
         let max_file_size = self.deps().settings.get().max_file_size as u64;
+        let strikes = Mutex::new(HashMap::new());
         let mut queue = missing.into_iter();
         let mut downloading = FuturesUnordered::new();
-        let (mut failed, mut bytes, mut ready) = (Vec::new(), 0u64, already);
+        let (mut failed, mut downloaded, mut bytes, mut ready, mut in_a_row) = (Vec::new(), Vec::new(), 0u64, already, 0);
 
         loop {
-            while downloading.len() < BLOB_CONCURRENCY && self.running() && bytes <= budget {
+            while downloading.len() < BLOB_CONCURRENCY && self.running() && bytes <= budget && in_a_row < MAX_FAILURES_IN_A_ROW {
                 let Some(sha256) = queue.next() else { break };
                 let compress = compressible.contains(&sha256);
+                let strikes = &strikes;
                 downloading.push(async move {
-                    let size = self.download_blob(event_id, sha256, servers, max_file_size, compress).await;
+                    let size = self.download_blob(event_id, sha256, servers, strikes, max_file_size, compress).await;
                     (sha256, size)
                 });
             }
@@ -723,21 +750,68 @@ impl SyncWorker {
                 Some(size) => {
                     bytes += size;
                     ready += 1;
+                    in_a_row = 0;
+                    downloaded.push(sha256);
                     let _ = self.set_progress(event_id, ready).await;
                 }
-                None => failed.push(sha256),
+                None => {
+                    in_a_row += 1;
+                    failed.push(sha256);
+                }
             }
         }
 
-        (failed, queue.count(), bytes)
+        let gave_up = in_a_row >= MAX_FAILURES_IN_A_ROW && self.running();
+        Downloads { failed, abandoned: queue.count(), bytes, downloaded, gave_up }
+    }
+
+    /// Delete blobs a refused deploy downloaded, unless another version or a
+    /// build has since come to need them.
+    async fn discard(&self, event_id: &str, downloaded: Vec<BlobHash>) {
+        let (blobs, id) = (self.deps().blobs.clone(), event_id.to_string());
+        let result = self
+            .db(move |conn| {
+                let mut deleted = 0;
+                for sha256 in downloaded {
+                    let wanted: bool = conn
+                        .prepare_cached(
+                            "SELECT EXISTS (SELECT 1 FROM site_files WHERE sha256 = ?1 AND event_id <> ?2)
+                                 OR EXISTS (SELECT 1 FROM host_build_files WHERE sha256 = ?1)",
+                        )?
+                        .query_row(params![sha256, id], |r| r.get(0))?;
+                    if !wanted {
+                        conn.execute("DELETE FROM blobs WHERE sha256 = ?", [sha256])?;
+                        blobs.delete(sha256);
+                        deleted += 1;
+                    }
+                }
+                Ok(deleted)
+            })
+            .await;
+        match result {
+            Ok(deleted) => self.deploy_log(event_id, "info", "blobs_discarded", fields! { "blobs" => deleted }).await,
+            Err(error) => self.deps().log.error("blob_discard_failed", with_err(fields! { "event_id" => event_id }, error)),
+        }
     }
 
     /// Try each server in turn for one blob. Returns its size, or `None` if no
-    /// server had it.
-    async fn download_blob(&self, event_id: &str, sha256: BlobHash, servers: &[String], max_size: u64, compress: bool) -> Option<u64> {
+    /// server had it. A server that couldn't be reached [`MAX_SERVER_STRIKES`]
+    /// times in this deploy isn't asked again.
+    async fn download_blob(
+        &self,
+        event_id: &str,
+        sha256: BlobHash,
+        servers: &[String],
+        strikes: &Mutex<HashMap<String, u32>>,
+        max_size: u64,
+        compress: bool,
+    ) -> Option<u64> {
         let cancel = self.cancel_token();
 
         for server in servers {
+            if strikes.lock().get(server).is_some_and(|n| *n >= MAX_SERVER_STRIKES) {
+                continue;
+            }
             let url = blob_url(server, sha256.hex().as_str());
             match self.deps().blobs.download(&url, sha256, max_size, &cancel).await {
                 Ok(size) => {
@@ -763,6 +837,9 @@ impl SyncWorker {
                     return Some(size);
                 }
                 Err(error) => {
+                    if matches!(error.reason, DownloadReason::Network | DownloadReason::Blocked) {
+                        *strikes.lock().entry(server.clone()).or_insert(0) += 1;
+                    }
                     let fields = fields! {
                         "sha256" => sha256,
                         "server" => server.as_str(),
@@ -909,6 +986,19 @@ impl SyncWorker {
             self.deps().log.error("deploy_failed", fields! { "event_id" => event_id, "err_msg" => error });
         }
     }
+}
+
+/// What downloading a version's missing blobs came to.
+struct Downloads {
+    /// The blobs no server could supply.
+    failed: Vec<BlobHash>,
+    /// How many were never attempted: the worker stopped, the size budget ran
+    /// out, or too many failed in a row.
+    abandoned: usize,
+    bytes: u64,
+    downloaded: Vec<BlobHash>,
+    /// Whether it stopped for [`MAX_FAILURES_IN_A_ROW`].
+    gave_up: bool,
 }
 
 async fn sleep_until(at: Option<Instant>) {

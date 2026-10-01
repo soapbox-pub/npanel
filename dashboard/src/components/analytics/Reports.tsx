@@ -33,6 +33,21 @@ interface Tab {
   list: ReportList | 'map';
 }
 
+/**
+ * The page a Top Pages row names, on its own site, or `undefined` when the
+ * recorded path wouldn't stay there. Paths are whatever a sender reported, so
+ * one beginning `.evil.com/` or `@evil.com/` would otherwise lead elsewhere.
+ */
+function pageUrl(hostname: string, path: string): string | undefined {
+  if (!path.startsWith('/') || path.startsWith('//')) return undefined;
+  try {
+    const url = new URL(path, `https://${hostname}`);
+    return url.host === hostname ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The report a single-value `is` filter drills a list down into, if it has one. */
 function drilldown(state: DashboardState, key: FilterKey, list: ReportList, into: ReportList): ReportList {
   const filter = findFilter(state, key);
@@ -233,9 +248,9 @@ function ListView({ list, hostname, state, onChange, onDetails }: CardProps & { 
                   {label}
                 </span>
               </button>
-              {list.pages && (
+              {list.pages && pageUrl(hostname, label) && (
                 <a
-                  href={`https://${hostname}${label}`}
+                  href={pageUrl(hostname, label)}
                   target="_blank"
                   rel="noreferrer noopener"
                   aria-label={`Open ${label}`}

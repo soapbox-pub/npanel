@@ -12,6 +12,9 @@ use serde_json::Value;
 /// URLs and referrers longer than this are refused or cut, as Plausible does.
 const MAX_URL: usize = 2000;
 
+/// Most sites one event may be reported to. The tracker names one.
+const MAX_DOMAINS: usize = 10;
+
 /// Longest event name accepted.
 const MAX_NAME: usize = 120;
 
@@ -129,7 +132,10 @@ fn parse_url(value: Option<&Value>, error: &mut impl FnMut(&str, String)) -> Opt
         error("url", "must be a valid url".into());
         return None;
     };
-    if url.scheme() == "data" {
+    // Plausible refuses only `data:`, but a page npanel serves is only ever
+    // http or https, and the path of anything else is not a path: the
+    // dashboard links each page as `https://<site><path>`.
+    if url.scheme() != "https" && url.scheme() != "http" {
         error("url", "scheme is not allowed".into());
         return None;
     }
@@ -147,10 +153,20 @@ fn parse_domains(value: Option<&Value>, url: Option<&url::Url>, error: &mut impl
         return Vec::new();
     }
 
-    match raw {
-        None => vec![sanitize_hostname(host)],
-        Some(raw) => raw.split(',').map(sanitize_hostname).filter(|d| !d.is_empty()).collect(),
+    let Some(raw) = raw else {
+        return vec![sanitize_hostname(host)];
+    };
+    // Each is recorded separately, so a site named twice would count twice.
+    let mut domains: Vec<String> = Vec::new();
+    for domain in raw.split(',').map(sanitize_hostname).filter(|d| !d.is_empty()) {
+        if !domains.contains(&domain) {
+            domains.push(domain);
+        }
     }
+    if domains.len() > MAX_DOMAINS {
+        error("domain", format!("should name at most {MAX_DOMAINS} sites"));
+    }
+    domains
 }
 
 /// A page's path as Plausible records it: decoded, and with its route in hash
@@ -239,5 +255,13 @@ mod tests {
         assert_eq!(errors["domain"], ["can't be blank"]);
         let errors = parse_event_request(r#"{"n":"x","u":"data:text/plain,hi","d":"a.com"}"#).unwrap_err();
         assert_eq!(errors["url"], ["scheme is not allowed"]);
+        let errors = parse_event_request(r#"{"n":"x","u":"x:.evil.com/login","d":"a.com"}"#).unwrap_err();
+        assert_eq!(errors["url"], ["scheme is not allowed"]);
+        let many = ["a.com"; 5].join(",");
+        let event = parse_event_request(&format!(r#"{{"n":"x","u":"https://a.com/","d":"{many},www.a.com"}}"#)).unwrap();
+        assert_eq!(event.domains, ["a.com"]);
+        let many = (0..11).map(|i| format!("s{i}.com")).collect::<Vec<_>>().join(",");
+        let errors = parse_event_request(&format!(r#"{{"n":"x","u":"https://a.com/","d":"{many}"}}"#)).unwrap_err();
+        assert!(errors["domain"][0].contains("at most 10"));
     }
 }

@@ -101,7 +101,10 @@ impl Ingest {
         Pending { events: std::mem::take(&mut self.events), sessions, dropped: std::mem::take(&mut self.dropped) }
     }
 
-    /// Handle one request body. `hosts` names the sites by hostname; the
+    /// Handle one request body. `hosts` names the sites by hostname, and
+    /// `site` is the host whose hostname the request arrived on: the only one
+    /// it may record for. The tracker always reports to its own site, and
+    /// without this anyone could fill any site's figures from anywhere. The
     /// flag is whether the buffer asked to be written now.
     pub fn handle(
         &mut self,
@@ -109,6 +112,7 @@ impl Ingest {
         body: &str,
         sender: &Sender,
         hosts: &HashMap<String, AnalyticsHost>,
+        site: Option<i64>,
         now: i64,
     ) -> (Received, bool) {
         let event = match parse_event_request(body) {
@@ -126,7 +130,7 @@ impl Ingest {
             for domain in &event.domains {
                 // `d` arrives without `www.`, which a site configured under its
                 // `www` name still has to be found by.
-                let host = hosts.get(domain).or_else(|| hosts.get(&format!("www.{domain}")));
+                let host = hosts.get(domain).or_else(|| hosts.get(&format!("www.{domain}"))).filter(|h| Some(h.id) == site);
                 match self.record(store, &event, domain, host, sender, now) {
                     Some(full) => flush |= full,
                     None => dropped += 1,
@@ -245,6 +249,17 @@ impl Ingest {
     }
 }
 
+/// Longest attribution value a session keeps. Each is the sender's to choose,
+/// and an open session sits in memory for its whole visit.
+const MAX_ATTRIBUTE: usize = 300;
+
+fn clip(mut value: String) -> String {
+    if let Some((at, _)) = value.char_indices().nth(MAX_ATTRIBUTE) {
+        value.truncate(at);
+    }
+    value
+}
+
 /// A session's attributes, all taken from the event that began it.
 fn attributes(event: &EventRequest, device: Option<&Device>, location: Location) -> SessionAttributes {
     let url = &event.url;
@@ -277,14 +292,14 @@ fn attributes(event: &EventRequest, device: Option<&Device>, location: Location)
 
     let device = device.cloned().unwrap_or_default();
     SessionAttributes {
-        referrer: found.referrer,
-        source: found.source,
+        referrer: clip(found.referrer),
+        source: clip(found.source),
         channel,
-        utm_medium,
-        utm_source,
-        utm_campaign,
-        utm_content: query_param(url, "utm_content").unwrap_or_default(),
-        utm_term: query_param(url, "utm_term").unwrap_or_default(),
+        utm_medium: clip(utm_medium),
+        utm_source: clip(utm_source),
+        utm_campaign: clip(utm_campaign),
+        utm_content: clip(query_param(url, "utm_content").unwrap_or_default()),
+        utm_term: clip(query_param(url, "utm_term").unwrap_or_default()),
         click_id_param: click_id_param.to_string(),
         country: location.country,
         region: location.region,
@@ -321,7 +336,12 @@ mod tests {
         ]
         .into();
         let sender = Sender { ip: "203.0.113.5", user_agent: UA };
-        let mut handle = |body: &str, sender: &Sender, now: i64| ingest.handle(&store, body, sender, &hosts, now).0;
+        let mut handle_on = |site: i64, body: &str, sender: &Sender, now: i64| ingest.handle(&store, body, sender, &hosts, Some(site), now).0;
+
+        // Sent to one site naming another: not kept.
+        let received = handle_on(2, r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#, &sender, 990);
+        assert_eq!(dropped(&received), Some(1));
+        let mut handle = |body: &str, sender: &Sender, now: i64| handle_on(1, body, sender, now);
 
         let received = handle(r#"{"n":"pageview","u":"https://docs.example.com/?utm_source=google","d":"docs.example.com","r":null}"#, &sender, 1000);
         assert_eq!(dropped(&received), Some(0));

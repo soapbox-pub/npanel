@@ -5,7 +5,11 @@
 //! identity, not authorization: npanel is not permissionless, so a pubkey with
 //! no row in `users` is refused by the caller.
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
+
 use base64::Engine;
+use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::nostr::Event;
@@ -64,7 +68,9 @@ pub fn verify_nip98(
     if !event.verify() {
         return fail("Auth event signature is invalid.");
     }
-    if (now - event.created_at).abs() > MAX_AUTH_AGE {
+    // Unsigned arithmetic: `created_at` is anything the signer likes, and the
+    // difference of two i64s can overflow.
+    if now.abs_diff(event.created_at) > MAX_AUTH_AGE as u64 {
         return fail("Auth event expired. Check your device's clock.");
     }
     if !event.tag("method").is_some_and(|m| m.eq_ignore_ascii_case(method)) {
@@ -96,6 +102,34 @@ pub fn verify_nip98(
     }
 
     Ok(event)
+}
+
+/// Auth events already spent on a request, so a captured header can't be
+/// sent again while its `created_at` is still in the window.
+///
+/// Known by signature rather than id. An id is the hash of what the event
+/// says, so two identical requests signed in the same second share one; their
+/// signatures differ, since signers sign with fresh randomness, while a
+/// replay is the very same bytes. Kept only for requests that change
+/// something, so a signer that does sign deterministically can still load two
+/// views at once.
+#[derive(Default)]
+pub struct SpentEvents(Mutex<HashMap<String, i64>>);
+
+impl SpentEvents {
+    /// Mark an event spent. False if it already was.
+    pub fn spend(&self, event: &Event, now: i64) -> bool {
+        let mut spent = self.0.lock();
+        // Past this an event fails the window check anyway.
+        spent.retain(|_, expires| *expires >= now);
+        match spent.entry(event.sig.clone()) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(event.created_at.saturating_add(MAX_AUTH_AGE));
+                true
+            }
+        }
+    }
 }
 
 /// A signed `Authorization` header, for tests.
@@ -141,5 +175,20 @@ mod tests {
         assert!(verify_nip98(None, "GET", "/", b"", "x", NOW).unwrap_err().0.starts_with("Missing"));
         assert!(check("Bearer x", "GET", "/", b"").unwrap_err().0.contains("Nostr scheme"));
         assert!(check("Nostr !!!", "GET", "/", b"").unwrap_err().0.contains("base64"));
+
+        // Dated so far off that subtracting overflows.
+        let ancient = sign_nip98(SECRET, "GET", "https://panel.example.com/api/me", None, i64::MIN);
+        assert!(check(&ancient, "GET", "/api/me", b"").unwrap_err().0.contains("expired"));
+    }
+
+    #[test]
+    fn spends_once() {
+        let spent = SpentEvents::default();
+        let header = sign_nip98(SECRET, "DELETE", "https://panel.example.com/api/hosts/a", None, NOW);
+        let event = check(&header, "DELETE", "/api/hosts/a", b"").unwrap();
+        assert!(spent.spend(&event, NOW));
+        assert!(!spent.spend(&event, NOW + 30));
+        // Forgotten once the window has closed on it.
+        assert!(spent.spend(&event, NOW + MAX_AUTH_AGE + 1));
     }
 }

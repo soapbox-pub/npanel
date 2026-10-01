@@ -334,7 +334,15 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "contact_npub" => Ok(contact_npub(string(value)?.trim())?.into()),
         "public_site_list" | "tor_enabled" => boolean(value),
         "tor_control_url" => Ok(tor_control_url(string(value)?.trim())?.into()),
-        "tor_control_password" => Ok(string(value)?.into()),
+        "tor_control_password" => {
+            // Control commands are lines, so a line break would end this one
+            // and start another.
+            let password = string(value)?;
+            if password.chars().any(char::is_control) {
+                return Err("The password can't contain line breaks or other control characters.".into());
+            }
+            Ok(password.into())
+        }
         "analytics_timezone" => Ok(time_zone(string(value)?.trim())?.into()),
         _ => Err("Unknown setting.".into()),
     }
@@ -489,6 +497,7 @@ mod tests {
         assert_eq!(parse_setting("tor_control_url", &json!("tcp://127.0.0.1:9051")).unwrap(), json!("tcp://127.0.0.1:9051"));
         assert!(parse_setting("tor_control_url", &json!("tcp://127.0.0.1")).is_err());
         assert!(parse_setting("tor_control_url", &json!("unix:run/tor")).is_err());
+        assert!(parse_setting("tor_control_password", &json!("a\r\nSIGNAL HALT")).is_err());
         assert_eq!(parse_setting("analytics_timezone", &json!("europe/berlin")).unwrap(), json!("Europe/Berlin"));
         assert!(parse_setting("analytics_timezone", &json!("Mars/Olympus")).is_err());
         let hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";

@@ -9,9 +9,23 @@
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
+
+/// Tor's authentication cookie is always exactly this long.
+const COOKIE_LEN: u64 = 32;
+
+const SAFECOOKIE_SERVER_KEY: &[u8] = b"Tor safe cookie authentication server-to-controller hash";
+const SAFECOOKIE_CLIENT_KEY: &[u8] = b"Tor safe cookie authentication controller-to-server hash";
+
+/// The longest line, and the most text in one reply, npanel will take from
+/// the control port. Tor's replies to the handful of commands npanel sends
+/// are a few hundred bytes.
+const MAX_LINE: usize = 16 * 1024;
+const MAX_REPLY: usize = 256 * 1024;
 
 /// How long a command waits for its reply. Generous, because `ADD_ONION` does
 /// key generation before it answers; it exists so that a Tor which stops
@@ -149,16 +163,32 @@ impl TorControl {
             return Ok(());
         }
 
-        if let Some(path) = cookie_file.filter(|_| methods.contains(&"COOKIE") || methods.contains(&"SAFECOOKIE")) {
-            // Plain COOKIE rather than SAFECOOKIE's challenge-response: the
-            // difference only matters to something that can read the socket,
-            // which on loopback or a unix socket can read the cookie file too.
-            let cookie = tokio::fs::read(&path).await.map_err(|e| {
-                anyhow!(
-                    "Could not read Tor's authentication cookie at {path}: {e}. The user npanel runs as has to be in the group that owns it — on Debian and Ubuntu that is debian-tor."
-                )
-            })?;
-            self.command(&format!("AUTHENTICATE {}", hex::encode(cookie))).await?;
+        // SAFECOOKIE, never plain COOKIE. The path comes from whatever answered
+        // on the control port, and plain COOKIE would send that file's
+        // contents straight back to it: anything listening there could name
+        // npanel's database and be handed it. SAFECOOKIE makes the other end
+        // prove it knows the cookie before anything derived from it is sent.
+        // Every Tor since 0.2.3 that offers COOKIE offers SAFECOOKIE too.
+        if let Some(path) = cookie_file.filter(|_| methods.contains(&"SAFECOOKIE")) {
+            let cookie = read_cookie(&path).await?;
+            let client_nonce: [u8; 32] = rand::random();
+            let challenge = self.command(&format!("AUTHCHALLENGE SAFECOOKIE {}", hex::encode(client_nonce))).await?;
+            let line = challenge.lines.first().map(String::as_str).unwrap_or("");
+            let value = |key: &str| {
+                line.split_whitespace().find_map(|p| p.strip_prefix(key)).and_then(|v| hex::decode(v).ok())
+            };
+            let (Some(server_hash), Some(server_nonce)) = (value("SERVERHASH="), value("SERVERNONCE=")) else {
+                bail!("Tor's answer to the authentication challenge was malformed.");
+            };
+            let message = [cookie.as_slice(), &client_nonce, &server_nonce].concat();
+            let mut expected = Hmac::<Sha256>::new_from_slice(SAFECOOKIE_SERVER_KEY).expect("HMAC takes a key of any length");
+            expected.update(&message);
+            if expected.verify_slice(&server_hash).is_err() {
+                bail!("The control port at this address did not prove it knows Tor's authentication cookie, so npanel did not authenticate to it.");
+            }
+            let mut client = Hmac::<Sha256>::new_from_slice(SAFECOOKIE_CLIENT_KEY).expect("HMAC takes a key of any length");
+            client.update(&message);
+            self.command(&format!("AUTHENTICATE {}", hex::encode(client.finalize().into_bytes()))).await?;
             return Ok(());
         }
 
@@ -179,6 +209,9 @@ impl TorControl {
 
     /// Send one command once every command before it has been answered.
     async fn command(&self, command: &str) -> Result<Reply> {
+        if command.contains(['\r', '\n']) {
+            bail!("A Tor control command can't contain a line break.");
+        }
         let mut guard = self.writer.lock().await;
         let (writer, replies) = &mut *guard;
         if self.closed.is_cancelled() {
@@ -218,16 +251,24 @@ async fn read_replies(reader: Box<dyn AsyncRead + Send + Unpin>, tx: mpsc::Sende
     let mut lines: Vec<String> = Vec::new();
     let mut data_block: Option<Vec<String>> = None;
     let mut buffer = String::new();
+    let mut reply_size = 0;
 
     loop {
         buffer.clear();
+        let mut line_reader = (&mut reader).take(MAX_LINE as u64);
         let read = tokio::select! {
-            read = reader.read_line(&mut buffer) => read,
+            read = line_reader.read_line(&mut buffer) => read,
             _ = closed.cancelled() => return,
         };
         match read {
             Ok(0) | Err(_) => break,
             Ok(_) => {}
+        }
+        // A line that fills the cap without ending, or a reply that runs on
+        // past any Tor would send, is not Tor. Hang up rather than buffer it.
+        reply_size += buffer.len();
+        if !buffer.ends_with('\n') || reply_size > MAX_REPLY {
+            break;
         }
         let line = buffer.trim_end_matches(['\r', '\n']).to_string();
 
@@ -258,6 +299,7 @@ async fn read_replies(reader: Box<dyn AsyncRead + Send + Unpin>, tx: mpsc::Sende
             _ => {
                 lines.push(rest);
                 let reply = Reply { code, lines: std::mem::take(&mut lines) };
+                reply_size = 0;
                 // 6xx is an asynchronous event, which owes nothing to any command.
                 if code >= 600 {
                     continue;
@@ -270,6 +312,27 @@ async fn read_replies(reader: Box<dyn AsyncRead + Send + Unpin>, tx: mpsc::Sende
     }
 
     closed.cancel();
+}
+
+/// Read Tor's authentication cookie, refusing anything that isn't one: the
+/// path is only the control port's say-so.
+async fn read_cookie(path: &str) -> Result<Vec<u8>> {
+    let unreadable = |e: std::io::Error| {
+        anyhow!(
+            "Could not read Tor's authentication cookie at {path}: {e}. The user npanel runs as has to be in the group that owns it — on Debian and Ubuntu that is debian-tor."
+        )
+    };
+    let file = tokio::fs::File::open(path).await.map_err(unreadable)?;
+    let metadata = file.metadata().await.map_err(unreadable)?;
+    if !metadata.is_file() || metadata.len() != COOKIE_LEN {
+        bail!("{path} is not a Tor authentication cookie, which is a file of exactly {COOKIE_LEN} bytes.");
+    }
+    let mut cookie = Vec::with_capacity(COOKIE_LEN as usize);
+    file.take(COOKIE_LEN).read_to_end(&mut cookie).await.map_err(unreadable)?;
+    if cookie.len() as u64 != COOKIE_LEN {
+        bail!("{path} is not a Tor authentication cookie, which is a file of exactly {COOKIE_LEN} bytes.");
+    }
+    Ok(cookie)
 }
 
 /// The value of a `Key=Value` line, if the reply carries one.
@@ -306,6 +369,67 @@ mod tests {
         assert_eq!(quote(r#"a"b\c"#), r#""a\"b\\c""#);
         assert_eq!(quoted(r#""/run/tor/control.authcookie" rest"#), "/run/tor/control.authcookie");
         assert_eq!(quoted(r#""a\"b""#), "a\"b");
+    }
+
+    /// A fake Tor offering SAFECOOKIE, which knows the cookie only if `honest`.
+    async fn safecookie_tor(cookie_path: String, cookie: Vec<u8>, honest: bool) -> (u16, tokio::task::JoinHandle<Vec<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut lines = BufReader::new(r).lines();
+            let mut seen = Vec::new();
+            let server_nonce = [7u8; 32];
+            while let Ok(Some(line)) = lines.next_line().await {
+                seen.push(line.clone());
+                let reply = if line.starts_with("PROTOCOLINFO") {
+                    format!("250-PROTOCOLINFO 1\r\n250-AUTH METHODS=COOKIE,SAFECOOKIE COOKIEFILE=\"{cookie_path}\"\r\n250 OK\r\n")
+                } else if let Some(nonce) = line.strip_prefix("AUTHCHALLENGE SAFECOOKIE ") {
+                    let known = if honest { cookie.clone() } else { vec![0; 32] };
+                    let mut mac = Hmac::<Sha256>::new_from_slice(SAFECOOKIE_SERVER_KEY).unwrap();
+                    mac.update(&[known.as_slice(), &hex::decode(nonce).unwrap(), &server_nonce].concat());
+                    format!(
+                        "250 AUTHCHALLENGE SERVERHASH={} SERVERNONCE={}\r\n",
+                        hex::encode(mac.finalize().into_bytes()),
+                        hex::encode(server_nonce)
+                    )
+                } else if line.starts_with("AUTHENTICATE ") {
+                    "250 OK\r\n".to_string()
+                } else {
+                    "552 Unrecognized\r\n".to_string()
+                };
+                w.write_all(reply.as_bytes()).await.unwrap();
+            }
+            seen
+        });
+        (port, task)
+    }
+
+    #[tokio::test]
+    async fn safecookie_needs_tor_to_know_the_cookie() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("control.authcookie");
+        let cookie = vec![42u8; 32];
+        std::fs::write(&path, &cookie).unwrap();
+        let path = path.to_str().unwrap().to_string();
+
+        let (port, _) = safecookie_tor(path.clone(), cookie.clone(), true).await;
+        let control = TorControl::connect(&format!("tcp://127.0.0.1:{port}"), "").await.unwrap();
+        control.close();
+
+        let (port, task) = safecookie_tor(path.clone(), cookie.clone(), false).await;
+        let error = TorControl::connect(&format!("tcp://127.0.0.1:{port}"), "").await.err().unwrap();
+        assert!(error.to_string().contains("did not prove"));
+        let seen = task.await.unwrap();
+        assert!(!seen.iter().any(|l| l.starts_with("AUTHENTICATE")));
+        assert!(!seen.iter().any(|l| l.contains(&hex::encode(&cookie))));
+
+        // Anything but a 32-byte file is refused before it is read.
+        std::fs::write(&path, vec![1u8; 4096]).unwrap();
+        let (port, _) = safecookie_tor(path, cookie, true).await;
+        let error = TorControl::connect(&format!("tcp://127.0.0.1:{port}"), "").await.err().unwrap();
+        assert!(error.to_string().contains("exactly 32 bytes"));
     }
 
     /// A fake Tor that speaks just enough of the protocol.

@@ -18,7 +18,7 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +32,21 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
+
+/// The largest message taken from a relay. Relays themselves commonly refuse
+/// events a fraction this size, so it is room for a manifest of tens of
+/// thousands of files, and not much more.
+const MAX_MESSAGE: usize = 4 << 20;
+
+/// Bytes of events received and not yet handled, per query or subscription.
+/// Any relay an author names can send as many events of theirs as it likes,
+/// each signed and each matching, so what waits is bounded by size rather
+/// than count; past this, events are dropped until the reader catches up.
+const MAX_QUEUED_KIB: usize = 32 << 10;
+
+/// How far ahead of this clock an event may be dated. Anything later would
+/// stand as an address's newest version until that date came.
+const MAX_FUTURE: i64 = 15 * 60;
 
 /// A NIP-01 filter, as the subset npanel sends.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -74,14 +89,15 @@ impl Filter {
 /// What a relay said about one subscription.
 #[derive(Debug)]
 enum Reply {
-    Event(Event),
+    /// With its share of the queued-bytes budget, given back when dropped.
+    Event(Event, OwnedSemaphorePermit),
     /// Stored events are done, or the relay gave up on the subscription, or
     /// never connected: either way nothing more is coming for a query.
     Done,
 }
 
 enum Command {
-    Subscribe { id: String, filters: Arc<Vec<Filter>>, replies: mpsc::Sender<Reply> },
+    Subscribe { id: String, filters: Arc<Vec<Filter>>, replies: mpsc::Sender<Reply>, budget: Arc<Semaphore> },
     Close { id: String },
 }
 
@@ -117,10 +133,15 @@ impl Pool {
         tx
     }
 
-    /// Collect the stored events matching `filters` from `relays`, until each
-    /// relay is done or `timeout` passes.
+    /// Collect the newest stored event for each address matching `filters`
+    /// from `relays`, until each relay is done or `timeout` passes.
+    ///
+    /// Only the newest per address is kept as they arrive, since that is all
+    /// anything asks for, and an author can otherwise have a relay of theirs
+    /// send every version they ever signed.
     pub async fn query(&self, filters: Vec<Filter>, relays: &[String], timeout: Duration, cancel: &CancellationToken) -> Vec<Event> {
         let filters = Arc::new(filters);
+        let budget = Arc::new(Semaphore::new(MAX_QUEUED_KIB));
         let (tx, mut rx) = mpsc::channel(1024);
         let id = crate::util::random_hex(8);
 
@@ -128,7 +149,12 @@ impl Pool {
         for (index, url) in relays.iter().enumerate() {
             let relay = self.relay(url);
             let (relay_tx, mut relay_rx) = mpsc::channel(4096);
-            let _ = relay.send(Command::Subscribe { id: format!("{id}{index}"), filters: filters.clone(), replies: relay_tx });
+            let _ = relay.send(Command::Subscribe {
+                id: format!("{id}{index}"),
+                filters: filters.clone(),
+                replies: relay_tx,
+                budget: budget.clone(),
+            });
             let tx = tx.clone();
             handles.push((relay, format!("{id}{index}")));
             tokio::spawn(async move {
@@ -142,16 +168,23 @@ impl Pool {
         }
         drop(tx);
 
-        let mut events: HashMap<String, Event> = HashMap::new();
+        let mut events: HashMap<(i64, String, String), Event> = HashMap::new();
         let mut done = 0;
         let deadline = Instant::now() + timeout;
 
         while done < relays.len() {
             tokio::select! {
                 reply = rx.recv() => match reply {
-                    Some(Reply::Event(event)) => {
+                    Some(Reply::Event(event, _)) => {
                         if filters.iter().any(|f| f.matches(&event)) {
-                            events.entry(event.id.clone()).or_insert(event);
+                            let address = (event.kind, event.pubkey.clone(), address_identifier(&event));
+                            // The first seen wins a tie.
+                            match events.get(&address) {
+                                Some(kept) if kept.created_at >= event.created_at => {}
+                                _ => {
+                                    events.insert(address, event);
+                                }
+                            }
                         }
                     }
                     Some(Reply::Done) => done += 1,
@@ -174,15 +207,18 @@ impl Pool {
     /// asked again.
     pub fn subscribe(&self, filters: Vec<Filter>, relays: &[String], cancel: CancellationToken) -> mpsc::Receiver<Event> {
         let filters = Arc::new(filters);
-        let (out, rx) = mpsc::channel(1024);
+        // One at a time: what waits for the reader waits in `replies`, where
+        // the budget counts it.
+        let (out, rx) = mpsc::channel(1);
         let (tx, mut replies) = mpsc::channel::<Reply>(4096);
+        let budget = Arc::new(Semaphore::new(MAX_QUEUED_KIB));
         let id = crate::util::random_hex(8);
 
         let mut handles = Vec::new();
         for (index, url) in relays.iter().enumerate() {
             let relay = self.relay(url);
             let sub = format!("{id}{index}");
-            let _ = relay.send(Command::Subscribe { id: sub.clone(), filters: filters.clone(), replies: tx.clone() });
+            let _ = relay.send(Command::Subscribe { id: sub.clone(), filters: filters.clone(), replies: tx.clone(), budget: budget.clone() });
             handles.push((relay, sub));
         }
         drop(tx);
@@ -192,7 +228,7 @@ impl Pool {
             loop {
                 tokio::select! {
                     reply = replies.recv() => match reply {
-                        Some(Reply::Event(event)) => {
+                        Some(Reply::Event(event, _permit)) => {
                             if !filters.iter().any(|f| f.matches(&event)) || !seen.insert(event.id.clone()) {
                                 continue;
                             }
@@ -222,6 +258,7 @@ impl Pool {
 struct Subscription {
     filters: Arc<Vec<Filter>>,
     replies: mpsc::Sender<Reply>,
+    budget: Arc<Semaphore>,
     /// Whether it has been answered with EOSE on this connection, so a query
     /// isn't told it is done twice.
     done: bool,
@@ -277,7 +314,7 @@ async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, 
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 match command {
-                    Command::Subscribe { id, filters, replies } => {
+                    Command::Subscribe { id, filters, replies, budget } => {
                         if let Some(ws) = socket.as_mut() {
                             if !send_req(ws, &id, &filters).await {
                                 socket = None;
@@ -286,7 +323,7 @@ async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, 
                             // Down and waiting to retry: a query shouldn't wait too.
                             let _ = replies.try_send(Reply::Done);
                         }
-                        subs.insert(id, Subscription { filters, replies, done: retry_at.is_some() && socket.is_none() });
+                        subs.insert(id, Subscription { filters, replies, budget, done: retry_at.is_some() && socket.is_none() });
                     }
                     Command::Close { id } => {
                         if subs.remove(&id).is_some() {
@@ -391,8 +428,8 @@ async fn open(url: &str, public_only: bool) -> Result<Socket, String> {
     let stream = stream.ok_or(last_error)?;
 
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-        .max_message_size(Some(16 << 20))
-        .max_frame_size(Some(16 << 20));
+        .max_message_size(Some(MAX_MESSAGE))
+        .max_frame_size(Some(MAX_MESSAGE));
     let (ws, _) = tokio_tungstenite::client_async_tls_with_config(url, stream, Some(config), None).await.map_err(|e| e.to_string())?;
     Ok(ws)
 }
@@ -420,10 +457,14 @@ fn handle_message(text: &str, subs: &mut HashMap<String, Subscription>) {
             let Some(event) = message.get(2).and_then(|e| serde_json::from_value::<Event>(e.clone()).ok()) else {
                 return;
             };
-            if !sub.filters.iter().any(|f| f.matches(&event)) || !event.verify() {
+            if event.created_at > crate::util::now() + MAX_FUTURE || !sub.filters.iter().any(|f| f.matches(&event)) || !event.verify() {
                 return;
             }
-            let _ = sub.replies.try_send(Reply::Event(event));
+            let kib = u32::try_from(text.len().div_ceil(1024)).unwrap_or(u32::MAX);
+            let Ok(permit) = sub.budget.clone().try_acquire_many_owned(kib) else {
+                return;
+            };
+            let _ = sub.replies.try_send(Reply::Event(event, permit));
         }
         Some("EOSE") if !sub.done => {
             sub.done = true;
@@ -436,6 +477,17 @@ fn handle_message(text: &str, subs: &mut HashMap<String, Subscription>) {
             subs.remove(sub_id);
         }
         _ => {}
+    }
+}
+
+/// What tells apart the versions of one address: a `d` tag for an
+/// addressable kind, and nothing for a replaceable one, which has one per
+/// author. Anything else is its own address.
+fn address_identifier(event: &Event) -> String {
+    match event.kind {
+        30000..40000 => event.tag("d").unwrap_or("").to_string(),
+        0 | 3 | 10000..20000 => String::new(),
+        _ => event.id.clone(),
     }
 }
 
@@ -452,6 +504,39 @@ mod tests {
         assert!(!Filter { d: vec!["blog".into()], ..filter.clone() }.matches(&event));
         assert!(!Filter { since: Some(200), ..filter.clone() }.matches(&event));
         assert_eq!(filter.to_json(), json!({ "kinds": [35128], "authors": [event.pubkey], "#d": ["docs"], "since": 50 }));
+    }
+
+    #[test]
+    fn refuses_future_events_and_spends_a_budget() {
+        let secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        let (tx, mut rx) = mpsc::channel(16);
+        let budget = Arc::new(Semaphore::new(1));
+        let filters = Arc::new(vec![Filter::default()]);
+        let mut subs = HashMap::from([("s".to_string(), Subscription { filters, replies: tx, budget: budget.clone(), done: false })]);
+        let message = |event: &Event| json!(["EVENT", "s", event]).to_string();
+
+        let future = Event::sign(secret, crate::util::now() + 3600, 15128, vec![], "");
+        handle_message(&message(&future), &mut subs);
+        assert!(rx.try_recv().is_err());
+
+        let now = Event::sign(secret, crate::util::now(), 15128, vec![], "");
+        handle_message(&message(&now), &mut subs);
+        let received = rx.try_recv().unwrap();
+        // The budget is spent until the event is handled.
+        handle_message(&message(&Event::sign(secret, crate::util::now(), 10002, vec![], "")), &mut subs);
+        assert!(rx.try_recv().is_err());
+        drop(received);
+        assert_eq!(budget.available_permits(), 1);
+    }
+
+    #[test]
+    fn addresses() {
+        let secret = "0000000000000000000000000000000000000000000000000000000000000001";
+        let named = Event::sign(secret, 1, 35128, vec![vec!["d".into(), "docs".into()]], "");
+        assert_eq!(address_identifier(&named), "docs");
+        assert_eq!(address_identifier(&Event::sign(secret, 1, 10002, vec![], "")), "");
+        let note = Event::sign(secret, 1, 1, vec![], "");
+        assert_eq!(address_identifier(&note), note.id);
     }
 
     #[tokio::test]

@@ -37,6 +37,11 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// outbox.
 pub const MAX_AUTHOR_RELAYS: usize = 5;
 
+/// Most Blossom servers taken from a manifest and its author's list together.
+/// A blob is asked of each in turn until one has it, so every extra name is
+/// another request per missing file, at an address of the author's choosing.
+pub const MAX_AUTHOR_SERVERS: usize = 8;
+
 /// What the sync worker asks of Nostr. A trait so tests can stand in for the
 /// relays.
 pub trait NostrSource: Send + Sync {
@@ -182,12 +187,10 @@ impl NostrSource for NostrService {
     fn blob_sources<'a>(&'a self, manifest: &'a Event, fallbacks: &'a [String], cancel: &'a CancellationToken) -> BoxFuture<'a, Vec<String>> {
         Box::pin(async move {
             let author_servers = self.get_author_servers(&manifest.pubkey, cancel).await;
-            let servers = server_tags(manifest)
-                .into_iter()
-                .chain(author_servers)
-                .chain(fallbacks.iter().cloned())
-                .filter_map(|server| normalize_server(&server));
-            dedupe(servers)
+            let named = server_tags(manifest).into_iter().chain(author_servers).filter_map(|server| normalize_server(&server));
+            // The admin's fallbacks are not the author's to crowd out.
+            let named = dedupe(named).into_iter().take(MAX_AUTHOR_SERVERS);
+            dedupe(named.chain(fallbacks.iter().filter_map(|server| normalize_server(server))))
         })
     }
 

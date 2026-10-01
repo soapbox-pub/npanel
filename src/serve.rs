@@ -36,7 +36,7 @@ use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
 use crate::seo::canonical_link;
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
-use crate::sites::{find_host, resolve_site_path, ResolvedFile, ServedHost};
+use crate::sites::{find_host, normalize_site_path, resolve_site_path, ResolvedFile, ServedHost};
 use crate::util::{http_date, lowercase_extname};
 
 /// Where a request came from, as settled by the listener that accepted it.
@@ -69,6 +69,11 @@ const HOST_TTL: Duration = Duration::from_secs(60);
 
 /// Resolved paths to keep. Overflowing it costs a query, never correctness.
 const MAX_CACHED_PATHS: usize = 5000;
+
+/// The longest path whose resolution is kept. A request's path can be tens of
+/// kilobytes, and the cache is keyed on it: a stranger sending long made-up
+/// paths would otherwise fill it with hundreds of megabytes of them.
+const MAX_CACHED_PATH_LEN: usize = 1024;
 
 /// The build a hostname serves, with the response fields derived from it.
 #[derive(Clone, Debug)]
@@ -184,7 +189,14 @@ impl SiteServer {
         // endpoint, which the tracker in every counting site's build reports
         // to. Ahead of everything, preflights included.
         if request.uri().path() == EVENT_PATH {
-            return self.deps.analytics.forward_event(request, peer).await;
+            let site = match self.deps.serve_cache.lookup(&origin.hostname).await {
+                Ok(site) => site.map(|site| site.host.host.id),
+                Err(error) => {
+                    self.deps.log.error("site_unavailable", with_err(fields! { "hostname" => origin.hostname.as_str(), "path" => EVENT_PATH }, &error));
+                    return text(StatusCode::SERVICE_UNAVAILABLE, "This site is temporarily unavailable. Try again in a moment.");
+                }
+            };
+            return self.deps.analytics.forward_event(request, site, peer).await;
         }
 
         if request.method() == Method::OPTIONS && request.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
@@ -231,7 +243,10 @@ impl SiteServer {
 
         // Set on everything rather than only on what varied, because a cache
         // has to be told before it stores the first response.
-        headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+        headers.append(header::VARY, HeaderValue::from_static("accept-encoding"));
+        // Types come from file extensions, which are the author's to choose;
+        // a browser second-guessing them would run a `.txt` as a script.
+        headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 
         if let Some(site) = &site {
             advertise_onion(request, origin, &site.host, &mut response);
@@ -337,7 +352,32 @@ impl SiteServer {
             return Ok(builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response"));
         }
 
-        let range = match parse_range(header_str(&request.headers, header::RANGE), size) {
+        // A GET is measured by the bytes it sends. The recorded size describes
+        // the same file, but if the two ever disagreed, a `Content-Length` the
+        // body doesn't match is a response hyper aborts, and a range past the
+        // body's end a slice that panics.
+        let bytes = if request.method == Method::HEAD {
+            None
+        } else {
+            match self.open(file.sha256, encoding).await {
+                Ok(bytes) => Some(bytes),
+                Err(error) => {
+                    log.error(
+                        "blob_missing",
+                        fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.to_string(), "err_msg" => error.to_string() },
+                    );
+                    return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
+                }
+            }
+        };
+        let size = bytes.as_ref().map_or(size, |bytes| bytes.len() as u64);
+
+        // A range is of this representation only: not of a not-found page
+        // standing in for what was asked, and not of a version the client
+        // didn't name in `If-Range`.
+        let ranged = file.status != 404 && header_str(&request.headers, header::IF_RANGE).is_none_or(|tag| tag == etag);
+        let requested = if ranged { header_str(&request.headers, header::RANGE) } else { None };
+        let range = match parse_range(requested, size) {
             Range::Unsatisfiable => {
                 return Ok(builder
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
@@ -364,22 +404,12 @@ impl SiteServer {
             None => builder.header(header::CONTENT_LENGTH, size),
         };
 
-        if request.method == Method::HEAD {
+        let Some(bytes) = bytes else {
             return Ok(builder.status(status).body(Body::empty()).expect("response"));
-        }
-
-        let bytes = match self.open(file.sha256, encoding).await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                log.error(
-                    "blob_missing",
-                    fields! { "hostname" => hostname, "path" => file.path.as_str(), "sha256" => file.sha256.to_string(), "err_msg" => error.to_string() },
-                );
-                return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
-            }
         };
+        // `parse_range` keeps both ends within `size`, which is this length.
         let body = match range {
-            Some((start, end)) => bytes.slice(start as usize..(end as usize + 1).min(bytes.len())),
+            Some((start, end)) => bytes.slice(start as usize..=end as usize),
             None => bytes,
         };
 
@@ -413,9 +443,12 @@ impl SiteServer {
     async fn resolve(&self, build_id: i64, path: &str, spa: bool) -> anyhow::Result<Option<ResolvedFile>> {
         // The SPA flag is part of the key because it is read per request rather
         // than built in: switching it must not have to wait for a rebuild.
-        let key = (build_id, spa, path.to_string());
-        if let Some(cached) = self.paths.lock().get(&key) {
-            return Ok(cached.clone());
+        // Keyed on the path as resolution sees it, so spellings of one path
+        // share an entry.
+        let normalized = normalize_site_path(path);
+        let key = (normalized.len() <= MAX_CACHED_PATH_LEN).then_some((build_id, spa, normalized));
+        if let Some(cached) = key.as_ref().and_then(|key| self.paths.lock().get(key).cloned()) {
+            return Ok(cached);
         }
 
         let request_path = path.to_string();
@@ -427,7 +460,7 @@ impl SiteServer {
 
         // A path the build has no file for is cached too — the file list that
         // settled that is as immutable as the one that resolves a hit.
-        if file.as_ref().is_none_or(|file| file.variants.is_some()) {
+        if let Some(key) = key.filter(|_| file.as_ref().is_none_or(|file| file.variants.is_some())) {
             self.paths.lock().put(key, file.clone());
         }
         Ok(file)
@@ -455,6 +488,9 @@ impl SiteServer {
                 // A 301 with no freshness of its own is cached until the browser
                 // restarts, which would outlive an admin switching it back off.
                 .header(header::CACHE_CONTROL, "public, max-age=3600")
+                // The scheme is the proxy's word, so a shared cache must not
+                // hand one scheme's redirect to a request that came in on the other.
+                .header(header::VARY, "x-forwarded-proto")
                 .body(Body::empty())
                 .expect("response"),
         ))

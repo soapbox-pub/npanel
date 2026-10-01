@@ -175,6 +175,8 @@ impl BlobStore {
     fn build(dir: &Path, public_only: bool) -> BlobStore {
         let mut http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            // A proxy would do the resolving, past `PublicResolver`.
+            .no_proxy()
             .user_agent(concat!("npanel/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10));
         if public_only {
@@ -319,9 +321,9 @@ impl BlobStore {
             bail!(fail(format!("Expected {sha256}, got {digest}"), DownloadReason::HashMismatch, None));
         }
 
-        let tmp = self.temp_path()?;
+        let tmp = self.temp_file()?;
         std::fs::write(&tmp, bytes)?;
-        self.commit(&tmp, sha256)?;
+        self.commit(tmp, sha256)?;
         Ok(bytes.len() as u64)
     }
 
@@ -366,7 +368,7 @@ impl BlobStore {
             }
         }
 
-        let tmp = self.temp_path().map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+        let tmp = self.temp_file().map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
         let result = async {
             let mut file = tokio::io::BufWriter::with_capacity(
                 256 * 1024,
@@ -402,13 +404,10 @@ impl BlobStore {
 
         match result {
             Ok(size) => {
-                self.commit(&tmp, sha256).map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
+                self.commit(tmp, sha256).map_err(|e| fail(e.to_string(), DownloadReason::Network, None))?;
                 Ok(size)
             }
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -521,17 +520,17 @@ impl BlobStore {
         let _ = std::fs::remove_dir_all(&self.inner.tmp);
     }
 
-    fn temp_path(&self) -> Result<PathBuf> {
+    fn temp_file(&self) -> Result<TempFile> {
         std::fs::create_dir_all(&self.inner.tmp)?;
-        Ok(self.inner.tmp.join(crate::util::random_hex(16)))
+        Ok(TempFile { path: self.inner.tmp.join(crate::util::random_hex(16)), kept: false })
     }
 
-    fn commit(&self, tmp: &Path, sha256: BlobHash) -> Result<()> {
+    fn commit(&self, tmp: TempFile, sha256: BlobHash) -> Result<()> {
         let target = self.path(sha256);
         if let Some(dir) = target.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::rename(tmp, &target)?;
+        tmp.keep_as(&target)?;
         Ok(())
     }
 
@@ -539,9 +538,9 @@ impl BlobStore {
     /// worth keeping. Streamed through a temp file, for the same reason
     /// downloads are: an interrupted pass must not leave a truncated variant.
     fn write_variant(&self, sha256: BlobHash, encoding: Encoding, size: u64) -> Result<bool> {
-        let tmp = self.temp_path()?;
+        let tmp = self.temp_file()?;
 
-        let result = (|| -> Result<bool> {
+        (|| -> Result<bool> {
             let mut input = std::io::BufReader::with_capacity(256 * 1024, std::fs::File::open(self.path(sha256))?);
             let output = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&tmp)?);
 
@@ -570,14 +569,47 @@ impl BlobStore {
             if compressed as f64 > size as f64 * (1.0 - MIN_SAVING) {
                 return Ok(false);
             }
-            std::fs::rename(&tmp, self.variant_path(sha256, encoding))?;
+            tmp.keep_as(&self.variant_path(sha256, encoding))?;
             Ok(true)
-        })();
+        })()
+    }
+}
 
-        if !matches!(result, Ok(true)) {
-            let _ = std::fs::remove_file(&tmp);
+/// A file in the store's `tmp`, removed when dropped unless it was renamed
+/// into place. A download is a future, and one dropped by a timeout or a
+/// cancel never reaches cleanup of its own, so the cleanup can't be code that
+/// runs after it.
+struct TempFile {
+    path: PathBuf,
+    kept: bool,
+}
+
+impl TempFile {
+    fn keep_as(mut self, target: &Path) -> std::io::Result<()> {
+        std::fs::rename(&self.path, target)?;
+        self.kept = true;
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for TempFile {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TempFile {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.kept {
+            let _ = std::fs::remove_file(&self.path);
         }
-        result
     }
 }
 
@@ -662,5 +694,39 @@ mod tests {
         assert_eq!(error.reason, DownloadReason::Blocked);
         let error = store.download("ftp://example.com/x", hash, 1000, &cancel).await.unwrap_err();
         assert_eq!(error.reason, DownloadReason::Blocked);
+    }
+
+    /// A server that sends part of a body and stalls leaves nothing behind
+    /// once the download is abandoned.
+    #[tokio::test]
+    async fn abandoned_downloads_leave_no_temp_file() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n").await.unwrap();
+            stream.write_all(&[b'x'; 50_000]).await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlobStore::allowing_private(dir.path());
+        let cancel = CancellationToken::new();
+        let url = format!("http://127.0.0.1:{port}/x");
+        let hash = BlobHash::from_bytes([0xaa; 32]);
+        let download = store.download(&url, hash, 1_000_000, &cancel);
+        let stop = async {
+            // Long enough for the partial body to reach the temp file.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(download, stop);
+        assert!(result.is_err());
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("tmp")).unwrap().collect();
+        assert!(left.is_empty());
     }
 }

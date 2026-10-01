@@ -35,6 +35,7 @@ use axum::response::IntoResponse;
 use http::{header, HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use parking_lot::{Mutex, RwLock};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use self::geo::Geo;
@@ -45,6 +46,7 @@ use self::store::AnalyticsStore;
 use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
+use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::settings::Settings;
 
 /// The largest event accepted. A real one is a few hundred bytes.
@@ -57,6 +59,20 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60);
 
 /// How long an event forwarded to the analytics runtime may take.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the sender has to deliver an event's body.
+const EVENT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Events one address may send: a burst of this many, refilled over
+/// [`EVENT_LIMIT_INTERVAL_MS`]. A visitor sends one per page and one as they
+/// leave it, so this is far past anyone reading.
+const EVENT_LIMIT: RateLimit = RateLimit { capacity: 60.0, interval_ms: 60_000.0 };
+/// Addresses whose budgets are remembered.
+const EVENT_LIMIT_KEYS: usize = 10_000;
+
+/// Events waiting for, or being handled on, the analytics runtime. Each
+/// holds its body until it is handled, and past this the sender is asked to
+/// come back rather than queued behind everyone else.
+const MAX_QUEUED_EVENTS: usize = 256;
 /// How long a dashboard query may take. A year of a busy site is a lot of rows.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -86,6 +102,13 @@ fn starting() -> Answer {
 
 fn restarted() -> Answer {
     Answer::error(StatusCode::SERVICE_UNAVAILABLE, "Analytics restarted before answering. Try again in a moment.")
+}
+
+fn too_many() -> Response<Body> {
+    let mut response =
+        (StatusCode::TOO_MANY_REQUESTS, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Too many events. Slow down.").into_response();
+    response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("10"));
+    response
 }
 
 fn too_slow() -> Answer {
@@ -128,6 +151,9 @@ struct Shared {
 
 pub struct Analytics {
     shared: Arc<Shared>,
+    /// Events per sending address.
+    limits: Mutex<RateLimiter>,
+    queued: Arc<Semaphore>,
     shutdown: CancellationToken,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -150,7 +176,13 @@ impl Analytics {
             }
         });
 
-        Analytics { shared, shutdown, thread: Mutex::new(Some(thread)) }
+        Analytics {
+            shared,
+            limits: Mutex::new(RateLimiter::new(EVENT_LIMIT_KEYS)),
+            queued: Arc::new(Semaphore::new(MAX_QUEUED_EVENTS)),
+            shutdown,
+            thread: Mutex::new(Some(thread)),
+        }
     }
 
     /// Stop the runtime, letting it write what it has buffered first.
@@ -172,15 +204,17 @@ impl Analytics {
     }
 
     /// Record an event, read on the listener that received it and handed to
-    /// the analytics runtime. `peer` is the connection's address, which only
-    /// counts when the proxy didn't name the visitor; a listener whose peer
-    /// is never the visitor — Tor's — passes `None`.
+    /// the analytics runtime. `site` is the host the request's hostname
+    /// names, the only one it may record for. `peer` is the connection's
+    /// address, behind which the proxy names the visitor; a listener with no
+    /// proxy in front and whose peer is never the visitor — Tor's — passes
+    /// `None`, and nothing in the request is taken as the visitor's address.
     ///
     /// The tracker posts `text/plain`, which spares it a preflight, but a
     /// client of Plausible's API may send JSON and preflight it, so both are
     /// met.
-    pub async fn forward_event(&self, request: Request<Body>, peer: Option<IpAddr>) -> Response<Body> {
-        let mut response = self.receive(request, peer).await;
+    pub async fn forward_event(&self, request: Request<Body>, site: Option<i64>, peer: Option<IpAddr>) -> Response<Body> {
+        let mut response = self.receive(request, site, peer).await;
         let headers = response.headers_mut();
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
         headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("POST, OPTIONS"));
@@ -188,7 +222,7 @@ impl Analytics {
         response
     }
 
-    async fn receive(&self, request: Request<Body>, peer: Option<IpAddr>) -> Response<Body> {
+    async fn receive(&self, request: Request<Body>, site: Option<i64>, peer: Option<IpAddr>) -> Response<Body> {
         let (parts, body) = request.into_parts();
         if parts.method == Method::OPTIONS {
             return StatusCode::NO_CONTENT.into_response();
@@ -196,17 +230,34 @@ impl Analytics {
         if parts.method != Method::POST {
             return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST, OPTIONS")], "Send events with POST.").into_response();
         }
-        let Some(body) = read_capped(&parts.headers, body, MAX_EVENT_BODY).await else {
-            return (StatusCode::PAYLOAD_TOO_LARGE, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Request body is too large.").into_response();
+
+        let forwarded_for = parts.headers.get_all("x-forwarded-for").iter().next_back().and_then(|v| v.to_str().ok());
+        let ip = client_ip(forwarded_for, peer);
+        // Over Tor there is no address to tell senders apart by, so they
+        // share only the queue's bound.
+        if peer.is_some() && !self.limits.lock().take(&ip, EVENT_LIMIT) {
+            return too_many();
+        }
+        let Ok(permit) = self.queued.clone().try_acquire_owned() else {
+            return too_many();
+        };
+
+        let body = match tokio::time::timeout(EVENT_READ_TIMEOUT, read_capped(&parts.headers, body, MAX_EVENT_BODY)).await {
+            Ok(Some(body)) => body,
+            Ok(None) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Request body is too large.")
+                    .into_response()
+            }
+            Err(_) => {
+                return (StatusCode::REQUEST_TIMEOUT, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "The request body took too long to arrive.")
+                    .into_response()
+            }
         };
         let Some(worker) = self.worker() else {
             return starting().into_response();
         };
 
-        let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
-        let user_agent = header("user-agent").unwrap_or_default();
-        let peer = peer.map(|ip| ip.to_string()).unwrap_or_default();
-        let ip = client_ip(header("x-forwarded-for").as_deref(), header("x-real-ip").as_deref(), &peer);
+        let user_agent = parts.headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
         let hosts = self.shared.hosts.read().clone();
         let log = self.shared.log;
 
@@ -215,8 +266,9 @@ impl Analytics {
         let task = worker.runtime.spawn_blocking({
             let worker = worker.clone();
             move || {
-                let (received, full) =
-                    worker.ingest.lock().handle(&worker.store, &body, &Sender { ip: &ip, user_agent: &user_agent }, &hosts, crate::util::now());
+                let _permit = permit;
+                let sender = Sender { ip: &ip, user_agent: &user_agent };
+                let (received, full) = worker.ingest.lock().handle(&worker.store, &body, &sender, &hosts, site, crate::util::now());
                 if full {
                     flush(&worker, &log);
                 }
@@ -352,7 +404,8 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
             let mut ticks = tokio::time::interval(SWEEP_EVERY);
             loop {
                 ticks.tick().await;
-                worker.ingest.lock().sessions.sweep(crate::util::now());
+                let w = worker.clone();
+                let _ = tokio::task::spawn_blocking(move || w.ingest.lock().sessions.sweep(crate::util::now())).await;
             }
         })
     };
@@ -372,10 +425,15 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
 /// The visitor's address, used to tell visitors apart and to place them, and
 /// then forgotten. The proxy's word for it, since behind one the socket is
 /// always the proxy.
-fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, socket: &str) -> String {
-    let forwarded = forwarded_for.and_then(|f| f.split(',').next()).map(str::trim).filter(|f| !f.is_empty());
-    let real = real_ip.map(str::trim).filter(|r| !r.is_empty());
-    forwarded.or(real).unwrap_or(socket).to_string()
+///
+/// Only the last `X-Forwarded-For` entry is the proxy's: a proxy appends the
+/// address it saw to whatever list the client sent, so everything before it
+/// is the client's own claim. With no `peer` there is no proxy either, and
+/// every header is the sender's to write, so there is no address at all.
+fn client_ip(forwarded_for: Option<&str>, peer: Option<IpAddr>) -> String {
+    let Some(peer) = peer else { return String::new() };
+    let forwarded = forwarded_for.and_then(|f| f.rsplit(',').next()).map(str::trim).filter(|f| !f.is_empty());
+    forwarded.map_or_else(|| peer.to_string(), str::to_string)
 }
 
 /// Write what's pending. The in-memory state is only held long enough to take
@@ -447,8 +505,11 @@ mod tests {
 
     #[test]
     fn client_ips() {
-        assert_eq!(client_ip(Some("1.2.3.4, 10.0.0.1"), Some("5.6.7.8"), "9.9.9.9"), "1.2.3.4");
-        assert_eq!(client_ip(None, Some(" 5.6.7.8 "), "9.9.9.9"), "5.6.7.8");
-        assert_eq!(client_ip(Some(""), None, "9.9.9.9"), "9.9.9.9");
+        let proxy = Some(IpAddr::from([127, 0, 0, 1]));
+        assert_eq!(client_ip(Some("1.2.3.4, 5.6.7.8"), proxy), "5.6.7.8");
+        assert_eq!(client_ip(Some(" 5.6.7.8 "), proxy), "5.6.7.8");
+        assert_eq!(client_ip(Some(""), proxy), "127.0.0.1");
+        assert_eq!(client_ip(None, proxy), "127.0.0.1");
+        assert_eq!(client_ip(Some("5.6.7.8"), None), "");
     }
 }

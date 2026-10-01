@@ -59,7 +59,8 @@ impl Event {
         let pubkey = hex::encode(keypair.x_only_public_key().0.serialize());
         let id = Self::compute_id(&pubkey, created_at, kind, &tags, content);
         let digest = hex::decode(&id).expect("hex");
-        let sig = SECP256K1.sign_schnorr_no_aux_rand(&digest, &keypair);
+        // Fresh randomness, as real signers use: two signatures of one event differ.
+        let sig = SECP256K1.sign_schnorr_with_aux_rand(&digest, &keypair, &rand::random());
 
         Event { id, pubkey, created_at, kind, tags, content: content.to_string(), sig: hex::encode(sig.to_byte_array()) }
     }

@@ -273,7 +273,11 @@ Analytics events need no route of their own. Every site that counts visits
 reports to `/.npanel/api/event` on its own origin, and npanel hands each one to
 its analytics thread from the listener that received it. The proxy must set
 `X-Forwarded-For` to the visitor's address, which Caddy does; it is how
-visitors are told apart and placed, and is never stored.
+visitors are told apart and placed, and is never stored. Only the header's
+last entry is believed, since that is the one the proxy added — anything
+before it is whatever the visitor sent — so the proxy npanel listens behind
+has to be the one facing visitors. An event names the site it is for, but is
+only recorded for the site whose hostname it was sent to.
 
 An older Caddyfile has a `reverse_proxy /.npanel/api/event` line pointing at a
 third port, `3002`. Take it out when you upgrade: nothing listens there any

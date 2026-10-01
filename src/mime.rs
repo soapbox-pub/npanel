@@ -10,7 +10,7 @@ fn lookup(extension: &str) -> Option<&'static str> {
     Some(match extension {
         ".html" | ".htm" => "text/html; charset=utf-8",
         ".css" => "text/css; charset=utf-8",
-        ".js" | ".mjs" => "text/javascript; charset=utf-8",
+        ".js" | ".mjs" | ".cjs" => "text/javascript; charset=utf-8",
         ".json" | ".map" => "application/json; charset=utf-8",
         ".jsonld" => "application/ld+json",
         ".txt" | ".toml" => "text/plain; charset=utf-8",

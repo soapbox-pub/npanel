@@ -34,7 +34,7 @@ pub fn is_public_address_str(address: &str) -> bool {
 }
 
 fn is_private_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, ..] = address.octets();
+    let [a, b, c, _] = address.octets();
 
     a == 0 // 0.0.0.0/8, "this network"
         || a == 10 // private
@@ -42,7 +42,9 @@ fn is_private_ipv4(address: Ipv4Addr) -> bool {
         || (a == 100 && (64..=127).contains(&b)) // carrier-grade NAT
         || (a == 169 && b == 254) // link-local, incl. cloud metadata
         || (a == 172 && (16..=31).contains(&b)) // private
-        || (a == 192 && b == 0) // protocol assignments
+        || (a == 192 && b == 0 && (c == 0 || c == 2)) // protocol assignments, and TEST-NET-1
+        || (a == 198 && b == 51 && c == 100) // TEST-NET-2
+        || (a == 203 && b == 0 && c == 113) // TEST-NET-3
         || (a == 192 && b == 168) // private
         || (a == 198 && (b == 18 || b == 19)) // benchmarking
         || a >= 224 // multicast and reserved, incl. broadcast
@@ -144,6 +146,9 @@ mod tests {
             "169.254.169.254",
             "172.16.0.1",
             "192.0.0.1",
+            "192.0.2.1",
+            "198.51.100.1",
+            "203.0.113.1",
             "192.168.1.1",
             "198.18.0.1",
             "224.0.0.1",
@@ -166,7 +171,7 @@ mod tests {
         ] {
             assert!(!is_public_address_str(private), "{private} should be private");
         }
-        for public in ["1.1.1.1", "8.8.8.8", "2606:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808", "2002:808:808::"] {
+        for public in ["1.1.1.1", "8.8.8.8", "192.0.78.9", "2606:4700::1111", "::ffff:8.8.8.8", "64:ff9b::808:808", "2002:808:808::"] {
             assert!(is_public_address_str(public), "{public} should be public");
         }
     }
