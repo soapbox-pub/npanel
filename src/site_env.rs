@@ -85,13 +85,18 @@ pub fn host_env(conn: &Connection, host_id: i64) -> rusqlite::Result<Vec<(String
 /// visitor running the extension would have the script blocked and the site
 /// would run with no `window.ENV` at all. It is offered under the same terms
 /// as the tracker.
+///
+/// It assigns `self.ENV` rather than `window.ENV`: on a page the two are the
+/// same object, but a worker has a `self` and no `window`, so a site's service
+/// worker can `importScripts` the same file. `self` rather than `globalThis`
+/// for the engines older than ES2020 that the escaping above already allows.
 pub fn env_script(vars: &[(String, String)]) -> String {
     let values: serde_json::Map<String, serde_json::Value> = vars.iter().map(|(name, value)| (name.clone(), value.clone().into())).collect();
     let literal = serde_json::Value::Object(values).to_string().replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029");
 
     // Both tags must start their own line, and nothing but whitespace may
     // follow the closing one, or LibreJS treats what's outside as unlicensed.
-    [format!("// @license {EXPAT_MAGNET} Expat"), format!("window.ENV = {literal};"), "// @license-end".to_string(), String::new()].join("\n")
+    [format!("// @license {EXPAT_MAGNET} Expat"), format!("self.ENV = {literal};"), "// @license-end".to_string(), String::new()].join("\n")
 }
 
 #[cfg(test)]
@@ -126,7 +131,7 @@ mod tests {
         assert_eq!(
             script,
             format!(
-                "// @license {EXPAT_MAGNET} Expat\nwindow.ENV = {{\"API_URL\":\"https://api.example.com\",\"NOTE\":\"</script>\\u2028\\\"\"}};\n// @license-end\n"
+                "// @license {EXPAT_MAGNET} Expat\nself.ENV = {{\"API_URL\":\"https://api.example.com\",\"NOTE\":\"</script>\\u2028\\\"\"}};\n// @license-end\n"
             )
         );
     }

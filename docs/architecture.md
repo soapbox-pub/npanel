@@ -581,6 +581,10 @@ somewhere else. A `<meta>` Content Security Policy after it is widened all the
 same, since npanel sends a declared policy as a header, and a header covers
 the whole page.
 
+The script assigns `self.ENV`, which on a page is `window.ENV`. In a worker
+there is no `window` but there is a `self`, so a site's service worker can
+`importScripts` the same file and read the same variables.
+
 The tag loads the script at a versioned URL, like every script npanel adds
 (see [builds](#builds)), so a changed value reaches visitors at once.
 

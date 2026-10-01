@@ -344,7 +344,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     let (_, headers, script) = gw.request("GET", "docs.example.com", "/.npanel/env.js?v=anything", &[], None).await;
     assert_eq!(headers["content-type"], "text/javascript; charset=utf-8");
     let script = String::from_utf8(script).unwrap();
-    assert!(script.contains("\nwindow.ENV = {\"API_URL\":\"https://api.example.com\"};\n"), "{script}");
+    assert!(script.contains("\nself.ENV = {\"API_URL\":\"https://api.example.com\"};\n"), "{script}");
     let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
     let tag = format!(r#"<script src="{}"></script>"#, crate::inject::versioned_src(crate::site_env::ENV_PATH, script.as_bytes()));
     assert_eq!(String::from_utf8(served).unwrap(), page.replacen("<head>", &format!("<head>{tag}"), 1));
