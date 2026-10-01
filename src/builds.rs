@@ -50,11 +50,8 @@ use crate::sites::{
 /// every fingerprint, so a new npanel whose builds would come out differently
 /// rebuilds every host at startup.
 ///
-/// Up to 3 this was the TypeScript npanel's number too, and the two built the
-/// same bytes. 4 is where they part: pages are edited at tags found the way a
-/// browser's tokenizer finds them, rather than by patterns that took
-/// `</header>` for `</head>`. A gateway moving from one to the other rebuilds
-/// every host once, which is all a mismatch costs.
+/// 4 began editing pages at tags found the way a browser's tokenizer finds
+/// them, rather than by patterns that took `</header>` for `</head>`.
 ///
 /// 5 moved npanel's files from `/.npanel/` to `/_npanel/`, out of the way of
 /// proxies that refuse to pass dotfiles. Paths aren't otherwise in the
@@ -810,15 +807,15 @@ fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &L
     Ok(sha256)
 }
 
-/// A hash of everything a build's output depends on, serialized exactly as
-/// the TypeScript npanel serialized it, so that its builds count as current.
+/// A hash of everything a build's output depends on. Changing how it is
+/// serialized changes every fingerprint and rebuilds every host, so the
+/// serialization is pinned by a test.
 ///
 /// Anything that affects only headers — the CSP switch, SPA mode — is read per
 /// request and deliberately left out, so flipping one rebuilds nothing.
 ///
-/// `window.ENV` is left out too unless the host has variables, which the
-/// TypeScript npanel knows nothing of: a host without any hashes as it would
-/// there, given the same builder version.
+/// `window.ENV` is left out too unless the host has variables, so adding them
+/// to npanel didn't rebuild the hosts that have none.
 fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, env: Option<&str>) -> String {
     // A struct rather than `json!`, so the key order is fixed by the
     // declaration and not by a crate-wide serde_json feature.
@@ -828,7 +825,7 @@ fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: b
         origin: String,
         hostname: &'a str,
         chain: &'a [String],
-        /// 0 or 1, as the TypeScript npanel read it from the table.
+        /// 0 or 1, as stored in the table.
         seo: i64,
         tracker: Option<&'static str>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -861,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn fingerprints_like_typescript() {
+    fn fingerprint_serialization_is_stable() {
         let host = Host {
             id: 1,
             hostname: "docs.example.com".into(),
@@ -882,7 +879,7 @@ mod tests {
             updated_at: 0,
         };
         let origin = RequestOrigin { hostname: "docs.example.com".into(), scheme: "https" };
-        // The TypeScript npanel's serialization, down to the key order.
+        // Down to the key order: any change rebuilds every host.
         assert_eq!(
             fingerprint(&host, &origin, &["e1".into()], false, None),
             sha(&format!(

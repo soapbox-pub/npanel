@@ -8,9 +8,9 @@
 //! the attempt land in the deploy log, which would turn the deploy queue into
 //! an internal-network scanner.
 //!
-//! The TypeScript npanel checked a name and then let the runtime resolve it
-//! again to connect, which a DNS-rebinding attacker could race. Here the check
-//! *is* the resolver: [`PublicResolver`] is what the HTTP client connects
+//! Checking a name and then letting the HTTP client resolve it again to
+//! connect would leave a race for a DNS-rebinding attacker. So the check *is*
+//! the resolver: [`PublicResolver`] is what the HTTP client connects
 //! through, so the address checked is the address used.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

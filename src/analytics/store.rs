@@ -44,8 +44,7 @@ pub struct EventRow {
     pub scroll_depth: i64,
 }
 
-/// Migrations for the analytics database, as the TypeScript npanel defined
-/// them. Both tables are clustered by site and time, because every query
+/// Migrations for the analytics database. Both tables are clustered by site and time, because every query
 /// reads one site over one date range.
 const MIGRATIONS: &[(&str, &[&str])] = &[(
     "001_initial",

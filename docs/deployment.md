@@ -516,25 +516,6 @@ without any need to restart anything.
 asynchronous — a newly added site takes a moment. If it never arrives, look for
 `tor_onion_failed` in the log.
 
-## Moving from the TypeScript npanel
-
-This is a port of the Bun/TypeScript npanel, and it opens the same `DATA_DIR`:
-the database migrations are the same list under the same names, blobs are
-stored at the same paths with the same sidecars, and a build is fingerprinted
-the same way, so hosts built by one are current for the other and nothing is
-rebuilt. The API, the dashboard and the environment variables are unchanged.
-
-Stop the old service, point this one at the same `DATA_DIR` and `.env`, and
-start it. Keep a database backup from just before, as for any upgrade. Moving
-back works the same way, as long as no migration newer than the TypeScript
-npanel knows has run.
-
-A few answers differ from the old server's, all where Bun's HTTP layer departed
-from what the TypeScript code asked for: a `Range` request for a path that
-resolves to the site's `/404.html` gets a `404` rather than a `206`, an empty
-file is a `200` rather than a `204`, and a `HEAD` response carries the length
-its `GET` would have.
-
 ## The dashboard as an nsite
 
 Every release also publishes its dashboard as a named nsite, `npanel`, signed by

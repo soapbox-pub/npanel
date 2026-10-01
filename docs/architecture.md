@@ -253,10 +253,7 @@ output — is hashed into a fingerprint, and a host is rebuilt only where that
 differs from the build it is serving. Flipping a switch that only changes
 headers (`csp`, `spa`) therefore rebuilds nothing, and a new npanel whose
 builds would come out differently bumps `BUILDER_VERSION` and rebuilds
-everything at startup. The fingerprint is serialized exactly as the TypeScript
-npanel serializes it; the two shared a `BUILDER_VERSION` until 4, when this
-one began finding tags in a page the way a browser's tokenizer does, so moving
-between them now rebuilds every host once. A rename keeps the old build serving until the new one
+everything at startup. A rename keeps the old build serving until the new one
 names the new hostname.
 
 A build carries every file row it serves and references its versions by id
@@ -300,9 +297,8 @@ worst it costs is a dashboard save waiting a moment, never a visitor.
 ## Storage
 
 **SQLite** via `rusqlite`, with SQLite compiled in, at
-`DATA_DIR/npanel.sqlite3`. Migrations run at startup, and are the same list
-under the same names as the TypeScript npanel's (`src/db/migrations.rs`), so
-either opens the other's database. Analytics live in a database of their own
+`DATA_DIR/npanel.sqlite3`. Migrations run at startup
+(`src/db/migrations.rs`). Analytics live in a database of their own
 beside it — see [analytics](#analytics). Connections are pooled
 (`src/db/mod.rs`); each one maps the database into memory and keeps its
 prepared statements.
@@ -715,11 +711,6 @@ dashboard's queries. The listener that receives an event — the public one, or
 Tor's — reads its body, capped at 64 KiB, and hands it across whole. The
 runtime owns its database file and its caches outright; if it dies, another is
 started with backoff, and sites go on being served either way.
-
-It once had a port of its own too, a holdover from the TypeScript npanel, where
-Bun could only run a server on another thread by opening a listener there.
-Handing a few hundred bytes across runtimes costs nothing a second socket
-would save, so there is no longer a route for the proxy to configure.
 
 **Ingestion** follows Plausible's closely enough that anything written against
 its `POST /api/event` works here: the same fields and limits, the same

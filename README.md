@@ -19,41 +19,27 @@ when the relays and Blossom servers it came from are down.
   the way Plausible does — no cookies, nothing identifying stored — and shows
   them in a Plausible-style dashboard.
 
-This is the Rust implementation of npanel, a port of the Bun/TypeScript one.
-It opens the same data directory, speaks the
-same API and serves the same dashboard, so it is a drop-in replacement — see
-[moving from the TypeScript npanel](docs/deployment.md#moving-from-the-typescript-npanel).
-
 ## Performance
 
-Measured side by side on one machine against a copy of the same data directory,
-64 concurrent connections, 10 seconds per row:
+Measured on one machine, 64 concurrent connections, 10 seconds per row:
 
-| Request                               | Bun npanel | Rust npanel |
-| ------------------------------------- | ---------: | ----------: |
-| `index.html` (2 KB, brotli)           | 10,496/s   | 70,219/s    |
-| JS bundle (555 KB, 149 KB brotli)     | 7,514/s    | 28,856/s    |
-| Image (284 KB, identity)              | 5,643/s    | 15,756/s    |
-| Range request (1 KB)                  | 9,418/s    | 71,157/s    |
-| SPA fallback                          | 10,045/s   | 69,224/s    |
-| 404                                   | 9,412/s    | 75,010/s    |
-| 304 revalidation                      | 16,922/s   | 93,974/s    |
-| `GET /api/instance`                   | 19,352/s   | 92,065/s    |
-| Dashboard `index.html`                | 16,340/s   | 81,309/s    |
+| Request                               | Throughput |
+| ------------------------------------- | ---------: |
+| `index.html` (2 KB, brotli)           | 70,219/s   |
+| JS bundle (555 KB, 149 KB brotli)     | 28,856/s   |
+| Image (284 KB, identity)              | 15,756/s   |
+| Range request (1 KB)                  | 71,157/s   |
+| SPA fallback                          | 69,224/s   |
+| 404                                   | 75,010/s   |
+| 304 revalidation                      | 93,974/s   |
+| `GET /api/instance`                   | 92,065/s   |
+| Dashboard `index.html`                | 81,309/s   |
 
-Median latency drops from 4–11 ms to 0.6–3.7 ms. The two large files are
-limited by copying bytes over loopback rather than by npanel. Anonymous
-memory after serving load and a burst of analytics events is 119 MB against
-Bun's 171 MB; serving alone uses 35 MB. Host builds run two to four times
-faster, and the analytics user-agent parser — a Matomo port vendored in
-`vendor/device-detector` — parses in well under a millisecond.
-
-The same comparison checked that the two agree: every file of every site was
-requested from both with eight combinations of encoding, range, method and
-conditional headers (14,894 requests), and every API route and 1,053 analytics
-queries across three time zones were compared field by field. The differences
-that remain are all places where Bun's HTTP layer departs from what the
-TypeScript code asked for; they are listed in the deployment guide.
+Median latency is 0.6–3.7 ms. The two large files are limited by copying bytes
+over loopback rather than by npanel. Anonymous memory after serving load and a
+burst of analytics events is 119 MB; serving alone uses 35 MB. The analytics
+user-agent parser — a Matomo port vendored in `vendor/device-detector` — parses
+in well under a millisecond.
 
 ## Requirements
 

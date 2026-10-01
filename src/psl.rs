@@ -1,7 +1,7 @@
 //! The Public Suffix List, ICANN section only.
 //!
-//! This is the question `tldts` answered for the TypeScript npanel, answered
-//! the same way: private suffixes like `github.io` are not suffixes (so
+//! The dashboard asks `tldts` the same question, so this answers it the same
+//! way: private suffixes like `github.io` are not suffixes (so
 //! `foo.github.io` sits under the registrable domain `github.io`), and a name
 //! under a TLD the list doesn't know takes the implicit `*` rule, so
 //! `foo.localhost` is a registrable domain of its own. An IP address has no

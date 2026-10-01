@@ -1,7 +1,5 @@
-// Generated from the TypeScript npanel's src/db/migrations.ts: the same
-// names and the same SQL, so either implementation opens the other's
-// database. Append-only: never edit one that has shipped, add another. The
-// reasoning behind each is in the TypeScript source's comments.
+// Append-only: never edit one that has shipped, add another. Existing
+// databases have already run it, and record it by name.
 
 pub const MIGRATIONS: &[(&str, &[&str])] = &[
     (

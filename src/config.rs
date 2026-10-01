@@ -134,8 +134,7 @@ fn absolute(path: &Path) -> PathBuf {
 }
 
 /// Load `.env` from the working directory into the process environment,
-/// without overriding anything already set — what Bun does for the TypeScript
-/// npanel, so an existing checkout's `.env` keeps working.
+/// without overriding anything already set.
 pub fn load_dotenv() {
     let Ok(text) = std::fs::read_to_string(".env") else {
         return;
