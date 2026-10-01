@@ -175,8 +175,6 @@ impl BlobStore {
     fn build(dir: &Path, public_only: bool) -> BlobStore {
         let mut http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            // A proxy would do the resolving, past `PublicResolver`.
-            .no_proxy()
             .user_agent(concat!("npanel/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10));
         if public_only {

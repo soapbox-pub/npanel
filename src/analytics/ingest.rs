@@ -249,17 +249,6 @@ impl Ingest {
     }
 }
 
-/// Longest attribution value a session keeps. Each is the sender's to choose,
-/// and an open session sits in memory for its whole visit.
-const MAX_ATTRIBUTE: usize = 300;
-
-fn clip(mut value: String) -> String {
-    if let Some((at, _)) = value.char_indices().nth(MAX_ATTRIBUTE) {
-        value.truncate(at);
-    }
-    value
-}
-
 /// A session's attributes, all taken from the event that began it.
 fn attributes(event: &EventRequest, device: Option<&Device>, location: Location) -> SessionAttributes {
     let url = &event.url;
@@ -292,14 +281,14 @@ fn attributes(event: &EventRequest, device: Option<&Device>, location: Location)
 
     let device = device.cloned().unwrap_or_default();
     SessionAttributes {
-        referrer: clip(found.referrer),
-        source: clip(found.source),
+        referrer: found.referrer,
+        source: found.source,
         channel,
-        utm_medium: clip(utm_medium),
-        utm_source: clip(utm_source),
-        utm_campaign: clip(utm_campaign),
-        utm_content: clip(query_param(url, "utm_content").unwrap_or_default()),
-        utm_term: clip(query_param(url, "utm_term").unwrap_or_default()),
+        utm_medium,
+        utm_source,
+        utm_campaign,
+        utm_content: query_param(url, "utm_content").unwrap_or_default(),
+        utm_term: query_param(url, "utm_term").unwrap_or_default(),
         click_id_param: click_id_param.to_string(),
         country: location.country,
         region: location.region,

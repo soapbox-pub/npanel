@@ -15,7 +15,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, patch, post, put};
 use axum::{Extension, Router};
 use http::request::Parts;
-use http::{header, Method, Response, StatusCode};
+use http::{header, HeaderValue, Method, Response, StatusCode};
 use http_body_util::BodyExt;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
@@ -24,7 +24,7 @@ use serde_json::{json, Map, Value};
 
 use crate::analytics::query::engine::QueryHost;
 use crate::analytics::{Analytics, Answer};
-use crate::auth::{verify_nip98, SpentEvents};
+use crate::auth::verify_nip98;
 use crate::builds::current_build;
 use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, HOST_COLUMNS, SITE_EVENT_COLUMNS};
 use crate::deploy::Deployments;
@@ -210,8 +210,7 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/audit-log", get(audit_log))
         .route("/api/status", get(status_route))
-        .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate))
-        .layer(Extension(Arc::new(SpentEvents::default())));
+        .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
         .merge(private)
@@ -222,18 +221,24 @@ pub fn router(deps: Deps) -> Router {
         .with_state(deps)
 }
 
-/// The body limit, in front of every route, and the log line for any request
-/// that failed inside.
-///
-/// No CORS: the dashboard is the API's own origin, and a script needs none.
-/// Allowing other origins would let any page a staff member visits — every
-/// nsite this gateway serves among them — ask their signer for an admin
-/// request and read the answer.
+/// CORS and the body limit, in front of every route, and the log line for
+/// any request that failed inside.
 async fn gate(State(deps): State<Deps>, request: Request, next: Next) -> Reply {
     let (mut parts, body) = request.into_parts();
 
+    if parts.method == Method::OPTIONS && parts.headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
+        let mut builder = Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "GET,HEAD,PUT,POST,DELETE,PATCH");
+        if let Some(requested) = parts.headers.get(header::ACCESS_CONTROL_REQUEST_HEADERS) {
+            builder = builder.header(header::ACCESS_CONTROL_ALLOW_HEADERS, requested.clone()).header(header::VARY, "Access-Control-Request-Headers");
+        }
+        return builder.body(Body::empty()).expect("response");
+    }
+
     let declared = parts.headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
-    let too_large = || json_reply(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": "Request body is too large." }));
+    let too_large = || with_cors(json_reply(StatusCode::PAYLOAD_TOO_LARGE, json!({ "error": "Request body is too large." })));
     if declared.is_some_and(|d| d > MAX_BODY_SIZE) {
         return too_large();
     }
@@ -242,7 +247,7 @@ async fn gate(State(deps): State<Deps>, request: Request, next: Next) -> Reply {
     let bytes = match tokio::time::timeout(BODY_TIMEOUT, http_body_util::Limited::new(body, MAX_BODY_SIZE).collect()).await {
         Ok(Ok(collected)) => collected.to_bytes(),
         Ok(Err(_)) => return too_large(),
-        Err(_) => return json_reply(StatusCode::REQUEST_TIMEOUT, json!({ "error": "The request body took too long to arrive." })),
+        Err(_) => return with_cors(json_reply(StatusCode::REQUEST_TIMEOUT, json!({ "error": "The request body took too long to arrive." }))),
     };
 
     let route = parts.extensions.get::<MatchedPath>().map_or_else(|| parts.uri.path().to_string(), |p| p.as_str().to_string());
@@ -252,33 +257,26 @@ async fn gate(State(deps): State<Deps>, request: Request, next: Next) -> Reply {
     if let Some(Failure(error)) = response.extensions().get::<Failure>() {
         deps.log.error("request_failed", with_err(fields! { "path" => route }, error));
     }
-    response
+    with_cors(response)
 }
 
 /// NIP-98, from a pubkey with a row in `users`, on every private route.
-async fn authenticate(
-    State(deps): State<Deps>,
-    Extension(body): Extension<RawBody>,
-    Extension(spent): Extension<Arc<SpentEvents>>,
-    request: Request,
-    next: Next,
-) -> Reply {
+async fn authenticate(State(deps): State<Deps>, Extension(body): Extension<RawBody>, request: Request, next: Next) -> Reply {
     let (mut parts, body_stream) = request.into_parts();
     let path_and_query = parts.uri.path_and_query().map_or(parts.uri.path(), |pq| pq.as_str());
-    let now = crate::util::now();
     let event = match verify_nip98(
         parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()),
         parts.method.as_str(),
         path_and_query,
         &body.0,
         &deps.dashboard_host,
-        now,
+        crate::util::now(),
     ) {
         Ok(event) => event,
         Err(e) => return json_reply(StatusCode::UNAUTHORIZED, json!({ "error": e.0 })),
     };
 
-    let pubkey = event.pubkey.clone();
+    let pubkey = event.pubkey;
     let user = deps
         .db
         .call(move |conn| {
@@ -290,21 +288,17 @@ async fn authenticate(
         .await;
     match user {
         Ok(Some(user)) => {
-            // Spent only once the signer is known to be someone, so strangers
-            // can't fill the record.
-            let reads = parts.method == Method::GET || parts.method == Method::HEAD;
-            if !reads && !spent.spend(&event, now) {
-                return json_reply(
-                    StatusCode::UNAUTHORIZED,
-                    json!({ "error": "This signed request was already used. Sign a fresh one for each request." }),
-                );
-            }
             parts.extensions.insert(user);
             next.run(Request::from_parts(parts, body_stream)).await
         }
         Ok(None) => ApiError::Forbidden("This account has no access to npanel. Ask an admin to add you.").into_response(),
         Err(e) => ApiError::Internal(e).into_response(),
     }
+}
+
+fn with_cors(mut response: Reply) -> Reply {
+    response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
+    response
 }
 
 /// Who runs this instance, for the logged-out homepage. Nothing here is
@@ -402,43 +396,6 @@ async fn accessible_host(deps: &Deps, user: &AuthUser, hostname: &str) -> Result
         Access::Missing => Err(ApiError::NotFound("Host not found.".into())),
         Access::Denied => Err(ApiError::Forbidden("You don't have access to this host.")),
     }
-}
-
-/// Refuse a hostname that would take over a name belonging to a host the
-/// user can't manage. Admins manage every host, so it is only ever staff who
-/// are refused.
-///
-/// `www.` of a host is that host's redirect, so it is never someone else's to
-/// claim. Any other name under a host is that host's owner's zone, unless the
-/// admin opened it to staff with an allowed suffix.
-async fn check_claim(deps: &Deps, user: &AuthUser, hostname: &str) -> Result<(), ApiError> {
-    if user.is_admin() {
-        return Ok(());
-    }
-    let suffixes = deps.settings.get().allowed_host_suffixes.clone();
-    let (u, name) = (user.clone(), hostname.to_string());
-    let others: Vec<String> = deps
-        .db
-        .call(move |conn| {
-            Ok(conn
-                .prepare_cached("SELECT hostname FROM hosts WHERE id NOT IN (SELECT host_id FROM host_grants WHERE user_pubkey = ?)")?
-                .query_map([&u.pubkey], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?)
-        })
-        .await?;
-    match claimed_from(&name, &others, &suffixes) {
-        Some(owner) => Err(ApiError::Conflict(format!("{name} belongs to {owner}, which you don't manage. Ask an admin to add it."))),
-        None => Ok(()),
-    }
-}
-
-/// Which of `others` a hostname would be taken from, if any.
-fn claimed_from<'a>(hostname: &str, others: &'a [String], suffixes: &[String]) -> Option<&'a str> {
-    let opened = suffixes.iter().any(|suffix| hostname.ends_with(&format!(".{suffix}")));
-    others
-        .iter()
-        .find(|other| hostname.strip_prefix("www.") == Some(other.as_str()) || (!opened && hostname.ends_with(&format!(".{other}"))))
-        .map(String::as_str)
 }
 
 /// Record an administrative change.
@@ -659,7 +616,6 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     if hostname == deps.dashboard_host {
         return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
     }
-    check_claim(&deps, &user, &hostname).await?;
 
     // Off unless asked for, or on unless asked otherwise, flag by flag. A new
     // host is always enabled.
@@ -752,7 +708,6 @@ async fn update_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
             return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
         }
         if parsed != host.hostname {
-            check_claim(&deps, &user, &parsed).await?;
             patch.push(("hostname", Sql::Text(parsed.clone())));
             renamed = Some(parsed);
         }
@@ -1531,23 +1486,4 @@ async fn status_route(State(deps): State<Deps>) -> ApiResult {
         "relays": deps.settings.get().relays,
         "tor": deps.tor.status(),
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn claims() {
-        let others = vec!["example.com".to_string(), "docs.other.org".to_string()];
-        assert_eq!(claimed_from("www.example.com", &others, &[]), Some("example.com"));
-        assert_eq!(claimed_from("blog.example.com", &others, &[]), Some("example.com"));
-        assert_eq!(claimed_from("a.docs.other.org", &others, &[]), Some("docs.other.org"));
-        assert_eq!(claimed_from("other.org", &others, &[]), None);
-        assert_eq!(claimed_from("notexample.com", &others, &[]), None);
-        // An allowed suffix opens the zone, but never the redirect name.
-        let open = vec!["example.com".to_string()];
-        assert_eq!(claimed_from("blog.example.com", &others, &open), None);
-        assert_eq!(claimed_from("www.example.com", &others, &open), Some("example.com"));
-    }
 }

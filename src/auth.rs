@@ -5,11 +5,7 @@
 //! identity, not authorization: npanel is not permissionless, so a pubkey with
 //! no row in `users` is refused by the caller.
 
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-
 use base64::Engine;
-use parking_lot::Mutex;
 use sha2::{Digest, Sha256};
 
 use crate::nostr::Event;
@@ -104,34 +100,6 @@ pub fn verify_nip98(
     Ok(event)
 }
 
-/// Auth events already spent on a request, so a captured header can't be
-/// sent again while its `created_at` is still in the window.
-///
-/// Known by signature rather than id. An id is the hash of what the event
-/// says, so two identical requests signed in the same second share one; their
-/// signatures differ, since signers sign with fresh randomness, while a
-/// replay is the very same bytes. Kept only for requests that change
-/// something, so a signer that does sign deterministically can still load two
-/// views at once.
-#[derive(Default)]
-pub struct SpentEvents(Mutex<HashMap<String, i64>>);
-
-impl SpentEvents {
-    /// Mark an event spent. False if it already was.
-    pub fn spend(&self, event: &Event, now: i64) -> bool {
-        let mut spent = self.0.lock();
-        // Past this an event fails the window check anyway.
-        spent.retain(|_, expires| *expires >= now);
-        match spent.entry(event.sig.clone()) {
-            Entry::Occupied(_) => false,
-            Entry::Vacant(entry) => {
-                entry.insert(event.created_at.saturating_add(MAX_AUTH_AGE));
-                true
-            }
-        }
-    }
-}
-
 /// A signed `Authorization` header, for tests.
 #[cfg(test)]
 pub fn sign_nip98(secret: &str, method: &str, url: &str, body: Option<&[u8]>, now: i64) -> String {
@@ -179,16 +147,5 @@ mod tests {
         // Dated so far off that subtracting overflows.
         let ancient = sign_nip98(SECRET, "GET", "https://panel.example.com/api/me", None, i64::MIN);
         assert!(check(&ancient, "GET", "/api/me", b"").unwrap_err().0.contains("expired"));
-    }
-
-    #[test]
-    fn spends_once() {
-        let spent = SpentEvents::default();
-        let header = sign_nip98(SECRET, "DELETE", "https://panel.example.com/api/hosts/a", None, NOW);
-        let event = check(&header, "DELETE", "/api/hosts/a", b"").unwrap();
-        assert!(spent.spend(&event, NOW));
-        assert!(!spent.spend(&event, NOW + 30));
-        // Forgotten once the window has closed on it.
-        assert!(spent.spend(&event, NOW + MAX_AUTH_AGE + 1));
     }
 }

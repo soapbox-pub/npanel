@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::blobs::{BlobStore, DownloadReason};
+use crate::blobs::BlobStore;
 use crate::builds::HostBuilder;
 use crate::db::{DeployStatus, Db};
 use crate::fields;
@@ -53,10 +53,6 @@ const BLOB_CONCURRENCY: usize = 4;
 /// answer can take the download timeout, so a version whose servers are all
 /// dead would otherwise hold up every other site's for hours.
 const MAX_FAILURES_IN_A_ROW: usize = 16;
-
-/// Connection failures after which a server is skipped for the rest of a
-/// deploy.
-const MAX_SERVER_STRIKES: u32 = 3;
 
 /// Wait before a second attempt at a deploy. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -730,7 +726,6 @@ impl SyncWorker {
         budget: u64,
     ) -> Downloads {
         let max_file_size = self.deps().settings.get().max_file_size as u64;
-        let strikes = Mutex::new(HashMap::new());
         let mut queue = missing.into_iter();
         let mut downloading = FuturesUnordered::new();
         let (mut failed, mut downloaded, mut bytes, mut ready, mut in_a_row) = (Vec::new(), Vec::new(), 0u64, already, 0);
@@ -739,9 +734,8 @@ impl SyncWorker {
             while downloading.len() < BLOB_CONCURRENCY && self.running() && bytes <= budget && in_a_row < MAX_FAILURES_IN_A_ROW {
                 let Some(sha256) = queue.next() else { break };
                 let compress = compressible.contains(&sha256);
-                let strikes = &strikes;
                 downloading.push(async move {
-                    let size = self.download_blob(event_id, sha256, servers, strikes, max_file_size, compress).await;
+                    let size = self.download_blob(event_id, sha256, servers, max_file_size, compress).await;
                     (sha256, size)
                 });
             }
@@ -795,23 +789,11 @@ impl SyncWorker {
     }
 
     /// Try each server in turn for one blob. Returns its size, or `None` if no
-    /// server had it. A server that couldn't be reached [`MAX_SERVER_STRIKES`]
-    /// times in this deploy isn't asked again.
-    async fn download_blob(
-        &self,
-        event_id: &str,
-        sha256: BlobHash,
-        servers: &[String],
-        strikes: &Mutex<HashMap<String, u32>>,
-        max_size: u64,
-        compress: bool,
-    ) -> Option<u64> {
+    /// server had it.
+    async fn download_blob(&self, event_id: &str, sha256: BlobHash, servers: &[String], max_size: u64, compress: bool) -> Option<u64> {
         let cancel = self.cancel_token();
 
         for server in servers {
-            if strikes.lock().get(server).is_some_and(|n| *n >= MAX_SERVER_STRIKES) {
-                continue;
-            }
             let url = blob_url(server, sha256.hex().as_str());
             match self.deps().blobs.download(&url, sha256, max_size, &cancel).await {
                 Ok(size) => {
@@ -837,9 +819,6 @@ impl SyncWorker {
                     return Some(size);
                 }
                 Err(error) => {
-                    if matches!(error.reason, DownloadReason::Network | DownloadReason::Blocked) {
-                        *strikes.lock().entry(server.clone()).or_insert(0) += 1;
-                    }
                     let fields = fields! {
                         "sha256" => sha256,
                         "server" => server.as_str(),

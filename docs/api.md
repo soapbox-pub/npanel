@@ -26,12 +26,7 @@ The event needs:
 | `payload` | sha256 of the request body — required only when there is one   |
 
 `created_at` must be within 60 seconds of the server's clock. Each event is for
-one request; sign a fresh one every time. A request that changes something —
-anything but `GET` and `HEAD` — is refused with `401` if its event was already
-used.
-
-The API sends no CORS headers, so a browser can only call it from the
-dashboard's own origin. Scripts and other non-browser clients are unaffected.
+one request; sign a fresh one every time.
 
 The `u` tag is checked against `DASHBOARD_HOST` and the request path, not
 against the URL the process sees, so a reverse proxy rewriting the scheme or

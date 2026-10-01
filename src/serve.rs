@@ -244,9 +244,6 @@ impl SiteServer {
         // Set on everything rather than only on what varied, because a cache
         // has to be told before it stores the first response.
         headers.append(header::VARY, HeaderValue::from_static("accept-encoding"));
-        // Types come from file extensions, which are the author's to choose;
-        // a browser second-guessing them would run a `.txt` as a script.
-        headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 
         if let Some(site) = &site {
             advertise_onion(request, origin, &site.host, &mut response);

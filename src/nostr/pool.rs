@@ -33,10 +33,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
 
-/// The largest message taken from a relay. Relays themselves commonly refuse
-/// events a fraction this size, so it is room for a manifest of tens of
-/// thousands of files, and not much more.
-const MAX_MESSAGE: usize = 4 << 20;
+/// The largest message taken from a relay: room for a manifest at the
+/// largest `max_site_files` anyone is likely to set.
+const MAX_MESSAGE: usize = 16 << 20;
 
 /// Bytes of events received and not yet handled, per query or subscription.
 /// Any relay an author names can send as many events of theirs as it likes,

@@ -46,7 +46,6 @@ use self::store::AnalyticsStore;
 use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
-use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::settings::Settings;
 
 /// The largest event accepted. A real one is a few hundred bytes.
@@ -61,13 +60,6 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the sender has to deliver an event's body.
 const EVENT_READ_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Events one address may send: a burst of this many, refilled over
-/// [`EVENT_LIMIT_INTERVAL_MS`]. A visitor sends one per page and one as they
-/// leave it, so this is far past anyone reading.
-const EVENT_LIMIT: RateLimit = RateLimit { capacity: 60.0, interval_ms: 60_000.0 };
-/// Addresses whose budgets are remembered.
-const EVENT_LIMIT_KEYS: usize = 10_000;
 
 /// Events waiting for, or being handled on, the analytics runtime. Each
 /// holds its body until it is handled, and past this the sender is asked to
@@ -105,8 +97,8 @@ fn restarted() -> Answer {
 }
 
 fn too_many() -> Response<Body> {
-    let mut response =
-        (StatusCode::TOO_MANY_REQUESTS, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Too many events. Slow down.").into_response();
+    let mut response = (StatusCode::TOO_MANY_REQUESTS, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Too many events are waiting. Try again in a moment.")
+        .into_response();
     response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("10"));
     response
 }
@@ -151,8 +143,6 @@ struct Shared {
 
 pub struct Analytics {
     shared: Arc<Shared>,
-    /// Events per sending address.
-    limits: Mutex<RateLimiter>,
     queued: Arc<Semaphore>,
     shutdown: CancellationToken,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -178,7 +168,6 @@ impl Analytics {
 
         Analytics {
             shared,
-            limits: Mutex::new(RateLimiter::new(EVENT_LIMIT_KEYS)),
             queued: Arc::new(Semaphore::new(MAX_QUEUED_EVENTS)),
             shutdown,
             thread: Mutex::new(Some(thread)),
@@ -206,9 +195,10 @@ impl Analytics {
     /// Record an event, read on the listener that received it and handed to
     /// the analytics runtime. `site` is the host the request's hostname
     /// names, the only one it may record for. `peer` is the connection's
-    /// address, behind which the proxy names the visitor; a listener with no
-    /// proxy in front and whose peer is never the visitor — Tor's — passes
-    /// `None`, and nothing in the request is taken as the visitor's address.
+    /// address, which only counts when the proxy didn't name the visitor; a
+    /// listener with no proxy in front, whose peer is never the visitor —
+    /// Tor's — passes `None`, and then nothing in the request is taken as the
+    /// visitor's address either.
     ///
     /// The tracker posts `text/plain`, which spares it a preflight, but a
     /// client of Plausible's API may send JSON and preflight it, so both are
@@ -230,14 +220,6 @@ impl Analytics {
         if parts.method != Method::POST {
             return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST, OPTIONS")], "Send events with POST.").into_response();
         }
-
-        let forwarded_for = parts.headers.get_all("x-forwarded-for").iter().next_back().and_then(|v| v.to_str().ok());
-        let ip = client_ip(forwarded_for, peer);
-        // Over Tor there is no address to tell senders apart by, so they
-        // share only the queue's bound.
-        if peer.is_some() && !self.limits.lock().take(&ip, EVENT_LIMIT) {
-            return too_many();
-        }
         let Ok(permit) = self.queued.clone().try_acquire_owned() else {
             return too_many();
         };
@@ -257,7 +239,9 @@ impl Analytics {
             return starting().into_response();
         };
 
-        let user_agent = parts.headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let user_agent = header("user-agent").unwrap_or_default();
+        let ip = client_ip(header("x-forwarded-for").as_deref(), header("x-real-ip").as_deref(), peer);
         let hosts = self.shared.hosts.read().clone();
         let log = self.shared.log;
 
@@ -426,14 +410,14 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
 /// then forgotten. The proxy's word for it, since behind one the socket is
 /// always the proxy.
 ///
-/// Only the last `X-Forwarded-For` entry is the proxy's: a proxy appends the
-/// address it saw to whatever list the client sent, so everything before it
-/// is the client's own claim. With no `peer` there is no proxy either, and
+/// The first `X-Forwarded-For` entry, which behind a CDN is still the visitor
+/// where the last would be the CDN. With no `peer` there is no proxy, and
 /// every header is the sender's to write, so there is no address at all.
-fn client_ip(forwarded_for: Option<&str>, peer: Option<IpAddr>) -> String {
+fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, peer: Option<IpAddr>) -> String {
     let Some(peer) = peer else { return String::new() };
-    let forwarded = forwarded_for.and_then(|f| f.rsplit(',').next()).map(str::trim).filter(|f| !f.is_empty());
-    forwarded.map_or_else(|| peer.to_string(), str::to_string)
+    let forwarded = forwarded_for.and_then(|f| f.split(',').next()).map(str::trim).filter(|f| !f.is_empty());
+    let real = real_ip.map(str::trim).filter(|r| !r.is_empty());
+    forwarded.or(real).map_or_else(|| peer.to_string(), str::to_string)
 }
 
 /// Write what's pending. The in-memory state is only held long enough to take
@@ -505,11 +489,10 @@ mod tests {
 
     #[test]
     fn client_ips() {
-        let proxy = Some(IpAddr::from([127, 0, 0, 1]));
-        assert_eq!(client_ip(Some("1.2.3.4, 5.6.7.8"), proxy), "5.6.7.8");
-        assert_eq!(client_ip(Some(" 5.6.7.8 "), proxy), "5.6.7.8");
-        assert_eq!(client_ip(Some(""), proxy), "127.0.0.1");
-        assert_eq!(client_ip(None, proxy), "127.0.0.1");
-        assert_eq!(client_ip(Some("5.6.7.8"), None), "");
+        let proxy = Some(IpAddr::from([9, 9, 9, 9]));
+        assert_eq!(client_ip(Some("1.2.3.4, 10.0.0.1"), Some("5.6.7.8"), proxy), "1.2.3.4");
+        assert_eq!(client_ip(None, Some(" 5.6.7.8 "), proxy), "5.6.7.8");
+        assert_eq!(client_ip(Some(""), None, proxy), "9.9.9.9");
+        assert_eq!(client_ip(Some("1.2.3.4"), Some("5.6.7.8"), None), "");
     }
 }
