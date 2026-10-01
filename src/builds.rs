@@ -60,7 +60,10 @@ use crate::sites::{
 /// proxies that refuse to pass dotfiles. Paths aren't otherwise in the
 /// fingerprint, so without it a tracker built before would go on reporting to
 /// an endpoint that no longer answers.
-pub const BUILDER_VERSION: i64 = 5;
+///
+/// 6 loads the tracker `async`, so a request for it that never returns holds
+/// up nothing the site wrote.
+pub const BUILDER_VERSION: i64 = 6;
 
 /// Wait before a second attempt at a build. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -630,6 +633,7 @@ struct Addition {
     src: String,
     integrity: String,
     module: bool,
+    asynchronous: bool,
     placement: Placement,
     connects: bool,
     /// The deploy log entry saying it was added.
@@ -651,6 +655,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
             integrity: integrity(env),
             body: env.clone(),
             module: false,
+            asynchronous: false,
             placement: Placement::Start,
             connects: false,
             msg: "env_added",
@@ -664,6 +669,10 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
             integrity: integrity(&body),
             body,
             module: true,
+            // Nothing waits on a page view being counted, and nothing should:
+            // on a dead connection a deferred tracker would hold back every
+            // deferred script after it, the site's own included.
+            asynchronous: true,
             placement: Placement::End,
             connects: true,
             msg: "analytics_added",
@@ -696,6 +705,7 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
                         src: &addition.src,
                         integrity: &addition.integrity,
                         module: addition.module,
+                        asynchronous: addition.asynchronous,
                         placement: addition.placement,
                         connects: addition.connects,
                     };
@@ -949,7 +959,7 @@ mod tests {
             .unwrap();
         assert_eq!(index.1.as_deref(), Some(sha(page).as_str()));
         let tracker = versioned_src(TRACKER_PATH, tracker_script("docs.example.com").as_bytes());
-        assert!(blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000).contains(&format!(r#"<script type="module" src="{tracker}"></script></head>"#)));
+        assert!(blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000).contains(&format!(r#"<script type="module" async src="{tracker}"></script></head>"#)));
 
         // A variable too: both scripts, in one rewrite of the published page.
         t.db.with(|conn| Ok(conn.execute("INSERT INTO host_env (host_id, name, value, created_at, updated_at) VALUES (?, 'A', 'b', 0, 0)", [host_id])?))
@@ -967,7 +977,7 @@ mod tests {
         let src = versioned_src(ENV_PATH, env_script(&[("A".into(), "b".into())]).as_bytes());
         assert_eq!(
             blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000),
-            format!(r#"<html><head><script src="{src}"></script><title>Hi</title><script type="module" src="{tracker}"></script></head><body>hello</body></html>"#)
+            format!(r#"<html><head><script src="{src}"></script><title>Hi</title><script type="module" async src="{tracker}"></script></head><body>hello</body></html>"#)
         );
 
         builder.stop().await;

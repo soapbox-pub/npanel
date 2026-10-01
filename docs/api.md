@@ -375,8 +375,9 @@ every HTML page the site serves loads npanel's tracker — Plausible's own
 (loaded as `/_npanel/script.js?v=<hash>`, so a new tracker is picked up at
 once) and reporting to `/_npanel/api/event` on the same origin — so nothing needs
 configuring and a visit over the site's onion address counts too. The pages are
-rewritten when the host is built, not per request: the one tag is added at the
-end of `<head>`, every other byte is left as published, and the result is
+rewritten when the host is built, not per request: the one tag, an `async`
+module that nothing on the page waits for, is added at the end of `<head>`,
+every other byte is left as published, and the result is
 stored and compressed like any other file. A `<meta>` Content Security Policy
 in a page is widened just enough for the tracker — `'self'` added to whichever
 directives govern loading a script and `fetch`ing — and the header follows

@@ -665,6 +665,13 @@ the path is neutral because `plausible` and `analytics` are exactly what
 blocklists look for. See [the builds section](#builds) — the pages are rewritten
 once, when the host is built, and served like every other stored file.
 
+The tag is an `async` module, so it runs whenever it arrives and nothing waits
+on it. A plain module would be deferred, and deferred scripts run in document
+order before `DOMContentLoaded`: on a connection that drops packets rather
+than failing, the request for the tracker would never end, and every deferred
+script after it — the site's own entry point, often — would never start. That
+is most likely exactly when it hurts, in a site's offline shell.
+
 **Isolation.** Events are recorded on a runtime of their own, on a thread of
 its own (`src/analytics/mod.rs`). Serving sites is always the first priority,
 so nothing about counting visits runs on the threads that serve them: not the

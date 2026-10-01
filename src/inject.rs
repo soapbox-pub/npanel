@@ -45,6 +45,11 @@ pub struct Script<'a> {
     /// `sha384-…` of the script, for a policy that trusts scripts by hash alone.
     pub integrity: &'a str,
     pub module: bool,
+    /// Whether it runs on its own as soon as it arrives. A script that isn't
+    /// holds up whatever comes after it — a deferred one, every deferred
+    /// script after it and `DOMContentLoaded` — and on a connection that drops
+    /// packets rather than failing, that wait has no end.
+    pub asynchronous: bool,
     pub placement: Placement,
     /// Whether it `fetch`es its own origin, and so needs `connect-src` as well.
     pub connects: bool,
@@ -85,8 +90,9 @@ pub fn inject_script(html: &[u8], script: &Script) -> Option<Vec<u8>> {
     // hash pins the script's exact bytes, so a browser still holding the last
     // build's copy would refuse this one.
     let kind = if script.module { r#" type="module""# } else { "" };
+    let asynchronous = if script.asynchronous { " async" } else { "" };
     let integrity = if strict_before || strict_after { format!(r#" integrity="{}""#, script.integrity) } else { String::new() };
-    let tag = format!(r#"<script{kind} src="{}"{integrity}></script>"#, script.src);
+    let tag = format!(r#"<script{kind}{asynchronous} src="{}"{integrity}></script>"#, script.src);
 
     let mut out = Vec::with_capacity(html.len() + tag.len() + 64);
     out.extend_from_slice(&before);
@@ -416,8 +422,8 @@ mod tests {
 
     const HASH: &str = "sha384-abc";
 
-    const TRACKER: Script = Script { src: "/_npanel/script.js?v=1", integrity: HASH, module: true, placement: Placement::End, connects: true };
-    const ENV: Script = Script { src: "/_npanel/env.js?v=1", integrity: HASH, module: false, placement: Placement::Start, connects: false };
+    const TRACKER: Script = Script { src: "/_npanel/script.js?v=1", integrity: HASH, module: true, asynchronous: true, placement: Placement::End, connects: true };
+    const ENV: Script = Script { src: "/_npanel/env.js?v=1", integrity: HASH, module: false, asynchronous: false, placement: Placement::Start, connects: false };
 
     fn inject(html: &str) -> Option<String> {
         inject_with(html, &TRACKER)
@@ -429,7 +435,7 @@ mod tests {
 
     #[test]
     fn places_the_tag() {
-        let tag = r#"<script type="module" src="/_npanel/script.js?v=1"></script>"#;
+        let tag = r#"<script type="module" async src="/_npanel/script.js?v=1"></script>"#;
         assert_eq!(inject("<html><head><title>x</title></HEAD><body></body></html>").unwrap(), format!("<html><head><title>x</title>{tag}</HEAD><body></body></html>"));
         assert_eq!(inject("<p>hi</p><BODY class=x>").unwrap(), format!("<p>hi</p>{tag}<BODY class=x>"));
         assert_eq!(inject("<!DOCTYPE html><p>x").unwrap(), format!("<!DOCTYPE html>{tag}<p>x"));
@@ -453,7 +459,7 @@ mod tests {
 
     #[test]
     fn finds_tags_as_a_browser_does() {
-        let tag = r#"<script type="module" src="/_npanel/script.js?v=1"></script>"#;
+        let tag = r#"<script type="module" async src="/_npanel/script.js?v=1"></script>"#;
         // `</header>` is not `</head>`, and `<html>` is one tag, not two.
         assert_eq!(inject("<html><header>x</header><p>y").unwrap(), format!("<html>{tag}<header>x</header><p>y"));
         assert_eq!(inject("<html><p>x").unwrap(), format!("<html>{tag}<p>x"));
