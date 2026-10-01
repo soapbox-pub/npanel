@@ -270,7 +270,7 @@ https:// {
 ```
 
 Analytics events need no route of their own. Every site that counts visits
-reports to `/.npanel/api/event` on its own origin, and npanel hands each one to
+reports to `/_npanel/api/event` on its own origin, and npanel hands each one to
 its analytics thread from the listener that received it. The proxy must set
 `X-Forwarded-For` to the visitor's address, which Caddy does; it is how
 visitors are told apart and placed, and is never stored. An event names the

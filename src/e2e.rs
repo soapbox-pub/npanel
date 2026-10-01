@@ -340,8 +340,8 @@ async fn a_published_site_is_deployed_built_and_served() {
     let (status, body) = gw.api("PUT", "/api/hosts/docs.example.com/env/2FAST", Some(serde_json::json!({ "value": "" }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    eventually("the variables going live", async || gw.request("GET", "docs.example.com", "/.npanel/env.js", &[], None).await.0 == StatusCode::OK).await;
-    let (_, headers, script) = gw.request("GET", "docs.example.com", "/.npanel/env.js?v=anything", &[], None).await;
+    eventually("the variables going live", async || gw.request("GET", "docs.example.com", "/_npanel/env.js", &[], None).await.0 == StatusCode::OK).await;
+    let (_, headers, script) = gw.request("GET", "docs.example.com", "/_npanel/env.js?v=anything", &[], None).await;
     assert_eq!(headers["content-type"], "text/javascript; charset=utf-8");
     let script = String::from_utf8(script).unwrap();
     assert!(script.contains("\nself.ENV = {\"API_URL\":\"https://api.example.com\"};\n"), "{script}");
@@ -353,7 +353,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     let (status, body) = gw.api("DELETE", "/api/hosts/docs.example.com/env/API_URL", None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["variables"], serde_json::json!([]));
-    eventually("the variables going away", async || gw.request("GET", "docs.example.com", "/.npanel/env.js", &[], None).await.0 == StatusCode::NOT_FOUND).await;
+    eventually("the variables going away", async || gw.request("GET", "docs.example.com", "/_npanel/env.js", &[], None).await.0 == StatusCode::NOT_FOUND).await;
     let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
     assert_eq!(served, page.as_bytes());
 

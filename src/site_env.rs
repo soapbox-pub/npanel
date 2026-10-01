@@ -22,7 +22,7 @@ use rusqlite::Connection;
 use crate::inject::EXPAT_MAGNET;
 
 /// Where a host's variables are served.
-pub const ENV_PATH: &str = "/.npanel/env.js";
+pub const ENV_PATH: &str = "/_npanel/env.js";
 
 /// Most variables one host may have. Every page waits on the script before it
 /// renders anything, so it is kept to configuration rather than content.

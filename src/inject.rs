@@ -416,8 +416,8 @@ mod tests {
 
     const HASH: &str = "sha384-abc";
 
-    const TRACKER: Script = Script { src: "/.npanel/script.js?v=1", integrity: HASH, module: true, placement: Placement::End, connects: true };
-    const ENV: Script = Script { src: "/.npanel/env.js?v=1", integrity: HASH, module: false, placement: Placement::Start, connects: false };
+    const TRACKER: Script = Script { src: "/_npanel/script.js?v=1", integrity: HASH, module: true, placement: Placement::End, connects: true };
+    const ENV: Script = Script { src: "/_npanel/env.js?v=1", integrity: HASH, module: false, placement: Placement::Start, connects: false };
 
     fn inject(html: &str) -> Option<String> {
         inject_with(html, &TRACKER)
@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn places_the_tag() {
-        let tag = r#"<script type="module" src="/.npanel/script.js?v=1"></script>"#;
+        let tag = r#"<script type="module" src="/_npanel/script.js?v=1"></script>"#;
         assert_eq!(inject("<html><head><title>x</title></HEAD><body></body></html>").unwrap(), format!("<html><head><title>x</title>{tag}</HEAD><body></body></html>"));
         assert_eq!(inject("<p>hi</p><BODY class=x>").unwrap(), format!("<p>hi</p>{tag}<BODY class=x>"));
         assert_eq!(inject("<!DOCTYPE html><p>x").unwrap(), format!("<!DOCTYPE html>{tag}<p>x"));
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn places_the_tag_first() {
-        let tag = r#"<script src="/.npanel/env.js?v=1"></script>"#;
+        let tag = r#"<script src="/_npanel/env.js?v=1"></script>"#;
         let env = |html: &str| inject_with(html, &ENV);
         assert_eq!(
             env("<!doctype html><html><HEAD lang=en><script src=/app.js></script></head><body></body></html>").unwrap(),
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn finds_tags_as_a_browser_does() {
-        let tag = r#"<script type="module" src="/.npanel/script.js?v=1"></script>"#;
+        let tag = r#"<script type="module" src="/_npanel/script.js?v=1"></script>"#;
         // `</header>` is not `</head>`, and `<html>` is one tag, not two.
         assert_eq!(inject("<html><header>x</header><p>y").unwrap(), format!("<html>{tag}<header>x</header><p>y"));
         assert_eq!(inject("<html><p>x").unwrap(), format!("<html>{tag}<p>x"));
@@ -493,21 +493,21 @@ mod tests {
         let out = inject_with(r#"<head><meta http-equiv="Content-Security-Policy" content="default-src 'none'"></head><body><meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#, &ENV).unwrap();
         assert_eq!(
             out,
-            r#"<head><script src="/.npanel/env.js?v=1"></script><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'"></head><body><meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#
+            r#"<head><script src="/_npanel/env.js?v=1"></script><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'"></head><body><meta http-equiv="Content-Security-Policy" content="default-src 'none'">"#
         );
 
         let out = inject_with(r#"<head><meta http-equiv="content-security-policy" content="script-src 'strict-dynamic'"></head>"#, &ENV).unwrap();
-        assert!(out.starts_with(&format!(r#"<head><script src="/.npanel/env.js?v=1" integrity="{HASH}"></script>"#)), "{out}");
+        assert!(out.starts_with(&format!(r#"<head><script src="/_npanel/env.js?v=1" integrity="{HASH}"></script>"#)), "{out}");
         assert!(out.contains(&format!("script-src 'strict-dynamic' '{HASH}'")), "{out}");
     }
 
     #[test]
     fn versions_sources() {
-        let src = versioned_src("/.npanel/script.js", b"one");
-        assert!(src.starts_with("/.npanel/script.js?v="));
-        assert_eq!(src.len(), "/.npanel/script.js?v=".len() + 16);
-        assert_eq!(versioned_src("/.npanel/script.js", b"one"), src);
-        assert_ne!(versioned_src("/.npanel/script.js", b"two"), src);
+        let src = versioned_src("/_npanel/script.js", b"one");
+        assert!(src.starts_with("/_npanel/script.js?v="));
+        assert_eq!(src.len(), "/_npanel/script.js?v=".len() + 16);
+        assert_eq!(versioned_src("/_npanel/script.js", b"one"), src);
+        assert_ne!(versioned_src("/_npanel/script.js", b"two"), src);
     }
 
     #[test]

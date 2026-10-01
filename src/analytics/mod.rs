@@ -3,7 +3,7 @@
 //! Serving sites is always the first priority, so nothing about counting
 //! visits runs on the threads that serve them: not the parsing, not the
 //! user-agent and location lookups, not the writes, and not the dashboard's
-//! queries. Events arrive at `/.npanel/api/event` on every site, on whichever
+//! queries. Events arrive at `/_npanel/api/event` on every site, on whichever
 //! listener serves it; each is read there and handed across whole, a few
 //! hundred bytes.
 //!

@@ -2,7 +2,7 @@
  * A site's environment: variables staff set on a host, which its pages read as
  * `window.ENV`.
  *
- * The gateway serves them as a script at `/.npanel/env.js`, loaded from the
+ * The gateway serves them as a script at `/_npanel/env.js`, loaded from the
  * start of every page's head, so a site that knows to look can read
  * `window.ENV.API_URL` rather than a constant baked in when it was built.
  * Everything in it is public — it is served to every visitor.
@@ -13,7 +13,7 @@
  */
 
 /** Where a host's variables are served. */
-export const ENV_PATH = "/.npanel/env.js";
+export const ENV_PATH = "/_npanel/env.js";
 
 /** Most variables one host may have. */
 export const MAX_VARIABLES = 100;

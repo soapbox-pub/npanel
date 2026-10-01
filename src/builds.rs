@@ -55,7 +55,12 @@ use crate::sites::{
 /// browser's tokenizer finds them, rather than by patterns that took
 /// `</header>` for `</head>`. A gateway moving from one to the other rebuilds
 /// every host once, which is all a mismatch costs.
-pub const BUILDER_VERSION: i64 = 4;
+///
+/// 5 moved npanel's files from `/.npanel/` to `/_npanel/`, out of the way of
+/// proxies that refuse to pass dotfiles. Paths aren't otherwise in the
+/// fingerprint, so without it a tracker built before would go on reporting to
+/// an endpoint that no longer answers.
+pub const BUILDER_VERSION: i64 = 5;
 
 /// Wait before a second attempt at a build. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);

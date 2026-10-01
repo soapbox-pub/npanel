@@ -371,17 +371,17 @@ it.
 
 `analytics` counts visits to the site, and defaults to `false`. With it on,
 every HTML page the site serves loads npanel's tracker — Plausible's own
-`@plausible-analytics/tracker`, served from the site at `/.npanel/script.js`
-(loaded as `/.npanel/script.js?v=<hash>`, so a new tracker is picked up at
-once) and reporting to `/.npanel/api/event` on the same origin — so nothing needs
+`@plausible-analytics/tracker`, served from the site at `/_npanel/script.js`
+(loaded as `/_npanel/script.js?v=<hash>`, so a new tracker is picked up at
+once) and reporting to `/_npanel/api/event` on the same origin — so nothing needs
 configuring and a visit over the site's onion address counts too. The pages are
 rewritten when the host is built, not per request: the one tag is added at the
 end of `<head>`, every other byte is left as published, and the result is
 stored and compressed like any other file. A `<meta>` Content Security Policy
 in a page is widened just enough for the tracker — `'self'` added to whichever
 directives govern loading a script and `fetch`ing — and the header follows
-the page. A site that publishes files under `/.npanel/` has
-`/.npanel/script.js` shadowed while this is on.
+the page. A site that publishes files under `/_npanel/` has
+`/_npanel/script.js` shadowed while this is on.
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -570,7 +570,7 @@ Values are served to every visitor of the site. Don't store secrets in them.
 ### `DELETE /api/hosts/:hostname/env/:name`
 
 Removes one variable; `404` if the host never had it. Returns the remaining
-list. Removing the last one takes `/.npanel/env.js` out of the build, and the
+list. Removing the last one takes `/_npanel/env.js` out of the build, and the
 pages go back to exactly what the site published. Deleting the host deletes its
 variables with it.
 

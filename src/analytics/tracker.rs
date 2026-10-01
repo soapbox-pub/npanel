@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::inject::EXPAT_MAGNET;
 
-pub const TRACKER_PATH: &str = "/.npanel/script.js";
-pub const EVENT_PATH: &str = "/.npanel/api/event";
+pub const TRACKER_PATH: &str = "/_npanel/script.js";
+pub const EVENT_PATH: &str = "/_npanel/api/event";
 
 /// `@plausible-analytics/tracker` as npm ships it (MIT; see
 /// `assets/analytics/plausible-LICENSE.md`), unmodified: it is what the ingest
@@ -66,7 +66,7 @@ mod tests {
         let script = tracker_script("docs.example.com");
         assert!(script.starts_with("// @license magnet:"));
         assert!(script.ends_with(
-            "init({\"domain\":\"docs.example.com\",\"endpoint\":\"/.npanel/api/event\",\"bindToWindow\":false,\"logging\":false});\n// @license-end\n"
+            "init({\"domain\":\"docs.example.com\",\"endpoint\":\"/_npanel/api/event\",\"bindToWindow\":false,\"logging\":false});\n// @license-end\n"
         ));
         assert_eq!(tracker_sha256().len(), 64);
     }

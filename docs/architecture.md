@@ -22,7 +22,7 @@ its own, it keeps local storage in sync with Nostr.
                     │
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
-   /.npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
+   /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
 ```
 
 ## Request routing
@@ -211,7 +211,7 @@ mapping of a stored file, including the ones npanel wrote, and all the work of m
 is built, rather than on a request. Only headers are decided per request.
 
 Every script npanel adds to a page — `window.ENV` and the tracker — is loaded
-at a URL versioned by its contents, `/.npanel/script.js?v=<hash>`. The path
+at a URL versioned by its contents, `/_npanel/script.js?v=<hash>`. The path
 answers whatever the query says, and the script is cached for an hour like any
 other asset; the version is what lets a change reach visitors at once, since
 the pages naming it revalidate on every request and each change names a URL no
@@ -571,7 +571,7 @@ deploy can then be served on two hosts pointed at two backends, and a backend
 can move without a rebuild. A site that doesn't look is unaffected.
 
 The script is part of the host's build (`src/site_env.rs`, `src/builds.rs`),
-made as the tracker is: stored as a blob at `/.npanel/env.js`, wrapped in a
+made as the tracker is: stored as a blob at `/_npanel/env.js`, wrapped in a
 LibreJS license block, and loaded by every page, which is rewritten once to
 say so. The differences are all about running first. The tag goes at the
 *start* of the head rather than the end, and is a classic script rather than a
@@ -658,8 +658,8 @@ author to add — turning the switch on is the whole setup.
 
 **Collection.** The host's build adds Plausible's own tracker
 (`@plausible-analytics/tracker`, unmodified) to every page, served from the
-site at `/.npanel/script.js` with the site's name baked in, reporting to
-`/.npanel/api/event` on the same origin. Same-origin is what keeps it inside
+site at `/_npanel/script.js` with the site's name baked in, reporting to
+`/_npanel/api/event` on the same origin. Same-origin is what keeps it inside
 the site's Content Security Policy and working over the site's onion address;
 the path is neutral because `plausible` and `analytics` are exactly what
 blocklists look for. See [the builds section](#builds) — the pages are rewritten
