@@ -4,10 +4,6 @@ A self-hostable nsite gateway with a team dashboard. Staff map hostnames to
 nsites in a web UI; npanel downloads each site's blobs from Blossom servers and
 serves them from local storage.
 
-This is the Rust implementation, a port of the Bun/TypeScript npanel. It must
-stay able to open that implementation's `DATA_DIR`: same migrations under the
-same names, same blob layout, same build fingerprints, same API.
-
 Read [docs/architecture.md](docs/architecture.md) before making non-trivial
 changes — it explains the sync worker, the deploy invariant, and why storage
 looks the way it does.
@@ -82,8 +78,8 @@ needs a matching `Cargo.toml` version and `CHANGELOG.md` section.
   a field in the `settings!` list, a default, a branch in `validate`, and a
   subscriber if anything reacts to it. Then surface it on the dashboard's
   Settings page.
-- Migrations are append-only, and new ones have to be added to the TypeScript
-  npanel's list too if the two are to keep opening each other's databases.
+- Migrations are append-only: existing deployments' databases have already
+  run the old ones.
 - The dashboard has TypeScript twins of the server's parsing rules in
   `dashboard/src/shared/`, each naming the Rust module it mirrors. Change both
   together.
