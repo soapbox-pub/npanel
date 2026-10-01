@@ -1,23 +1,30 @@
 //! SQLite: connections, migrations, and the rows npanel reads back.
 //!
-//! One database file, opened by as many connections as there are threads
-//! asking. WAL keeps readers — serving — from ever waiting on a writer, and a
-//! busy timeout makes two writers take turns rather than fail.
+//! One database file, opened by a bounded pool of connections. WAL keeps
+//! readers — serving — from ever waiting on a writer, and a busy timeout
+//! makes two writers take turns rather than fail.
 
 mod migrations;
 pub mod rows;
 
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use parking_lot::Mutex;
+use parking_lot::{Condvar, Mutex};
 use rusqlite::{params, Connection, OpenFlags};
+use tokio::sync::Semaphore;
 
 pub use rows::*;
 
-/// Connections kept open between uses.
-const MAX_IDLE: usize = 16;
+/// The most connections open at once. A caller past it waits for one to come
+/// back rather than opening another: opening one costs far more than any
+/// query npanel makes, and more connections than cores buys no concurrency.
+/// Without the cap, a burst of queries — every hostname missing the serving
+/// cache at once, the moment a build goes live — opened a connection per
+/// query and threw most of them away again.
+const MAX_CONNECTIONS: usize = 16;
 
 /// A pool of connections to one database file.
 #[derive(Clone)]
@@ -27,7 +34,18 @@ pub struct Db {
 
 struct Inner {
     path: PathBuf,
-    idle: Mutex<Vec<Connection>>,
+    pool: Mutex<Pool>,
+    /// Signalled whenever a connection is returned or a slot freed.
+    returned: Condvar,
+    /// Async callers queue here, before the blocking pool, so a burst waits
+    /// as futures rather than as parked blocking threads.
+    permits: Arc<Semaphore>,
+}
+
+struct Pool {
+    idle: Vec<Connection>,
+    /// Connections in existence, idle or checked out.
+    open: usize,
 }
 
 impl Db {
@@ -43,19 +61,23 @@ impl Db {
 
     /// Connect to a database [`Db::open`] has already migrated.
     pub fn connect(path: &Path) -> Result<Db> {
-        let db = Db { inner: Arc::new(Inner { path: path.to_path_buf(), idle: Mutex::new(Vec::new()) }) };
+        let db = Db {
+            inner: Arc::new(Inner {
+                path: path.to_path_buf(),
+                pool: Mutex::new(Pool { idle: Vec::new(), open: 0 }),
+                returned: Condvar::new(),
+                permits: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+            }),
+        };
         // Fail now, at startup, rather than on the first request.
-        let conn = db.checkout()?;
-        db.checkin(conn);
+        db.checkout()?;
         Ok(db)
     }
 
-    /// Run `f` with a connection, on the calling thread.
+    /// Run `f` with a connection, on the calling thread, waiting for one if
+    /// every connection is in use.
     pub fn with<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        let mut conn = self.checkout()?;
-        let result = f(&mut conn);
-        self.checkin(conn);
-        result
+        f(self.checkout()?.deref_mut())
     }
 
     /// Run `f` with a connection on the blocking pool, so a query never holds
@@ -65,8 +87,16 @@ impl Db {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
+        let permit = self.inner.permits.clone().acquire_owned().await.expect("the semaphore is never closed");
         let db = self.clone();
-        tokio::task::spawn_blocking(move || db.with(f)).await.context("database task panicked")?
+        tokio::task::spawn_blocking(move || {
+            // Held until the work is done, not until the caller stops
+            // waiting for it.
+            let _permit = permit;
+            db.with(f)
+        })
+        .await
+        .context("database task panicked")?
     }
 
     /// [`Db::call`], with the query interrupted if it is still running after
@@ -78,9 +108,11 @@ impl Db {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
+        let permit = self.inner.permits.clone().acquire_owned().await.expect("the semaphore is never closed");
         let db = self.clone();
         let (handle_tx, handle_rx) = tokio::sync::oneshot::channel();
         let mut task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             db.with(|conn| {
                 let _ = handle_tx.send(conn.get_interrupt_handle());
                 f(conn)
@@ -100,21 +132,83 @@ impl Db {
         }
     }
 
-    fn checkout(&self) -> Result<Connection> {
-        if let Some(conn) = self.inner.idle.lock().pop() {
-            return Ok(conn);
+    /// An idle connection, a new one if there is room for it, or else the
+    /// next one returned.
+    fn checkout(&self) -> Result<Lease<'_>> {
+        let mut pool = self.inner.pool.lock();
+        loop {
+            if let Some(conn) = pool.idle.pop() {
+                return Ok(Lease { inner: &self.inner, conn: Some(conn) });
+            }
+            if pool.open < MAX_CONNECTIONS {
+                break;
+            }
+            self.inner.returned.wait(&mut pool);
         }
-        open_connection(&self.inner.path)
+        // The slot is taken before the open and given back if it fails, so
+        // nobody else can take it in between.
+        pool.open += 1;
+        drop(pool);
+        match open_connection(&self.inner.path) {
+            Ok(conn) => Ok(Lease { inner: &self.inner, conn: Some(conn) }),
+            Err(error) => {
+                self.inner.release_slot();
+                Err(error)
+            }
+        }
     }
 
+    #[cfg(test)]
+    fn open_connections(&self) -> usize {
+        self.inner.pool.lock().open
+    }
+}
+
+impl Inner {
     fn checkin(&self, conn: Connection) {
-        // A connection left mid-transaction by an error is not one to reuse.
+        // A connection left mid-transaction — by an error, or by a panic
+        // unwinding through it — is not one to reuse.
         if !conn.is_autocommit() {
+            drop(conn);
+            self.release_slot();
             return;
         }
-        let mut idle = self.inner.idle.lock();
-        if idle.len() < MAX_IDLE {
-            idle.push(conn);
+        self.pool.lock().idle.push(conn);
+        self.returned.notify_one();
+    }
+
+    fn release_slot(&self) {
+        self.pool.lock().open -= 1;
+        self.returned.notify_one();
+    }
+}
+
+/// A checked-out connection, returned to the pool however its user exits —
+/// a panic included, since a connection that never came back would hold its
+/// slot for good.
+struct Lease<'a> {
+    inner: &'a Inner,
+    conn: Option<Connection>,
+}
+
+impl Deref for Lease<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("held until dropped")
+    }
+}
+
+impl DerefMut for Lease<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn.as_mut().expect("held until dropped")
+    }
+}
+
+impl Drop for Lease<'_> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            self.inner.checkin(conn);
         }
     }
 }
@@ -246,6 +340,54 @@ mod tests {
         // The connection it ran on goes back into service unharmed.
         let one = t.db.call_within(std::time::Duration::from_secs(5), |conn| Ok(conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?)).await;
         assert_eq!(one.unwrap(), Some(1));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_burst_waits_for_connections_rather_than_opening_more() {
+        let t = testing::temp_db();
+        let calls: Vec<_> = (0..256)
+            .map(|_| {
+                let db = t.db.clone();
+                tokio::spawn(async move {
+                    let inner = db.clone();
+                    db.call(move |conn| {
+                        let open = inner.open_connections();
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        Ok((open, conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?))
+                    })
+                    .await
+                })
+            })
+            .collect();
+        for call in calls {
+            let (open, one) = call.await.unwrap().unwrap();
+            assert!(open <= MAX_CONNECTIONS, "{open} connections open");
+            assert_eq!(one, 1);
+        }
+        assert!(t.db.open_connections() <= MAX_CONNECTIONS);
+    }
+
+    #[tokio::test]
+    async fn a_panic_gives_its_connection_back() {
+        let t = testing::temp_db();
+        for i in 0..MAX_CONNECTIONS * 2 {
+            let result = t
+                .db
+                .call(move |conn| -> Result<()> {
+                    // Half of them mid-transaction, which can't be reused.
+                    if i % 2 == 0 {
+                        conn.execute_batch("BEGIN")?;
+                    }
+                    panic!("boom");
+                })
+                .await;
+            assert!(result.is_err());
+        }
+        let one = tokio::time::timeout(std::time::Duration::from_secs(5), t.db.call(|conn| Ok(conn.query_row("SELECT 1", [], |r| r.get::<_, i64>(0))?)))
+            .await
+            .expect("a connection came back");
+        assert_eq!(one.unwrap(), 1);
+        assert!(t.db.open_connections() <= MAX_CONNECTIONS);
     }
 
     #[test]

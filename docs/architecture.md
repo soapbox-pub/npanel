@@ -301,7 +301,13 @@ worst it costs is a dashboard save waiting a moment, never a visitor.
 (`src/db/migrations.rs`). Analytics live in a database of their own
 beside it — see [analytics](#analytics). Connections are pooled
 (`src/db/mod.rs`); each one maps the database into memory and keeps its
-prepared statements.
+prepared statements. The pool is bounded at sixteen, and a query arriving
+when all are in use waits for one rather than opening another — opening a
+connection costs far more than any query npanel makes, and a burst of them,
+like every hostname missing the serving cache the moment a build goes live,
+would otherwise open a connection per query. Async callers wait their turn
+before reaching the blocking pool, so a burst queues as futures rather than
+as parked threads.
 
 The tables:
 
