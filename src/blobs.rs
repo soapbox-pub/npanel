@@ -55,6 +55,40 @@ impl Encoding {
             Encoding::Gzip => ".gz",
         }
     }
+
+    /// Compress `size` bytes of `input` into `output`, at the settings every
+    /// copy npanel serves is made with.
+    pub fn compress(self, input: &mut impl Read, output: &mut impl Write, size: u64) -> std::io::Result<()> {
+        match self {
+            Encoding::Gzip => {
+                let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(9));
+                std::io::copy(input, &mut encoder)?;
+                encoder.finish()?.flush()
+            }
+            Encoding::Br => {
+                let params = brotli::enc::BrotliEncoderParams {
+                    quality: if size > BROTLI_SLOW_ABOVE { 5 } else { 11 },
+                    // A window as large as the input, capped at what every
+                    // decoder handles without the large-window extension.
+                    lgwin: 24,
+                    size_hint: size as usize,
+                    ..Default::default()
+                };
+                brotli::BrotliCompress(input, output, &params)?;
+                output.flush()
+            }
+        }
+    }
+}
+
+/// Whether `size` bytes are worth trying to compress at all.
+pub fn worth_compressing(size: u64) -> bool {
+    size >= MIN_VARIANT_SIZE
+}
+
+/// Whether a compressed copy saves enough over the `size` it was made from.
+pub fn worth_keeping(compressed: u64, size: u64) -> bool {
+    compressed as f64 <= size as f64 * (1.0 - MIN_SAVING)
 }
 
 /// Blobs too small to bother compressing: anything under a TCP segment arrives
@@ -293,7 +327,7 @@ impl BlobStore {
         let Some(size) = self.size(sha256) else {
             return Ok(Vec::new());
         };
-        if size < MIN_VARIANT_SIZE {
+        if !worth_compressing(size) {
             return Ok(Vec::new());
         }
 
@@ -540,31 +574,10 @@ impl BlobStore {
 
         (|| -> Result<bool> {
             let mut input = std::io::BufReader::with_capacity(256 * 1024, std::fs::File::open(self.path(sha256))?);
-            let output = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&tmp)?);
+            let mut output = std::io::BufWriter::with_capacity(256 * 1024, std::fs::File::create(&tmp)?);
+            encoding.compress(&mut input, &mut output, size)?;
 
-            match encoding {
-                Encoding::Gzip => {
-                    let mut encoder = flate2::write::GzEncoder::new(output, flate2::Compression::new(9));
-                    std::io::copy(&mut input, &mut encoder)?;
-                    encoder.finish()?.flush()?;
-                }
-                Encoding::Br => {
-                    let params = brotli::enc::BrotliEncoderParams {
-                        quality: if size > BROTLI_SLOW_ABOVE { 5 } else { 11 },
-                        // A window as large as the input, capped at what every
-                        // decoder handles without the large-window extension.
-                        lgwin: 24,
-                        size_hint: size as usize,
-                        ..Default::default()
-                    };
-                    let mut output = output;
-                    brotli::BrotliCompress(&mut input, &mut output, &params)?;
-                    output.flush()?;
-                }
-            }
-
-            let compressed = size_of(&tmp).unwrap_or(u64::MAX);
-            if compressed as f64 > size as f64 * (1.0 - MIN_SAVING) {
+            if !worth_keeping(size_of(&tmp).unwrap_or(u64::MAX), size) {
                 return Ok(false);
             }
             tmp.keep_as(&self.variant_path(sha256, encoding))?;

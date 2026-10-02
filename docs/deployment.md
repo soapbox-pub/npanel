@@ -317,8 +317,9 @@ there is nothing left for Caddy to compress, and compressing here would only
 help the visitors who arrive through it. Visitors on a site's onion address
 never touch Caddy at all, and they are the ones on the slowest connections.
 
-The dashboard block keeps its `encode`: that's npanel's own SPA, not an
-nsite, so it isn't part of what gets compressed at deploy time.
+The dashboard block keeps its `encode`, for the API's JSON. The dashboard's
+own files npanel compresses itself, when it starts, and Caddy passes those
+through as they are.
 
 If you are upgrading an npanel that has already been running, compress what it
 downloaded before you take `encode` out of the site block. Otherwise every site

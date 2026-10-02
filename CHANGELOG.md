@@ -26,6 +26,11 @@ it is tagged.
   rustup installs on its own. Production builds use `--profile dist`; plain
   `--release` now rebuilds in seconds rather than minutes.
 - The release binary is stripped and built with full LTO: 29 MB, down from 42.
+- The dashboard loads in a fraction of the bytes. npanel serves its files
+  brotli- or gzip-compressed itself, with `ETag`s so a reload revalidates
+  rather than downloads, and each page is its own chunk: opening the site list
+  fetches 900 KB of scripts and styles, 235 KB with brotli, where the whole
+  1.75 MB bundle used to come first, uncompressed unless a proxy did it.
 
 ## [0.2.0]
 

@@ -7,6 +7,12 @@
 //! see build.rs), so the two can't come from different versions. Without the
 //! feature it is read from disk, which is what lets a developer rebuild it
 //! while npanel runs.
+//!
+//! Text files go out compressed, with the same brotli and gzip settings as a
+//! site's blobs, so the dashboard is small without a proxy's help. The copies
+//! are made in memory when npanel starts, rather than at build time: the
+//! built `dist` is also published as an nsite, which shouldn't carry them,
+//! and `index.html` is rewritten at runtime anyway.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -19,9 +25,12 @@ use bytes::Bytes;
 use http::{header, Method, Response, StatusCode};
 use parking_lot::Mutex;
 
+use crate::blobs::{worth_compressing, worth_keeping, Encoding, Variants};
 use crate::fields;
+use crate::hash::BlobHash;
 use crate::log::Logger;
-use crate::mime::content_type;
+use crate::mime::{content_type, is_compressible};
+use crate::serve::{etag_for, matches_etag, negotiate_encoding};
 
 #[cfg(feature = "embedded-dashboard")]
 mod embedded {
@@ -69,14 +78,84 @@ pub struct Dashboard {
 struct Inner {
     source: Source,
     origin: String,
-    /// File contents by path, reused until the file on disk changes. HTML is
-    /// held already rewritten.
-    cache: Mutex<HashMap<PathBuf, (SystemTime, u64, Bytes)>>,
+    /// Files by path, reused until the file on disk changes.
+    cache: Mutex<HashMap<PathBuf, Arc<Loaded>>>,
+}
+
+/// A file as it is served: HTML already rewritten, and compressed copies
+/// once they have been made.
+struct Loaded {
+    modified: SystemTime,
+    size: u64,
+    identity: Bytes,
+    hash: BlobHash,
+    /// Whether the response depends on `Accept-Encoding`.
+    compressible: bool,
+    /// Made off the request path, since brotli at its best takes seconds
+    /// over a large bundle. Until it's done the file goes out as it is.
+    compressed: OnceLock<Compressed>,
+    /// Whether a request has already set the compressing going.
+    queued: AtomicBool,
+}
+
+#[derive(Default)]
+struct Compressed {
+    br: Option<Bytes>,
+    gzip: Option<Bytes>,
+}
+
+impl Compressed {
+    fn get(&self, encoding: Encoding) -> Option<&Bytes> {
+        match encoding {
+            Encoding::Br => self.br.as_ref(),
+            Encoding::Gzip => self.gzip.as_ref(),
+        }
+    }
+}
+
+impl Loaded {
+    fn new(file: &DashboardFile, identity: Bytes) -> Loaded {
+        let compressible = is_compressible(&file.path.to_string_lossy()) && worth_compressing(identity.len() as u64);
+        let compressed = OnceLock::new();
+        if !compressible {
+            let _ = compressed.set(Compressed::default());
+        }
+        Loaded {
+            modified: file.modified,
+            size: file.size,
+            hash: BlobHash::of(&identity),
+            identity,
+            compressible,
+            compressed,
+            queued: AtomicBool::new(false),
+        }
+    }
+
+    /// The compressed copies, made now if they haven't been. CPU-bound: call
+    /// it on the blocking pool.
+    fn compress(&self) -> &Compressed {
+        self.compressed.get_or_init(|| {
+            let size = self.identity.len() as u64;
+            let mut compressed = Compressed::default();
+            for encoding in Encoding::ALL {
+                let mut bytes = Vec::new();
+                // Reading from a slice and writing to a Vec can't fail.
+                if encoding.compress(&mut &self.identity[..], &mut bytes, size).is_ok() && worth_keeping(bytes.len() as u64, size) {
+                    let bytes = Some(Bytes::from(bytes));
+                    match encoding {
+                        Encoding::Br => compressed.br = bytes,
+                        Encoding::Gzip => compressed.gzip = bytes,
+                    }
+                }
+            }
+            compressed
+        })
+    }
 }
 
 /// What a request found.
 enum Found {
-    File(DashboardFile, Bytes),
+    File(DashboardFile, Arc<Loaded>),
     NotBuilt,
     Unreadable,
 }
@@ -87,14 +166,28 @@ impl Dashboard {
         Dashboard { inner: Arc::new(inner), log, warned: AtomicBool::new(false) }
     }
 
+    /// Load and compress every file the dashboard has, so that the visitors
+    /// who arrive first after a start get compressed copies too. A dashboard
+    /// that hasn't been built yet is left for requests to find.
+    pub fn warm(&self) -> tokio::task::JoinHandle<()> {
+        let inner = self.inner.clone();
+        tokio::task::spawn_blocking(move || {
+            for relative in inner.list() {
+                if let Some(loaded) = inner.find(&relative).and_then(|file| inner.contents(&file).ok()) {
+                    loaded.compress();
+                }
+            }
+        })
+    }
+
     pub async fn serve(&self, request: &http::request::Parts) -> Response<Body> {
         // Statting and reading files is blocking work, so it is done off the
         // runtime threads even when the answer turns out to be cached.
         let (inner, path) = (self.inner.clone(), crate::util::decode_path(request.uri.path()));
         let found = tokio::task::spawn_blocking(move || inner.load(&path)).await.unwrap_or(Found::Unreadable);
 
-        let (file, body) = match found {
-            Found::File(file, body) => (file, body),
+        let (file, loaded) = match found {
+            Found::File(file, loaded) => (file, loaded),
             Found::Unreadable => return Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).expect("response"),
             Found::NotBuilt => {
                 if !self.warned.swap(true, Ordering::Relaxed) {
@@ -115,11 +208,43 @@ impl Dashboard {
             }
         };
 
-        let builder = Response::builder()
-            .header(header::CONTENT_TYPE, content_type(&file.path.to_string_lossy()))
-            .header(header::CONTENT_LENGTH, body.len())
-            .header(header::CACHE_CONTROL, if file.immutable { "public, max-age=31536000, immutable" } else { "no-cache" });
+        let compressed = loaded.compressed.get();
+        if compressed.is_none() && !loaded.queued.swap(true, Ordering::Relaxed) {
+            // A file that changed on disk since `warm`, or one asked for
+            // while it was still running.
+            let loaded = loaded.clone();
+            tokio::task::spawn_blocking(move || {
+                loaded.compress();
+            });
+        }
 
+        let variants = Variants {
+            identity: loaded.identity.len() as u64,
+            br: compressed.and_then(|c| c.br.as_ref()).map(|b| b.len() as u64),
+            gzip: compressed.and_then(|c| c.gzip.as_ref()).map(|b| b.len() as u64),
+        };
+        let accept_encoding = request.headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok());
+        let encoding = negotiate_encoding(accept_encoding, &variants);
+        let body = encoding.and_then(|e| compressed?.get(e)).unwrap_or(&loaded.identity).clone();
+        let etag = etag_for(loaded.hash, encoding);
+
+        let mut builder = Response::builder()
+            .header(header::CONTENT_TYPE, content_type(&file.path.to_string_lossy()))
+            .header(header::CACHE_CONTROL, if file.immutable { "public, max-age=31536000, immutable" } else { "no-cache" })
+            .header(header::ETAG, &etag);
+        if loaded.compressible {
+            builder = builder.header(header::VARY, "Accept-Encoding");
+        }
+
+        let if_none_match = request.headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+        if matches_etag(if_none_match, &etag) {
+            return builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response");
+        }
+
+        if let Some(encoding) = encoding {
+            builder = builder.header(header::CONTENT_ENCODING, encoding.as_str());
+        }
+        builder = builder.header(header::CONTENT_LENGTH, body.len());
         if request.method == Method::HEAD {
             return builder.body(Body::empty()).expect("response");
         }
@@ -133,30 +258,57 @@ impl Inner {
     fn load(&self, path: &str) -> Found {
         let Some(file) = self.find(&normalize(path)).or_else(|| self.find(Path::new("index.html"))) else { return Found::NotBuilt };
         match self.contents(&file) {
-            Ok(body) => Found::File(file, body),
+            Ok(loaded) => Found::File(file, loaded),
             Err(_) => Found::Unreadable,
         }
     }
 
     /// A file's bytes, with HTML rewritten, cached until the file changes.
-    fn contents(&self, file: &DashboardFile) -> std::io::Result<Bytes> {
-        if let (Some(bytes), false) = (file.embedded, file.html) {
-            return Ok(Bytes::from_static(bytes));
-        }
-        if let Some((modified, size, bytes)) = self.cache.lock().get(&file.path) {
-            if *modified == file.modified && *size == file.size {
-                return Ok(bytes.clone());
+    fn contents(&self, file: &DashboardFile) -> std::io::Result<Arc<Loaded>> {
+        if let Some(loaded) = self.cache.lock().get(&file.path) {
+            if loaded.modified == file.modified && loaded.size == file.size {
+                return Ok(loaded.clone());
             }
         }
 
         let raw = match file.embedded {
-            Some(bytes) => bytes.to_vec(),
-            None => std::fs::read(&file.path)?,
+            Some(bytes) => Bytes::from_static(bytes),
+            None => Bytes::from(std::fs::read(&file.path)?),
         };
-        let bytes = if file.html { Bytes::from(rewrite_preview_urls(&String::from_utf8_lossy(&raw), &self.origin)) } else { Bytes::from(raw) };
+        let identity = if file.html { Bytes::from(rewrite_preview_urls(&String::from_utf8_lossy(&raw), &self.origin)) } else { raw };
 
-        self.cache.lock().insert(file.path.clone(), (file.modified, file.size, bytes.clone()));
-        Ok(bytes)
+        let loaded = Arc::new(Loaded::new(file, identity));
+        self.cache.lock().insert(file.path.clone(), loaded.clone());
+        Ok(loaded)
+    }
+
+    /// Every file the dashboard has, as paths relative to its root.
+    fn list(&self) -> Vec<PathBuf> {
+        match &self.source {
+            Source::Disk { .. } => {
+                let mut files = Vec::new();
+                if let Some(root) = self.disk_root() {
+                    walk(root, Path::new(""), &mut files);
+                }
+                files
+            }
+            #[cfg(feature = "embedded-dashboard")]
+            Source::Embedded => embedded::FILES.iter().map(|(path, _)| PathBuf::from(path)).collect(),
+        }
+    }
+
+    /// The directory a disk dashboard is served from, once one has been built.
+    fn disk_root(&self) -> Option<&PathBuf> {
+        let (candidates, root) = match &self.source {
+            Source::Disk { candidates, root } => (candidates, root),
+            #[cfg(feature = "embedded-dashboard")]
+            Source::Embedded => return None,
+        };
+        if let Some(root) = root.get() {
+            return Some(root);
+        }
+        let found = candidates.iter().find(|dir| dir.join("index.html").is_file())?;
+        Some(root.get_or_init(|| found.clone()))
     }
 
     /// The file at a normalized relative path, if the dashboard has one.
@@ -164,15 +316,8 @@ impl Inner {
         let html = relative.extension().is_some_and(|ext| ext == "html");
         let immutable = relative.starts_with("assets");
         match &self.source {
-            Source::Disk { candidates, root } => {
-                let root = match root.get() {
-                    Some(root) => root,
-                    None => {
-                        let found = candidates.iter().find(|dir| dir.join("index.html").is_file())?;
-                        root.get_or_init(|| found.clone())
-                    }
-                };
-                let candidate = root.join(relative);
+            Source::Disk { .. } => {
+                let candidate = self.disk_root()?.join(relative);
                 let metadata = std::fs::metadata(&candidate).ok().filter(|m| m.is_file())?;
                 Some(DashboardFile {
                     html,
@@ -196,6 +341,18 @@ impl Inner {
                     embedded: Some(bytes),
                 })
             }
+        }
+    }
+}
+
+/// Every file under `dir`, as paths relative to the root it started from.
+fn walk(dir: &Path, relative: &Path, files: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let (path, relative) = (entry.path(), relative.join(entry.file_name()));
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => walk(&path, &relative, files),
+            Ok(kind) if kind.is_file() => files.push(relative),
+            _ => {}
         }
     }
 }
@@ -290,6 +447,64 @@ mod tests {
         assert_eq!(response.headers()["content-type"], "text/html; charset=utf-8");
     }
 
+    #[tokio::test]
+    async fn compresses_and_revalidates() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        let script = "console.log('hello, world');\n".repeat(200);
+        std::fs::write(dir.path().join("index.html"), "<p>app</p>").unwrap();
+        std::fs::write(dir.path().join("assets/app-1.js"), &script).unwrap();
+        std::fs::write(dir.path().join("assets/logo.png"), "png ".repeat(200)).unwrap();
+        let dashboard = Dashboard::new(Source::disk(vec![dir.path().to_path_buf()]), "panel.example.com", Logger::new(crate::log::LogLevel::Error));
+        dashboard.warm().await.unwrap();
+
+        let request = |method: Method, path: &str, headers: &[(&str, &str)]| {
+            let mut builder = Request::builder().method(method).uri(path);
+            for (name, value) in headers {
+                builder = builder.header(*name, *value);
+            }
+            builder.body(()).unwrap().into_parts().0
+        };
+        let body = |response: Response<Body>| async { http_body_util::BodyExt::collect(response.into_body()).await.unwrap().to_bytes() };
+
+        let response = dashboard.serve(&request(Method::GET, "/assets/app-1.js", &[("accept-encoding", "gzip, br")])).await;
+        assert_eq!(response.headers()["content-encoding"], "br");
+        assert_eq!(response.headers()["vary"], "Accept-Encoding");
+        let etag = response.headers()["etag"].to_str().unwrap().to_string();
+        assert!(etag.ends_with("-br\""));
+        let length: usize = response.headers()["content-length"].to_str().unwrap().parse().unwrap();
+        let compressed = body(response).await;
+        assert_eq!(compressed.len(), length);
+        let mut decompressed = Vec::new();
+        brotli::BrotliDecompress(&mut &compressed[..], &mut decompressed).unwrap();
+        assert_eq!(decompressed, script.as_bytes());
+
+        let response = dashboard.serve(&request(Method::GET, "/assets/app-1.js", &[("accept-encoding", "gzip")])).await;
+        assert_eq!(response.headers()["content-encoding"], "gzip");
+        let response = dashboard.serve(&request(Method::HEAD, "/assets/app-1.js", &[])).await;
+        assert!(!response.headers().contains_key("content-encoding"));
+        assert_eq!(response.headers()["content-length"], script.len().to_string().as_str());
+        assert!(body(response).await.is_empty());
+
+        // A tag only matches the representation it was given for.
+        let response = dashboard.serve(&request(Method::GET, "/assets/app-1.js", &[("accept-encoding", "br"), ("if-none-match", &etag)])).await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(response.headers()["etag"], etag.as_str());
+        assert!(body(response).await.is_empty());
+        let response = dashboard.serve(&request(Method::GET, "/assets/app-1.js", &[("accept-encoding", "gzip"), ("if-none-match", &etag)])).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // index.html is revalidated on every load, so it needs the tag most.
+        let response = dashboard.serve(&request(Method::GET, "/hosts", &[])).await;
+        let etag = response.headers()["etag"].to_str().unwrap().to_string();
+        let response = dashboard.serve(&request(Method::GET, "/hosts", &[("if-none-match", &etag)])).await;
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+        let response = dashboard.serve(&request(Method::GET, "/assets/logo.png", &[("accept-encoding", "gzip, br")])).await;
+        assert!(!response.headers().contains_key("content-encoding"));
+        assert!(!response.headers().contains_key("vary"));
+    }
+
     #[cfg(feature = "embedded-dashboard")]
     #[tokio::test]
     async fn serves_the_embedded_dashboard() {
@@ -300,8 +515,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers()["content-type"], "text/html; charset=utf-8");
 
-        let (asset, _) = embedded::FILES.iter().find(|(path, _)| path.starts_with("assets/")).expect("a built asset");
+        let (asset, _) = embedded::FILES.iter().filter(|(path, _)| path.ends_with(".js")).max_by_key(|(_, bytes)| bytes.len()).expect("a built script");
         let response = dashboard.serve(&get(&format!("/{asset}"))).await;
         assert_eq!(response.headers()["cache-control"], "public, max-age=31536000, immutable");
+        assert_eq!(response.headers()["vary"], "Accept-Encoding");
+
+        // What `warm` goes through.
+        assert!(dashboard.inner.list().iter().any(|path| path == Path::new("index.html")));
     }
 }

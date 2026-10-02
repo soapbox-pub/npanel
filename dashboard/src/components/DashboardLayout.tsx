@@ -1,5 +1,5 @@
 import { Globe, History, Lock, Settings as SettingsIcon, TriangleAlert, Users } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { type ReactNode, Suspense } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -61,7 +61,8 @@ export function DashboardLayout() {
           )}
         >
           <OutdatedServer />
-          {me.data && <Outlet />}
+          {/* Pages load as chunks of their own; the shell stays up while one does. */}
+          <Suspense>{me.data && <Outlet />}</Suspense>
         </div>
       </main>
 

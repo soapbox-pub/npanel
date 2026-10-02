@@ -99,6 +99,15 @@ different versions. Without the feature they are read off disk, from
 source tree, and the rewritten `index.html` is cached until its mtime changes,
 which is what lets a developer rebuild the dashboard under a running server.
 
+Its text files are served compressed, negotiated the way a site's are below,
+with the same brotli and gzip settings and per-encoding `ETag`s. The copies are
+made in memory rather than at build time: `dist` is also published as an
+nsite, which shouldn't carry them, and `index.html` is only final once it has
+been rewritten. Brotli at its slowest takes seconds over the larger chunks, so
+npanel compresses every file on the blocking pool when it starts, and a file
+asked for before its copies are ready goes out as it is, in the meantime. A
+file that changes on disk is compressed again the first time it is asked for.
+
 The same build is also published as an nsite, where nothing serves the API on
 its origin. It finds its server at startup (`dashboard/src/lib/server.ts`): if
 `/api/instance` on its own origin answers as npanel, that is the server;

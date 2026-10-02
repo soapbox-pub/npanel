@@ -1,16 +1,21 @@
+import { lazy } from "react";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 
 import { DashboardLayout } from "@/components/DashboardLayout";
 import { ScrollToTop } from "@/components/ScrollToTop";
-import AnalyticsPage from "@/pages/AnalyticsPage";
-import AuditLogPage from "@/pages/AuditLogPage";
-import HostDetailPage from "@/pages/HostDetailPage";
-import HostSectionPage from "@/pages/HostSectionPage";
-import HostsPage from "@/pages/HostsPage";
-import NotFound from "@/pages/NotFound";
-import SettingsPage from "@/pages/SettingsPage";
-import SettingsSectionPage from "@/pages/SettingsSectionPage";
-import UsersPage from "@/pages/UsersPage";
+
+// Each page is its own chunk, so the first load carries only the one it
+// opens on: charts, the date picker, and the Public Suffix List all come
+// with the pages that use them.
+const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
+const AuditLogPage = lazy(() => import("@/pages/AuditLogPage"));
+const HostDetailPage = lazy(() => import("@/pages/HostDetailPage"));
+const HostSectionPage = lazy(() => import("@/pages/HostSectionPage"));
+const HostsPage = lazy(() => import("@/pages/HostsPage"));
+const NotFound = lazy(() => import("@/pages/NotFound"));
+const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
+const SettingsSectionPage = lazy(() => import("@/pages/SettingsSectionPage"));
+const UsersPage = lazy(() => import("@/pages/UsersPage"));
 
 export function AppRouter() {
   return (

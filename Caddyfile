@@ -30,6 +30,8 @@
 
 # The dashboard. Its certificate is issued at startup like a normal site.
 {$DASHBOARD_HOST:panel.example.com} {
+	# For the API's JSON. npanel sends the dashboard's own files already
+	# compressed, and Caddy leaves those as they are.
 	encode zstd gzip
 	reverse_proxy {$NPANEL_UPSTREAM:127.0.0.1:3000}
 }
