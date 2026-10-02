@@ -42,7 +42,6 @@ mod supervise;
 mod sync;
 mod tls_check;
 mod tor;
-mod tor_control;
 mod util;
 
 use std::net::SocketAddr;
@@ -138,12 +137,13 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         log,
     }));
 
-    // Onion services, if an admin has turned them on. An unreachable Tor
-    // retries on its own, and no listener waits for it.
+    // Onion services, if an admin has turned them on, on a thread of their
+    // own. Joining the Tor network takes a while, and no listener waits for it.
     let tor = Arc::new(tor::TorService::start(tor::TorDeps {
         db: db.clone(),
         settings: settings.clone(),
         log,
+        data_dir: config.data_dir.clone(),
         site: site.clone(),
         serve_cache: serve_cache.clone(),
         deployments: deployments.clone() as Arc<dyn Deployments>,

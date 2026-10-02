@@ -48,8 +48,8 @@ export function useStatus() {
     queryKey: useKey('status'),
     queryFn: () => api!.status(),
     enabled: !!api,
-    // Tor is reached in the background after an admin turns it on, and again
-    // after every reconnect, so keep asking while it is expected but absent.
+    // Joining the Tor network takes a while after an admin turns it on, so
+    // keep asking while it is expected but not there yet.
     // Nothing else here changes without the dashboard causing it.
     refetchInterval: (query) => {
       const tor = query.state.data?.tor;

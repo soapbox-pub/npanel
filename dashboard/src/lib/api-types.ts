@@ -160,18 +160,18 @@ export interface Settings {
   contact_npub: string;
   public_site_list: boolean;
   tor_enabled: boolean;
-  tor_control_url: string;
-  tor_control_password: string;
   /** The IANA time zone every site's analytics are reported in. */
   analytics_timezone: string;
 }
 
-/** Whether npanel is reaching Tor, and what it has published there. */
+/** Whether npanel is on the Tor network, and what it has published there. */
 export interface TorStatus {
   enabled: boolean;
   connected: boolean;
+  /** How far through joining the network npanel is, 0–100. */
+  progress: number;
   services: number;
-  /** Why Tor is unreachable, as a sentence, or empty when it isn't. */
+  /** Why Tor isn't working, as a sentence, or empty when nothing is wrong. */
   error: string;
 }
 

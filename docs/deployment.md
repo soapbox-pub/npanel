@@ -119,14 +119,11 @@ Migrations run at startup, so back up the database first.
 
 ### The volumes
 
-`npanel-data` is `DATA_DIR`: the database and the blob store. `caddy-data` holds
+`npanel-data` is `DATA_DIR`: the database, the blob store, and Tor's state
+once it is turned on. `caddy-data` holds
 the certificates and the ACME account key — losing it means re-issuing every
 certificate, which Let's Encrypt rate limits, so it is worth backing up even
 though it rebuilds itself.
-
-`tor-data` is Tor's own state and the control cookie it shares with npanel. It
-is not worth backing up: onion keys live in npanel's database, so losing this
-volume costs a fresh bootstrap and no addresses. See [Tor](#tor).
 
 The image has no `sqlite3` binary, so take the backup from
 [Backups](#backups) with a throwaway container that does. It's safe while npanel
@@ -186,7 +183,7 @@ unit's `ReadWritePaths`. The rest have sensible defaults; see
 ### From source
 
 On another architecture, or to run unreleased code, build it. You need Rust
-1.85 or newer and [Bun](https://bun.sh) 1.3 or newer:
+1.92 or newer and [Bun](https://bun.sh) 1.3 or newer:
 
 ```sh
 git clone <your-repo-url> npanel && cd npanel
@@ -408,91 +405,39 @@ Optional, and off until an admin turns it on. With
 published as a v3 onion service — one address per site, minted when the site is
 added and withdrawn when it is removed. There is nothing to configure per site.
 
-npanel needs a Tor daemon it can reach on a control port. It never edits
-`torrc`: services are created over that port, and npanel keeps the key each
-address is made of, which is what makes an address survive a restart of either
-process.
+Tor is built into npanel, so there is nothing to install, on Docker or under
+systemd. Turn the setting on under **Settings → Tor**. npanel joins the Tor
+network, which takes a minute or so the first time, and the addresses answer
+once it has; each site's shows on its own page.
 
-### On Docker
+npanel keeps the key each address is made of in its database, which is what
+makes an address survive a restart. Tor's own state — its directory cache, its
+guards, each service's introduction points — goes in `DATA_DIR/tor`. It is not
+worth backing up on its own: losing it costs a slower start and no addresses.
 
-Nothing to install — `compose.yaml` already runs a Tor container, built from
-`tor/` in this repository. Turn the setting on under **Settings → Tor** and the
-addresses appear within a second or two; each site's shows on its own page.
+Tor checks the permissions of the directories it writes to, and refuses to
+start in one that another user could change: `DATA_DIR/tor`, and every
+directory above it, must not be writable by anyone but npanel's user and root.
+The layouts in this guide already are. If Tor won't start, the Settings page
+and the log (`tor_unavailable`) both say why.
 
-That container shares npanel's network namespace, which puts Tor's control port
-on the same loopback address the default `tor_control_url` already names, and
-keeps it off every network. The two containers also share a `tor-data` volume,
-mounted read-only on npanel's side, because cookie authentication means npanel
-has to read a file Tor writes — and it has to be at the same path in both, since
-Tor names that path itself when asked how to authenticate.
-
-One wart: sharing a namespace means `docker compose restart npanel` takes the
-Tor container down with it. `restart: unless-stopped` brings it back on its own.
-
-Onion keys are in npanel's database, not in `tor-data`, so losing that volume
-costs a Tor bootstrap and nothing else. Back up `npanel-data` as always.
-
-### Alongside systemd
-
-```sh
-sudo apt install tor
-```
-
-Distribution packages leave the control port off, so enable one in
-`/etc/tor/torrc`:
-
-```
-ControlPort 9051
-CookieAuthentication 1
-CookieAuthFileGroupReadable 1
-```
-
-`ControlPort` on loopback is what the default `tor_control_url` expects, and
-needs no change under Settings. Cookie authentication means the `npanel` user
-must be able to read Tor's cookie, which on Debian and Ubuntu is the
-`debian-tor` group:
-
-```sh
-sudo usermod -aG debian-tor npanel
-sudo systemctl restart tor
-sudo systemctl restart npanel
-```
-
-Both restarts matter — group membership is read at process start, so npanel
-does not pick it up until it is restarted too.
-
-Then order the unit after Tor, in `/etc/systemd/system/npanel.service`:
-
-```ini
-[Unit]
-After=network-online.target tor.service
-Wants=network-online.target tor.service
-```
-
-`Wants` rather than `Requires`: npanel starts and serves clearnet traffic
-perfectly well with Tor down, retries the connection with backoff, and
-republishes every address from its stored keys when Tor comes back. Tor being
-unavailable should not keep the gateway from starting.
-
-If you would rather use a `ControlSocket` than a TCP port, set
-`tor_control_url` to `unix:/run/tor/control`. The hardening in [section
-4](#4-systemd) does not get in the way: `ProtectSystem=strict` mounts the
-hierarchy read-only, but connecting to a socket is not a write to the
-filesystem it sits on, and no `ReadWritePaths=` is needed for it. Whether npanel
-may connect is decided by the socket's own ownership and mode — which is the
-`debian-tor` group above, exactly as for the cookie.
+Upgrading from a version that drove a separate Tor daemon needs nothing: every
+site keeps its address. The `tor_control_url` and `tor_control_password`
+settings are gone. The daemon can be removed — on Docker, `docker compose up -d
+--remove-orphans` takes down the old `tor` container, after which the
+`npanel_tor-data` volume can be deleted; alongside systemd, the `ControlPort`
+lines, the `debian-tor` group membership, and the `tor.service` ordering in the
+unit can all go.
 
 ### Verifying
 
-The Settings page reports whether npanel is connected and how many services it
-has published, and names the error when it isn't. From the command line,
-`/api/status` carries the same thing, and each host's `onion` field in
-`/api/hosts` is its address.
+The Settings page reports whether npanel is on the Tor network and how many
+services it is running, and names the problem when something is wrong. From the
+command line, `/api/status` carries the same thing, and each host's `onion`
+field in `/api/hosts` is its address.
 
-To actually fetch a site over Tor you need a SOCKS proxy. The bundled container
-deliberately has none (`SocksPort 0` — an open proxy on that network would be a
-liability), so this works against a Tor installed from `apt` but not against
-Docker:
+To actually fetch a site over Tor you need a Tor client with a SOCKS proxy, on
+any machine; npanel itself runs none:
 
 ```sh
 curl --socks5-hostname 127.0.0.1:9050 http://<address>.onion/ -I
@@ -500,17 +445,21 @@ curl --socks5-hostname 127.0.0.1:9050 http://<address>.onion/ -I
 
 Otherwise, paste the address into Tor Browser. Visitors never need to be told
 one: clearnet HTML responses carry an `Onion-Location` header, and Tor Browser
-offers the onion on its own.
+offers the onion on its own. A newly published address can take a minute or two
+to become reachable while its descriptor spreads through the network.
 
-**Tor shows as not connected.** In order of likelihood: the control port isn't
-enabled (`sudo ss -ltnp | grep 9051` finds nothing); npanel can't read the
-cookie file, which logs a permission error and means the group above is missing
-or npanel wasn't restarted after being added to it; `tor_control_url` points
-somewhere Tor isn't; or Tor is guarded by a `HashedControlPassword`, in which
-case put the password in
-[`tor_control_password`](configuration.md#tor_control_password). npanel logs
-each failed attempt and retries, so `journalctl -u npanel -f` shows the reason
-without any need to restart anything.
+**Tor is stuck joining the network.** The Settings page shows the reason Tor
+gives. npanel needs to make outbound connections to Tor relays, on whatever
+ports they listen on, so a firewall that only allows outbound HTTPS will stop
+it. A clock that is far wrong also stops it, since Tor checks the dates on what
+relays send. npanel keeps trying, so fixing either needs no restart.
+
+**Limits worth knowing.** Arti, the Tor implementation built in, is younger
+than the C Tor most onion services run on. Its proof-of-work defence against
+floods of connection attempts is still marked experimental, so npanel's build
+leaves it out, and its onion services go without what C Tor offers there. A
+gateway whose onions come under that kind of attack can turn Tor off without
+affecting its clearnet sites.
 
 **A site has no address yet.** Only enabled hosts get one, and publishing is
 asynchronous — a newly added site takes a moment. If it never arrives, look for

@@ -163,6 +163,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         db: db.clone(),
         settings: settings.clone(),
         log,
+        data_dir: dir.path().to_path_buf(),
         site: site.clone(),
         serve_cache: serve_cache.clone(),
         deployments: deployments.clone(),
@@ -476,6 +477,59 @@ async fn a_failed_deploy_is_retried_with_backoff_then_left_to_the_next_sync() {
     let messages: Vec<&str> = log["entries"].as_array().unwrap().iter().map(|e| e["msg"].as_str().unwrap()).collect();
     assert!(messages.iter().filter(|m| **m == "deploy_retrying").count() >= 2, "{messages:?}");
     assert_eq!(messages.last(), Some(&"deploy_failed"), "{messages:?}");
+
+    gw.deployer.stop().await;
+}
+
+/// Onion traffic never touches a socket: Tor hands npanel a stream, which is
+/// served as the onion it arrived at and as nothing else.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_is_served_at_its_onion_and_only_there() {
+    let page = "<!doctype html><html><head><title>Onion</title></head><body>hi</body></html>";
+    let server = blossom([(sha(page.as_bytes()), page.as_bytes().to_vec())].into()).await;
+    let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, vec![vec!["path".into(), "/index.html".into(), sha(page.as_bytes())]], "");
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    eventually("the site going live", async || gw.request("GET", "docs.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
+
+    // What the Tor runtime does when it mints an address.
+    let key = crate::tor::OnionKey::generate();
+    let (address, secret) = (key.address.clone(), key.secret_key.clone());
+    let id: i64 = gw
+        .db
+        .with(move |conn| {
+            let id = conn.query_row("SELECT id FROM hosts WHERE hostname = 'docs.example.com'", [], |r| r.get(0))?;
+            conn.execute("INSERT INTO onion_services (host_id, address, secret_key, created_at) VALUES (?, ?, ?, 1)", rusqlite::params![id, address, secret])?;
+            Ok(id)
+        })
+        .unwrap();
+    gw.deployer.rebuild(vec![id]);
+
+    let over_tor = async |arrived_at: &str, host: &str| -> String {
+        let (mut client, stream) = tokio::io::duplex(64 * 1024);
+        let connections = crate::server::Connections::new();
+        connections.serve(stream, crate::tor::onion_handler(gw.app.site.clone(), arrived_at.to_string(), Logger::new(LogLevel::Error)));
+        let request = format!("GET / HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n");
+        tokio::io::AsyncWriteExt::write_all(&mut client, request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut client, &mut response).await.unwrap();
+        response
+    };
+
+    eventually("the onion being served", async || over_tor(&key.address, &key.address).await.starts_with("HTTP/1.1 200")).await;
+    let response = over_tor(&key.address, &format!("{}:80", key.address)).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.ends_with(page), "{response}");
+    assert!(response.to_lowercase().contains("content-type: text/html"), "{response}");
+
+    // A visitor writes the Host header, but can't make it name anything else.
+    for host in ["panel.example.com", "docs.example.com", &crate::tor::OnionKey::generate().address] {
+        let response = over_tor(&key.address, host).await;
+        assert!(response.starts_with("HTTP/1.1 404"), "{host}: {response}");
+    }
 
     gw.deployer.stop().await;
 }

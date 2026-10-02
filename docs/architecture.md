@@ -23,6 +23,7 @@ its own, it keeps local storage in sync with Nostr.
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
+   a site's onion address ──► Tor, built in, on its own thread ──► the same site
 ```
 
 ## Request routing
@@ -33,8 +34,8 @@ Everything hangs off the `Host` header, checked in one middleware in
 an nsite.
 
 Only `Host` is read. Ports and the trailing dot of an FQDN are stripped and the
-name is lowercased (`request_hostname`, `src/hostname.rs`, shared with the Tor
-listener so the two cannot drift). `X-Forwarded-Host` is deliberately ignored:
+name is lowercased (`request_hostname`, `src/hostname.rs`, shared with onion
+connections so the two cannot drift). `X-Forwarded-Host` is deliberately ignored:
 npanel cannot tell a proxy's copy of that header from a client's, and a proxy
 that doesn't set one — nginx doesn't — would pass a visitor's straight through,
 letting a request for any site ask for the dashboard instead. A proxy that
@@ -641,40 +642,57 @@ With `tor_enabled` on, every enabled site is also published as a v3 onion
 service. Staff do nothing: adding a site mints an address for it, removing one
 takes its address away with it.
 
-npanel drives a Tor daemon over its control port rather than writing `torrc`.
-`ADD_ONION` registers a service immediately, with no restart and no
-configuration file shared between two processes, and it hands back the key Tor
-generated. **npanel keeps the keys and Tor keeps nothing**: services are
-registered at every connect and are deliberately not created with
-`Flags=Detach`, so they disappear with the control connection. That is the
-right way round — the key is what an address is made of, so storing it is what
-makes the address survive a restart, while an onion that outlived npanel would
-answer at an address whose server is gone.
+**Tor is built in.** npanel embeds Arti, the Tor Project's implementation in
+Rust, so there is no daemon to install, no control
+port to secure, and no second process to keep in step with this one. It runs on
+a Tokio runtime and a thread of its own (`src/tor.rs`), restarted like the
+deploy runtime if it dies: building circuits, the directory work Arti does
+whenever a new consensus arrives, and serving the sites' onion traffic all
+happen there, never on the threads serving clearnet visitors.
 
-Sites are *reconciled*, not tracked. Connecting, adding or removing a host, and
-changing a setting all run the same routine: ask the database which hosts are
-enabled, and make Tor match. Nothing is remembered between two runs, so a
-reconcile interrupted halfway is repaired by the next one instead of leaving a
-site holding an address nobody serves. An unreachable Tor is retried with
-backoff, and everything is republished from stored keys when it comes back.
+**npanel keeps the keys and Tor keeps nothing.** Arti's keystore is its
+in-memory one, and each service is launched with the key stored in
+`onion_services`. The key is what an address is made of, so storing it is what
+makes the address survive a restart. What Arti does write — under
+`DATA_DIR/tor`, its directory cache, its guards, each service's introduction
+points — makes coming back faster and keeps the same guards, which is safer;
+losing it costs a slower start and no address. Keys are stored as C Tor spells
+them in `ADD_ONION` (`ED25519-V3:` and the expanded secret key), which is how
+they were stored when npanel drove a separate Tor daemon, so every address from
+then carried over unchanged.
 
-**Onion traffic gets its own listener, and this is not optional.** Tor forwards
-a visitor's bytes unaltered, so every header in an onion request is the
-visitor's to choose — including `Host`, which on the public listener is enough
-to ask for the dashboard. This listener serves nothing but `.onion` names, so
-the dashboard and the JSON API cannot be reached through an onion however a
-request dresses itself up. Same reasoning that put certificate authorization on
-its own port.
+Arti finds a service's key and its state by a nickname, and each service is
+nicknamed after its own address. A nickname can only ever mean one key, so a
+host deleted and another created in its place can never inherit its state.
+After launching, npanel checks that Arti is answering at the address it was
+asked for, because a service launched without its key would quietly make up a
+new one.
 
-It also states its `RequestOrigin` outright — `scheme: "http"`, because there
-is no proxy and no TLS anywhere on this path — rather than reading
+Sites are *reconciled*, not tracked. Tor starting, adding or removing a host,
+and changing a setting all run the same routine: ask the database which hosts
+are enabled, and make the running services match. Nothing is remembered between
+two runs, so a reconcile interrupted halfway is repaired by the next one, and a
+service that fails to launch is retried with backoff.
+
+**Onion connections never reach a listener, and are served as the onion they
+arrived at.** Arti hands npanel each stream directly, and it goes to hyper
+without touching a socket (`Connections` in `src/server.rs`), so there is no
+port for anything else to reach. Tor forwards a visitor's bytes unaltered, so
+every header in an onion request is the visitor's to choose, including `Host`.
+A stream belongs to one service, so a request whose `Host` names anything but
+that service's own address — the dashboard, another site, another onion — gets
+a 404. The dashboard and the JSON API cannot be reached through an onion however
+a request dresses itself up.
+
+Each request states its `RequestOrigin` outright — `scheme: "http"`, because
+there is no proxy and no TLS anywhere on this path — rather than reading
 `X-Forwarded-Proto`, which here would be a header the visitor wrote. Tor
 authenticates and encrypts the connection itself, which is what the scheme
 would otherwise be claiming.
 
-That listener binds loopback on a port the kernel picks. npanel is the one
-issuing `ADD_ONION`, so it tells Tor which port to forward to; nobody else ever
-needs the number, and there is nothing to configure or collide with.
+Only a `BEGIN` for port 80 is accepted, and anything else is refused with
+`DONE`, as C Tor does, so that nothing about a refusal tells these services
+apart from any other.
 
 One consequence elsewhere: `.onion` is in the Public Suffix List, so an onion
 address would otherwise read as a root domain and be offered a `www` redirect
@@ -819,7 +837,7 @@ timer re-arms, and adding Blossom fallbacks or raising the size limit
 immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
-The deploy and analytics runtimes read the same settings and receive the same
+The deploy, analytics and Tor runtimes read the same settings and receive the same
 change notices, so their subscribers reconfigure exactly as the rest do.
 
 Nothing in the settings UI requires a restart, which is the point: the six

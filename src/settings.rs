@@ -93,10 +93,6 @@ settings! {
     public_site_list: bool,
     /// Whether every site also gets a Tor onion address.
     tor_enabled: bool,
-    /// The Tor control endpoint, as `tcp://host:port` or `unix:/path`.
-    tor_control_url: String,
-    /// Password for the control port, when Tor uses a `HashedControlPassword`.
-    tor_control_password: String,
     /// The IANA time zone analytics are reported in.
     analytics_timezone: String,
 }
@@ -122,9 +118,6 @@ impl Default for SettingsValues {
             contact_npub: String::new(),
             public_site_list: false,
             tor_enabled: false,
-            // Tor's own default control port, and what compose.yaml arranges.
-            tor_control_url: "tcp://127.0.0.1:9051".into(),
-            tor_control_password: String::new(),
             analytics_timezone: "UTC".into(),
         }
     }
@@ -138,9 +131,6 @@ impl SettingsValues {
         }
     }
 }
-
-/// Settings that are credentials, which the audit log must not repeat.
-const SECRET_SETTINGS: [&str; 1] = ["tor_control_password"];
 
 /// Reads and writes runtime settings, caching them in memory.
 pub struct Settings {
@@ -262,7 +252,7 @@ impl Settings {
                     tx.execute(
                         "INSERT INTO audit_log (actor_pubkey, action, target, old_value, new_value, created_at)
                          VALUES (?, 'settings.update', ?, ?, ?, ?)",
-                        params![writer, key, audit_value(key, previous).to_string(), audit_value(key, value).to_string(), now],
+                        params![writer, key, previous.to_string(), value.to_string(), now],
                     )?;
                 }
                 tx.commit()?;
@@ -279,16 +269,6 @@ impl Settings {
         }
 
         Ok(keys)
-    }
-}
-
-/// A setting's value as the audit log records it: whether a secret is set,
-/// rather than the secret. The log is kept forever and read by every admin.
-fn audit_value(key: &str, value: &Value) -> Value {
-    if SECRET_SETTINGS.contains(&key) {
-        Value::Bool(value.as_str().is_some_and(|s| !s.is_empty()))
-    } else {
-        value.clone()
     }
 }
 
@@ -333,16 +313,6 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "tls_check_limit_total" => integer(value, 1, 100_000),
         "contact_npub" => Ok(contact_npub(string(value)?.trim())?.into()),
         "public_site_list" | "tor_enabled" => boolean(value),
-        "tor_control_url" => Ok(tor_control_url(string(value)?.trim())?.into()),
-        "tor_control_password" => {
-            // Control commands are lines, so a line break would end this one
-            // and start another.
-            let password = string(value)?;
-            if password.chars().any(char::is_control) {
-                return Err("The password can't contain line breaks or other control characters.".into());
-            }
-            Ok(password.into())
-        }
         "analytics_timezone" => Ok(time_zone(string(value)?.trim())?.into()),
         _ => Err("Unknown setting.".into()),
     }
@@ -447,25 +417,6 @@ fn contact_npub(value: &str) -> Result<String, String> {
     }
 }
 
-/// Where Tor listens for control connections: `unix:/path` or `tcp://host:port`.
-fn tor_control_url(value: &str) -> Result<String, String> {
-    if let Some(path) = value.strip_prefix("unix:") {
-        if !path.starts_with('/') {
-            return Err(format!("A unix socket needs an absolute path: {value}"));
-        }
-        return Ok(format!("unix:{path}"));
-    }
-
-    let url = url::Url::parse(value).map_err(|_| format!("Not a Tor control address: {value}"))?;
-    if url.scheme() != "tcp" {
-        return Err(format!("Tor control address must be tcp:// or unix:: {value}"));
-    }
-    match (url.host_str(), url.port()) {
-        (Some(host), Some(port)) if !host.is_empty() => Ok(format!("tcp://{host}:{port}")),
-        _ => Err(format!("Tor control address needs a host and a port: {value}")),
-    }
-}
-
 /// An IANA time zone, in its canonical spelling.
 fn time_zone(value: &str) -> Result<String, String> {
     let zone = chrono_tz::Tz::from_str_insensitive(value)
@@ -494,10 +445,6 @@ mod tests {
         assert!(parse_setting("resync_interval", &json!("60")).is_err());
         assert!(parse_setting("dns_targets", &json!(["1.2.3.4", "gw.example.com"])).is_err());
         assert_eq!(parse_setting("dns_targets", &json!(["GW.example.com."])).unwrap(), json!(["gw.example.com"]));
-        assert_eq!(parse_setting("tor_control_url", &json!("tcp://127.0.0.1:9051")).unwrap(), json!("tcp://127.0.0.1:9051"));
-        assert!(parse_setting("tor_control_url", &json!("tcp://127.0.0.1")).is_err());
-        assert!(parse_setting("tor_control_url", &json!("unix:run/tor")).is_err());
-        assert!(parse_setting("tor_control_password", &json!("a\r\nSIGNAL HALT")).is_err());
         assert_eq!(parse_setting("analytics_timezone", &json!("europe/berlin")).unwrap(), json!("Europe/Berlin"));
         assert!(parse_setting("analytics_timezone", &json!("Mars/Olympus")).is_err());
         let hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -511,9 +458,9 @@ mod tests {
         let settings = Settings::load(&t.db, None).unwrap();
         let mut changes = settings.subscribe();
 
-        let patch = json!({ "resync_interval": 120, "tor_control_password": "hunter2", "max_file_size": 104857600 });
+        let patch = json!({ "resync_interval": 120, "tor_enabled": true, "max_file_size": 104857600 });
         let changed = settings.update(patch.as_object().unwrap(), "actor").await.unwrap();
-        assert_eq!(changed, ["resync_interval", "tor_control_password"]);
+        assert_eq!(changed, ["resync_interval", "tor_enabled"]);
         assert!(changes.has_changed().unwrap());
         assert_eq!(changes.borrow_and_update().resync_interval, 120);
         assert_eq!(settings.get().resync_interval, 120);
@@ -527,7 +474,7 @@ mod tests {
                     .collect::<rusqlite::Result<_>>()?)
             })
             .unwrap();
-        assert_eq!(audit, [("resync_interval".into(), "120".into()), ("tor_control_password".into(), "true".into())]);
+        assert_eq!(audit, [("resync_interval".into(), "120".into()), ("tor_enabled".into(), "true".into())]);
 
         // A bad value changes nothing.
         let bad = json!({ "resync_interval": 300, "relays": [] });

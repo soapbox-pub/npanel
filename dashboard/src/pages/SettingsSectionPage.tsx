@@ -33,8 +33,6 @@ interface Draft {
   contactNpub?: string;
   publicSiteList?: boolean;
   torEnabled?: boolean;
-  torControlUrl?: string;
-  torControlPassword?: string;
   analyticsTimezone?: string;
 }
 
@@ -76,8 +74,6 @@ export function SettingsSectionPage() {
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
   const torEnabled = draft.torEnabled ?? current?.tor_enabled ?? false;
-  const torControlUrl = draft.torControlUrl ?? current?.tor_control_url ?? '';
-  const torControlPassword = draft.torControlPassword ?? current?.tor_control_password ?? '';
   const analyticsTimezone = draft.analyticsTimezone ?? current?.analytics_timezone ?? 'UTC';
 
   const save = async () => {
@@ -97,8 +93,6 @@ export function SettingsSectionPage() {
         contact_npub: contactNpub.trim(),
         public_site_list: publicSiteList,
         tor_enabled: torEnabled,
-        tor_control_url: torControlUrl.trim(),
-        tor_control_password: torControlPassword,
         analytics_timezone: analyticsTimezone,
       });
 
@@ -288,7 +282,7 @@ export function SettingsSectionPage() {
             current?.tor_enabled ? (
               <TorStatus status={status.data?.tor} />
             ) : (
-              'Gives every site a .onion address. Needs a Tor daemon npanel can reach.'
+              'Gives every site a .onion address. Tor is built into npanel, so there is nothing else to set up.'
             )
           }
         >
@@ -298,33 +292,6 @@ export function SettingsSectionPage() {
             checked={torEnabled}
             onCheckedChange={(checked) => setDraft({ ...draft, torEnabled: checked })}
           />
-          {torEnabled && (
-            <>
-              <FieldRow label="Control address" htmlFor="tor-control-url">
-                <Input
-                  id="tor-control-url"
-                  value={torControlUrl}
-                  onChange={(event) => setDraft({ ...draft, torControlUrl: event.target.value })}
-                  placeholder="tcp://127.0.0.1:9051"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono text-sm"
-                />
-              </FieldRow>
-              <FieldRow label="Control password" htmlFor="tor-control-password">
-                <Input
-                  id="tor-control-password"
-                  type="password"
-                  value={torControlPassword}
-                  onChange={(event) => setDraft({ ...draft, torControlPassword: event.target.value })}
-                  placeholder="Cookie authentication"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono text-sm"
-                />
-              </FieldRow>
-            </>
-          )}
         </Section>
       )}
 
@@ -417,10 +384,19 @@ function TorStatus({ status }: { status: TorStatusView | undefined }) {
     );
   }
 
+  if (!status.error) {
+    return (
+      <span className="flex items-center gap-1.5">
+        <span className="size-2 rounded-full bg-muted-foreground/50" aria-hidden />
+        Joining the Tor network · {status.progress}%
+      </span>
+    );
+  }
+
   return (
     <span className="flex items-start gap-1.5">
       <span className="mt-1 size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
-      <span>{status.error || 'Not connected to Tor.'} npanel keeps trying, so fixing this needs no restart.</span>
+      <span>{status.error} npanel keeps trying, so fixing this needs no restart.</span>
     </span>
   );
 }

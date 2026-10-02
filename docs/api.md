@@ -800,6 +800,7 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
   "tor": {
     "enabled": true,
     "connected": true,
+    "progress": 100,
     "services": 12,
     "error": ""
   }
@@ -808,11 +809,11 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 
 Available to any authenticated user.
 
-`tor.enabled` is the setting; `connected` is whether npanel currently has a
-control connection, and `services` how many onion addresses are published over
-it. `error` is empty while connected and otherwise says why not, as a sentence —
-npanel keeps retrying with backoff, so a false `connected` is a live condition
-rather than a permanent one. See [Tor](deployment.md#tor).
+`tor.enabled` is the setting; `connected` is whether npanel is on the Tor
+network and ready to answer, `progress` how far through joining it npanel is,
+as a percentage, and `services` how many onion services are running. `error` is
+empty while nothing is wrong and otherwise says what is, as a sentence — npanel
+keeps trying, so it describes a live condition rather than a permanent one. See [Tor](deployment.md#tor).
 
 ## Site responses
 

@@ -9,6 +9,8 @@ use axum::body::Body;
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::server::graceful::GracefulShutdown;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
@@ -35,7 +37,7 @@ where
     F: Future<Output = Response<Body>> + Send + 'static,
 {
     let handler = Arc::new(handler);
-    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
+    let connections = Connections::new();
 
     loop {
         let (stream, remote) = tokio::select! {
@@ -54,8 +56,31 @@ where
         let _ = stream.set_nodelay(true);
 
         let handler = handler.clone();
+        connections.serve(stream, move |request| handler(request, remote));
+    }
+
+    drop(listener);
+    connections.drain(log).await;
+}
+
+/// Open HTTP connections, wherever they came from: a TCP listener, or a Tor
+/// stream that never touches a socket.
+pub struct Connections(GracefulShutdown);
+
+impl Connections {
+    pub fn new() -> Connections {
+        Connections(GracefulShutdown::new())
+    }
+
+    /// Serve HTTP/1.1 on `io`, in a task of its own.
+    pub fn serve<I, H, F>(&self, io: I, handler: H)
+    where
+        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        H: Fn(Request<Body>) -> F + Send + 'static,
+        F: Future<Output = Response<Body>> + Send + 'static,
+    {
         let service = hyper::service::service_fn(move |request: Request<Incoming>| {
-            let response = handler(request.map(Body::new), remote);
+            let response = handler(request.map(Body::new));
             async move { Ok::<_, std::convert::Infallible>(response.await) }
         });
 
@@ -63,8 +88,8 @@ where
             .timer(TokioTimer::new())
             .header_read_timeout(HEADER_TIMEOUT)
             .keep_alive(true)
-            .serve_connection(TokioIo::new(stream), service);
-        let connection = graceful.watch(connection);
+            .serve_connection(TokioIo::new(io), service);
+        let connection = self.0.watch(connection);
 
         tokio::spawn(async move {
             if let Err(error) = connection.await {
@@ -74,8 +99,10 @@ where
         });
     }
 
-    drop(listener);
-    if tokio::time::timeout(DRAIN_TIMEOUT, graceful.shutdown()).await.is_err() {
-        log.warn("drain_timed_out", fields! {});
+    /// Ask every connection to finish, and give them a moment to.
+    pub async fn drain(self, log: Logger) {
+        if tokio::time::timeout(DRAIN_TIMEOUT, self.0.shutdown()).await.is_err() {
+            log.warn("drain_timed_out", fields! {});
+        }
     }
 }

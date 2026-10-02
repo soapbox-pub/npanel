@@ -85,6 +85,7 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   contact_npub: { label: 'Homepage contact' },
   public_site_list: { label: 'Public site list' },
   tor_enabled: { label: 'Tor' },
+  // No longer settings, since Tor is built in, but older entries name them.
   tor_control_url: { label: 'Tor control address' },
   tor_control_password: { label: 'Tor control password', secret: true },
   analytics_timezone: { label: 'Analytics time zone', format: (value) => String(value).replaceAll('_', ' ') },

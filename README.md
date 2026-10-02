@@ -15,6 +15,8 @@ when the relays and Blossom servers it came from are down.
 - **Versioned.** Every site event is kept as a version you can inspect, pin, or
   roll back to, with a per-version deploy log that explains failures.
 - **Auditable.** Every change to a site, user, or setting is recorded.
+- **Tor built in.** Flip a switch and every site also gets its own `.onion`
+  address, served by a Tor that runs inside npanel — no daemon to install.
 - **Analytics built in.** Flip a switch on a site and npanel counts its visits
   the way Plausible does — no cookies, nothing identifying stored — and shows
   them in a Plausible-style dashboard.
@@ -44,7 +46,7 @@ in well under a millisecond.
 ## Requirements
 
 - Linux. Releases are a static x86_64 binary with the dashboard inside, which
-  runs on any distribution. Elsewhere, build it: Rust 1.85+ for the server and
+  runs on any distribution. Elsewhere, build it: Rust 1.92+ for the server and
   [Bun](https://bun.sh) 1.3+ for the dashboard.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included.

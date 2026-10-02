@@ -45,7 +45,7 @@ src/
   auth.rs               NIP-98
   api.rs                the JSON API
   dns.rs                what staff should point a hostname at
-  tor.rs, tor_control.rs  onion services over Tor's control port
+  tor.rs                onion services, on Tor built in (Arti)
   db/                   pool, migrations, rows
   scripts.rs            make-admin, prune-blobs, compress-blobs
   e2e.rs                end-to-end tests with a fake Nostr and Blossom

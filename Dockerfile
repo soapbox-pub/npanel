@@ -37,8 +37,6 @@ FROM debian:bookworm-slim
 # time zone database, the device database — is compiled into the binary.
 RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
 
-# uid and gid 1000, which the Tor image's user shares a group with so that npanel
-# can read Tor's control cookie.
 RUN groupadd --gid 1000 npanel && useradd --uid 1000 --gid npanel --home /app --shell /usr/sbin/nologin npanel
 
 WORKDIR /app

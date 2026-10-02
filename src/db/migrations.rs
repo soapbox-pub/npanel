@@ -298,4 +298,10 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
       )"#,
         ],
     ),
+    (
+        "021_tor_embedded",
+        &[
+            r#"DELETE FROM settings WHERE key IN ('tor_control_url', 'tor_control_password')"#,
+        ],
+    ),
 ];

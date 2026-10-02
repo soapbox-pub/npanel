@@ -11,7 +11,7 @@ hot reload on its own port and proxies `/api` to the server.
 
 ## Setup
 
-Two toolchains: [Rust](https://rustup.rs) 1.85 or newer for the server, and
+Two toolchains: [Rust](https://rustup.rs) 1.92 or newer for the server, and
 [Bun](https://bun.sh) 1.3+ for the dashboard.
 
 ```sh

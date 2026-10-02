@@ -36,9 +36,9 @@ pub fn normalize_hostname(input: &str) -> String {
 /// dashboard and the whole JSON API by adding one header. A proxy that rewrites
 /// `Host` has to be configured not to; see docs/deployment.md.
 ///
-/// That is also what lets both listeners share this function. Tor hands a
-/// visitor's bytes on unaltered, so a listener that read forwarding headers
-/// would be reading the visitor's own.
+/// That is also what lets onion connections share this function. Tor hands a
+/// visitor's bytes on unaltered, so reading forwarding headers there would be
+/// reading the visitor's own.
 ///
 /// The port a client may have appended is dropped, along with the trailing dot
 /// of a fully-qualified name.
