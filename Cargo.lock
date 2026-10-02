@@ -2718,6 +2718,8 @@ dependencies = [
  "tor-proto",
  "tor-rtcompat",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "url",
 ]
 

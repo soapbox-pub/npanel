@@ -9,9 +9,9 @@
 //! npanel keeps the keys and Tor keeps nothing. Arti's keystore is the
 //! in-memory one, and every service is launched with the key stored in the
 //! database, which is what makes an address survive a restart. What Arti does
-//! write to disk — its directory cache, its guards, each service's
-//! introduction points — makes it faster and safer to come back, but losing
-//! it costs no address.
+//! keep on disk — its directory cache, its guards — makes it faster and safer
+//! to come back, but losing it costs no address. Each service's own state is
+//! cleared as Tor starts, since the keys it refers to are gone.
 //!
 //! Sites are reconciled rather than tracked. Every trigger — Tor starting, a
 //! host being added or removed, a setting changing — asks the database which
@@ -51,7 +51,7 @@ use crate::db::Db;
 use crate::deploy::Deployments;
 use crate::fields;
 use crate::hostname::request_hostname;
-use crate::log::{with_err, Logger};
+use crate::log::{with_err, LogLevel, Logger};
 use crate::serve::{RequestOrigin, ServeCache, SiteServer};
 use crate::server::Connections;
 use crate::settings::Settings;
@@ -119,6 +119,7 @@ pub struct TorService {
 
 impl TorService {
     pub fn start(deps: TorDeps) -> TorService {
+        forward_logs(deps.log);
         let (tx, mut rx) = mpsc::unbounded_channel();
         let status = Arc::new(Mutex::new(TorStatus::default()));
         let settings = deps.settings.clone();
@@ -449,9 +450,71 @@ impl<'a> Actor<'a> {
     }
 }
 
+/// Send what Arti logs to npanel's log, as `tor_log` entries. Arti reports
+/// through `tracing`, and without this everything it has to say — a
+/// descriptor that wouldn't upload, an introduction point that failed — would
+/// go nowhere. Its warnings are kept at their level; its info lines, which
+/// narrate every service's routine, only show at `LOG_LEVEL=debug`.
+///
+/// `tracing` has one subscriber for the whole process. The first call
+/// installs it, and any later one finds it there, which is fine: every
+/// `Logger` writes to the same place.
+fn forward_logs(log: Logger) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::Layer;
+
+    let filter = if log.enabled(LogLevel::Debug) { tracing::level_filters::LevelFilter::INFO } else { tracing::level_filters::LevelFilter::WARN };
+    let subscriber = tracing_subscriber::registry().with(ArtiLogs(log).with_filter(filter));
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+struct ArtiLogs(Logger);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ArtiLogs {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        let metadata = event.metadata();
+        let mut fields = fields! { "target" => metadata.target() };
+        event.record(&mut FieldVisitor(&mut fields));
+        match *metadata.level() {
+            tracing::Level::ERROR => self.0.error("tor_log", fields),
+            tracing::Level::WARN => self.0.warn("tor_log", fields),
+            _ => self.0.debug("tor_log", fields),
+        }
+    }
+}
+
+/// Flattens an event's fields into log fields, its message as `tor_msg` so it
+/// can't be mistaken for the entry's own `msg`.
+struct FieldVisitor<'a>(&'a mut crate::log::Fields);
+
+impl tracing::field::Visit for FieldVisitor<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let key = match field.name() {
+            "message" => "tor_msg",
+            "level" | "msg" | "target" => return,
+            name => name,
+        };
+        self.0.push((key, format!("{value:?}").into()));
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.record_debug(field, &format_args!("{value}"));
+    }
+}
+
 /// A Tor client whose keys exist only in memory. It joins the network when
 /// [`bootstrap`] asks it to.
 async fn create_client(dir: &std::path::Path) -> anyhow::Result<Arc<Client>> {
+    // What Arti records about each service's introduction points is only
+    // half of them: the keys they were made with were in memory, and went
+    // with the last client. Left in place, every service would start out
+    // reviving points it can no longer prove it owns. Starting each from
+    // nothing is what C Tor does with a service that isn't detached.
+    match tokio::fs::remove_dir_all(dir.join("state").join("hss")).await {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+
     let mut config = TorClientConfigBuilder::from_directories(dir.join("state"), dir.join("cache"));
     // The database is the only place a site's key is kept. Arti's own
     // keystore would be a second copy, on disk, that nothing backs up.

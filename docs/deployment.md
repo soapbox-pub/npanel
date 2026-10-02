@@ -411,8 +411,8 @@ network, which takes a minute or so the first time, and the addresses answer
 once it has; each site's shows on its own page.
 
 npanel keeps the key each address is made of in its database, which is what
-makes an address survive a restart. Tor's own state — its directory cache, its
-guards, each service's introduction points — goes in `DATA_DIR/tor`. It is not
+makes an address survive a restart. Tor's own state — its directory cache and
+its guards — goes in `DATA_DIR/tor`. It is not
 worth backing up on its own: losing it costs a slower start and no addresses.
 
 Tor checks the permissions of the directories it writes to, and refuses to
@@ -447,6 +447,9 @@ Otherwise, paste the address into Tor Browser. Visitors never need to be told
 one: clearnet HTML responses carry an `Onion-Location` header, and Tor Browser
 offers the onion on its own. A newly published address can take a minute or two
 to become reachable while its descriptor spreads through the network.
+
+**Tor's own messages** are in npanel's log as `tor_log` entries. Its warnings
+are always there; set `LOG_LEVEL=debug` to see the rest of what it is doing.
 
 **Tor is stuck joining the network.** The Settings page shows the reason Tor
 gives. npanel needs to make outbound connections to Tor relays, on whatever

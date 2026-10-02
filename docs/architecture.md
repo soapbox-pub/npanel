@@ -653,10 +653,17 @@ happen there, never on the threads serving clearnet visitors.
 **npanel keeps the keys and Tor keeps nothing.** Arti's keystore is its
 in-memory one, and each service is launched with the key stored in
 `onion_services`. The key is what an address is made of, so storing it is what
-makes the address survive a restart. What Arti does write — under
-`DATA_DIR/tor`, its directory cache, its guards, each service's introduction
-points — makes coming back faster and keeps the same guards, which is safer;
-losing it costs a slower start and no address. Keys are stored as C Tor spells
+makes the address survive a restart. What Arti does keep — under
+`DATA_DIR/tor`, its directory cache and its guards — makes coming back faster
+and keeps the same guards, which is safer; losing it costs a slower start and
+no address. Arti also records each service's introduction points, but the keys
+those were made with lived in memory and are gone after a restart, so that
+record is cleared as Tor starts and every service picks fresh ones, as a C Tor
+service that isn't detached does. Each restart therefore republishes every
+descriptor, and a visitor holding an old one fetches the new one on their own.
+
+Arti's own logs, which go through `tracing`, are forwarded to npanel's as
+`tor_log` entries: its warnings always, its info lines at `LOG_LEVEL=debug`. Keys are stored as C Tor spells
 them in `ADD_ONION` (`ED25519-V3:` and the expanded secret key), which is how
 they were stored when npanel drove a separate Tor daemon, so every address from
 then carried over unchanged.
