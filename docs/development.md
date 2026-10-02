@@ -11,7 +11,7 @@ hot reload on its own port and proxies `/api` to the server.
 
 ## Setup
 
-Two toolchains: [Rust](https://rustup.rs) 1.92 or newer for the server, and
+Two toolchains: [Rust](https://rustup.rs) for the server, and
 [Bun](https://bun.sh) 1.3+ for the dashboard.
 
 ```sh
@@ -188,14 +188,16 @@ than `main`. Both are signed by the `NSYTE_BUNKER` session provisioned for the
 repository, and that key owns the application: every release after the first
 has to be signed by it.
 
-To build the release binary locally, which needs `musl-tools` (for `musl-gcc`)
-and the target:
+To build the release binary locally, which needs `musl-tools` (for `musl-gcc`):
 
 ```sh
-rustup target add x86_64-unknown-linux-musl
 (cd dashboard && bun run build)
-cargo build --release --target x86_64-unknown-linux-musl --features embedded-dashboard
+cargo build --profile dist --target x86_64-unknown-linux-musl --features embedded-dashboard
 ```
+
+`dist` is `release` with fat LTO and one codegen unit (see `Cargo.toml`): a
+smaller, faster binary, from a build that takes several minutes every time. Plain `--release` rebuilds in seconds, and is what to use for anything
+short of publishing.
 
 ## Housekeeping
 

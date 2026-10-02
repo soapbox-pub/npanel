@@ -54,9 +54,17 @@ jobs:
         with:
           bun-version: 1.3.12
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
+      # rust-toolchain.toml says which Rust; rustup installs it, and the musl
+      # target with it.
+      - name: Install Rust
+        run: |
+          set -eu
+          if ! command -v rustup >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup toolchain install
 
       # ring and the bundled SQLite are C, so the musl target needs musl's C
       # compiler as well as Rust's.
@@ -74,7 +82,7 @@ jobs:
             ~/.cargo/git
             ~/.cargo/registry
             target
-          key: release-musl-${{ hashFiles('Cargo.lock') }}
+          key: release-musl-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: release-musl-
 
       - name: Build the dashboard
@@ -84,15 +92,17 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
+      # The dist profile (Cargo.toml): fat LTO and one codegen unit, for the
+      # smallest binary, which is worth the extra minutes here and nowhere else.
       - name: Build the binary
-        run: cargo build --release --locked --target x86_64-unknown-linux-musl --features embedded-dashboard
+        run: cargo build --profile dist --locked --target x86_64-unknown-linux-musl --features embedded-dashboard
 
       # A musl binary that still asks for a dynamic loader fails on glibc hosts
       # with a misleading "No such file or directory"; refuse to publish one.
       - name: Check the binary is static
         run: |
           set -eu
-          bin=target/x86_64-unknown-linux-musl/release/npanel
+          bin=target/x86_64-unknown-linux-musl/dist/npanel
           if readelf -l "$bin" | grep -q 'program interpreter'; then
             echo "$bin is dynamically linked." >&2
             exit 1

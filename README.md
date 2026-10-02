@@ -46,7 +46,7 @@ in well under a millisecond.
 ## Requirements
 
 - Linux. Releases are a static x86_64 binary with the dashboard inside, which
-  runs on any distribution. Elsewhere, build it: Rust 1.92+ for the server and
+  runs on any distribution. Elsewhere, build it: [rustup](https://rustup.rs) for the server and
   [Bun](https://bun.sh) 1.3+ for the dashboard.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included.
@@ -87,7 +87,7 @@ To build it instead:
 
 ```sh
 (cd dashboard && bun install && bun run build)
-cargo build --release --features embedded-dashboard
+cargo build --profile dist --features embedded-dashboard
 ```
 
 Then put Caddy in front of it:

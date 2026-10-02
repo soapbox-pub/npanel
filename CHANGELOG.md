@@ -18,7 +18,10 @@ it is tagged.
   onion whose `Host` header names another site's onion now gets a 404 rather
   than that site.
 - `/api/status` reports `tor.progress` while npanel joins the Tor network.
-- Building from source needs Rust 1.92 or newer.
+- Building from source uses the Rust named in `rust-toolchain.toml`, which
+  rustup installs on its own. Production builds use `--profile dist`; plain
+  `--release` now rebuilds in seconds rather than minutes.
+- The release binary is stripped and built with full LTO: 29 MB, down from 42.
 
 ## [0.2.0]
 

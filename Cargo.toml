@@ -72,6 +72,25 @@ embedded-dashboard = []
 [dev-dependencies]
 tempfile = "3"
 
+# Tests and debugging need file and line in a backtrace, not full debug info;
+# dependencies need neither. Most of what a debug build links is debug info.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# What `cargo build --release` makes: optimized, but quick to rebuild, for
+# running locally and deploying by hand. Symbols are stripped because they are
+# a fifth of the binary and only name functions in a panic's backtrace.
 [profile.release]
-lto = "thin"
-codegen-units = 4
+strip = "symbols"
+incremental = true
+
+# What a release publishes (.ngit/act/workflows/release.yml): the smallest and
+# fastest binary, at the price of a much slower build.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+incremental = false
