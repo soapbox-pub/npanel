@@ -310,14 +310,20 @@ than 8 KB — those fall back to the gateway's.
 `"gateway"` — the site declares nothing, so it gets npanel's own:
 
 ```
-default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
-frame-src 'self' https:; font-src 'self'; base-uri 'self'; manifest-src 'self';
+default-src 'none'; script-src 'self' 'wasm-unsafe-eval';
+style-src 'self' 'unsafe-inline'; frame-src 'self' https:;
+font-src 'self' blob: data:; base-uri 'self'; manifest-src 'self';
 connect-src 'self' blob: https: wss:; img-src 'self' data: blob: https:;
-media-src 'self' https:
+media-src 'self' https: blob: data:
 ```
 
-That is verbatim the policy [mkstack](https://mkstack.xyz) ships as a `<meta>`
-tag, which is what most sites reaching an npanel gateway are built from. Sent as
+That is the policy [mkstack](https://mkstack.xyz) ships as a `<meta>` tag,
+which is what most sites reaching an npanel gateway are built from, with three
+allowances taken from the policy [Isolated Web
+Apps](https://github.com/WICG/isolated-web-apps) are held to: WebAssembly
+(`'wasm-unsafe-eval'`), fonts from `blob:` and `data:` — bundlers inline small
+ones — and media from `blob:` and `data:`. None of them lets a site run script
+from anywhere but its own files. Sent as
 a header it also covers what a meta tag can't: responses that aren't HTML, and
 the fact that a document's own `<meta>` is only reached after the parser has
 already run whatever came before it.

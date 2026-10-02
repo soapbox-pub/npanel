@@ -25,11 +25,14 @@ const MAX_POLICY_LENGTH: usize = 8 * 1024;
 const MAX_CACHED: usize = 500;
 
 /// The policy sites are served under, unless they declare one or it's switched
-/// off: verbatim the `<meta>` policy mkstack ships, which is what most sites
-/// reaching an npanel gateway are built from.
-pub const GATEWAY_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-frame-src 'self' https:; font-src 'self'; base-uri 'self'; manifest-src 'self'; \
-connect-src 'self' blob: https: wss:; img-src 'self' data: blob: https:; media-src 'self' https:";
+/// off: the `<meta>` policy mkstack ships, which is what most sites reaching an
+/// npanel gateway are built from, widened where Isolated Web Apps' policy shows
+/// the stricter rule only breaks ordinary builds — WebAssembly, fonts a bundler
+/// inlined as `data:`, and media played from a `blob:`.
+pub const GATEWAY_CSP: &str = "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; \
+style-src 'self' 'unsafe-inline'; frame-src 'self' https:; font-src 'self' blob: data:; base-uri 'self'; \
+manifest-src 'self'; connect-src 'self' blob: https: wss:; img-src 'self' data: blob: https:; \
+media-src 'self' https: blob: data:";
 
 /// Cached by build rather than by content hash, because that is the lookup
 /// being avoided: a build's files are written once and never edited, so the

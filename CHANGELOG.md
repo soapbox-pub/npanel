@@ -18,6 +18,10 @@ it is tagged.
   onion whose `Host` header names another site's onion now gets a 404 rather
   than that site.
 - `/api/status` reports `tor.progress` while npanel joins the Tor network.
+- The gateway's default Content Security Policy now allows WebAssembly
+  (`'wasm-unsafe-eval'`), fonts from `blob:` and `data:`, and media from `blob:`
+  and `data:`, as Isolated Web Apps' policy does. Sites that declare their own
+  policy are unaffected.
 - Building from source uses the Rust named in `rust-toolchain.toml`, which
   rustup installs on its own. Production builds use `--profile dist`; plain
   `--release` now rebuilds in seconds rather than minutes.
