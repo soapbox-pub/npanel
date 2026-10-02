@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 
@@ -6,7 +7,6 @@ import { Perforation } from '@/components/Perforation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Skeleton } from '@/components/ui/skeleton';
 import { ServerContext, type ServerContextType } from '@/contexts/ServerContext';
 import { parseServerOrigin, probeServer, type Server, saveServer, savedServer, resolveServer } from '@/lib/server';
 
@@ -15,16 +15,19 @@ import { parseServerOrigin, probeServer, type Server, saveServer, savedServer, r
  * question, and asks the reader for one when the page isn't served by npanel.
  */
 export function ServerProvider({ children, initial }: { children: ReactNode; initial?: Server }) {
+  const queryClient = useQueryClient();
   const [server, setServer] = useState<Server | undefined | 'resolving'>(initial ?? 'resolving');
 
   useEffect(() => {
     if (initial) return;
     const controller = new AbortController();
     resolveServer(controller.signal).then((found) => {
-      if (!controller.signal.aborted) setServer(found);
+      if (controller.signal.aborted) return;
+      if (found?.instance) queryClient.setQueryData(['npanel', found.origin, 'instance'], found.instance);
+      setServer(found && { origin: found.origin, standalone: found.standalone });
     });
     return () => controller.abort();
-  }, [initial]);
+  }, [initial, queryClient]);
 
   const value = useMemo<ServerContextType | undefined>(() => {
     if (server === 'resolving' || !server) return undefined;
@@ -37,13 +40,10 @@ export function ServerProvider({ children, initial }: { children: ReactNode; ini
     };
   }, [server]);
 
-  if (server === 'resolving') {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Skeleton className="size-16 rounded-2xl" />
-      </div>
-    );
-  }
+  // One request to the page's own origin, which is usually all it takes, and
+  // what follows could be the homepage, the app, or the connect form: no
+  // placeholder would look like whichever it turns out to be.
+  if (server === 'resolving') return null;
 
   if (!value) {
     return (

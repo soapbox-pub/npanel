@@ -63,11 +63,14 @@ export async function probeServer(origin: string, signal?: AbortSignal): Promise
 
 /**
  * The page's own origin when npanel serves it, otherwise the server last
- * chosen here, otherwise none yet.
+ * chosen here, otherwise none yet. Finding the page's own origin means asking
+ * it for its instance, so that answer comes back too, sparing the homepage
+ * from asking again.
  */
-export async function resolveServer(signal?: AbortSignal): Promise<Server | undefined> {
-  if (await probeServer(window.location.origin, signal)) {
-    return { origin: window.location.origin, standalone: false };
+export async function resolveServer(signal?: AbortSignal): Promise<(Server & { instance?: Instance }) | undefined> {
+  const instance = await probeServer(window.location.origin, signal);
+  if (instance) {
+    return { origin: window.location.origin, standalone: false, instance };
   }
   const saved = savedServer();
   return saved ? { origin: saved, standalone: true } : undefined;

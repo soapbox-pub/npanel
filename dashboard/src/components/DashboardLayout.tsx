@@ -6,7 +6,6 @@ import { LoginArea } from '@/components/auth/LoginArea';
 import { CopyButton } from '@/components/CopyButton';
 import { Logo } from '@/components/Logo';
 import { Perforation } from '@/components/Perforation';
-import { Skeleton } from '@/components/ui/skeleton';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useInstance, useMe } from '@/hooks/useNpanel';
 import { useServer } from '@/hooks/useServer';
@@ -34,15 +33,7 @@ export function DashboardLayout() {
 
   if (!user) return <HomePage />;
 
-  if (me.isLoading) {
-    return (
-      <Centered>
-        <Skeleton className="mx-auto size-16 rounded-2xl" />
-      </Centered>
-    );
-  }
-
-  if (me.isError || !me.data) {
+  if (!me.isLoading && (me.isError || !me.data)) {
     return (
       <Centered>
         <NoAccess pubkey={user.pubkey} message={me.error instanceof Error ? me.error.message : undefined} />
@@ -50,7 +41,10 @@ export function DashboardLayout() {
     );
   }
 
-  const items = NAV.filter((item) => !item.adminOnly || me.data.role === 'admin');
+  // Until the server says who this is, lay out the app as for staff, who are
+  // nearly everyone signing in: the admin places join it if they're an admin,
+  // and the page appears where it belongs, so nothing moves.
+  const items = NAV.filter((item) => !item.adminOnly || me.data?.role === 'admin');
 
   return (
     <div className="min-h-screen">
@@ -67,7 +61,7 @@ export function DashboardLayout() {
           )}
         >
           <OutdatedServer />
-          <Outlet />
+          {me.data && <Outlet />}
         </div>
       </main>
 

@@ -40,7 +40,11 @@ describe('resolveServer', () => {
   it('uses the page origin when npanel serves the page', async () => {
     saveServer('https://other.example.com');
     stubFetch({ [`${window.location.origin}/api/instance`]: instance });
-    expect(await resolveServer()).toEqual({ origin: window.location.origin, standalone: false });
+    expect(await resolveServer()).toEqual({
+      origin: window.location.origin,
+      standalone: false,
+      instance: { contact_npub: null, dashboard_host: 'panel.example.com', version: '0.2.0' },
+    });
   });
 
   it('falls back to the saved server when the page is an nsite', async () => {
