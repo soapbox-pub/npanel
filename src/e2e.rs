@@ -110,7 +110,7 @@ impl Gateway {
             builder = builder.header(*name, *value);
         }
         let request = builder.body(body.map_or(Body::empty(), |b| Body::from(b.to_string()))).unwrap();
-        let response = self.app.handle(request, [127, 0, 0, 1].into()).await;
+        let response = self.app.handle(request, crate::app::Via::Proxy([127, 0, 0, 1].into())).await;
         let (parts, body) = response.into_parts();
         (parts.status, parts.headers, body.collect().await.unwrap().to_bytes().to_vec())
     }
@@ -185,6 +185,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         dns: crate::dns::DnsTargets::new("panel.example.com".into(), settings.clone(), log),
         log,
         tor,
+        tls: None,
         site_csp,
         previews: Arc::new(crate::site_preview::SitePreviews::new(blobs.clone())),
         serve_cache,

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { AddressInput } from '@/components/AddressInput';
+import { CertificateRow } from '@/components/CertificateRow';
 import { CopyButton } from '@/components/CopyButton';
 import { DnsRecords } from '@/components/DnsRecords';
 import { Row, Section, ToggleRow } from '@/components/Grouped';
@@ -55,6 +56,14 @@ export function NsiteSettings({ host }: { host: Host }) {
           </div>
         </Row>
       </Section>
+
+      {!!host.certificates?.length && (
+        <Section title="HTTPS" footer="npanel gets this site's certificates itself, and renews them before they expire.">
+          {host.certificates.map((certificate) => (
+            <CertificateRow key={certificate.hostname} certificate={certificate} />
+          ))}
+        </Section>
+      )}
 
       {host.onion && (
         <Section title="Tor" footer="Tor Browser users are offered this address on their own.">

@@ -12,6 +12,7 @@ use axum::body::Body;
 use http::{header, HeaderMap, HeaderValue, Request, Response};
 use tower::ServiceExt;
 
+use crate::analytics::Peer;
 use crate::dashboard::Dashboard;
 use crate::hostname::request_hostname;
 use crate::serve::{RequestOrigin, SiteServer};
@@ -23,13 +24,28 @@ pub struct App {
     pub api: axum::Router,
 }
 
+/// How a request reached npanel, which decides which of its headers may be
+/// believed.
+#[derive(Clone, Copy, Debug)]
+pub enum Via {
+    /// Through the reverse proxy, from the address given: its
+    /// `X-Forwarded-*` headers are its word about the visitor.
+    Proxy(IpAddr),
+    /// Over TLS npanel terminated itself, from the visitor at the address
+    /// given. There is no proxy, so those headers are the visitor's own.
+    Tls(IpAddr),
+}
+
 impl App {
-    pub async fn handle(&self, request: Request<Body>, peer: IpAddr) -> Response<Body> {
+    pub async fn handle(&self, request: Request<Body>, via: Via) -> Response<Body> {
         let hostname = request_hostname(request.headers().get(header::HOST).and_then(|v| v.to_str().ok()));
 
         if hostname != self.dashboard_host {
-            let scheme = request_scheme(request.headers());
-            return self.site.serve(request, RequestOrigin { hostname, scheme }, Some(peer)).await;
+            let (scheme, peer) = match via {
+                Via::Proxy(proxy) => (request_scheme(request.headers()), Peer::Proxy(proxy)),
+                Via::Tls(visitor) => ("https", Peer::Visitor(visitor)),
+            };
+            return self.site.serve(request, RequestOrigin { hostname, scheme }, peer).await;
         }
 
         let path = request.uri().path();
@@ -55,15 +71,15 @@ impl App {
 
 /// The scheme the client used to reach the proxy.
 ///
-/// npanel is always behind a proxy that terminates TLS, so the connection this
-/// process sees is plain HTTP even when the visitor's was not. `X-Forwarded-
-/// Proto` is the proxy's word for it, and `https` is the assumption when the
-/// proxy didn't say: the wrong guess there costs a redirect, not a downgrade.
+/// Behind a proxy that terminates TLS, the connection this process sees is
+/// plain HTTP even when the visitor's was not. `X-Forwarded-Proto` is the
+/// proxy's word for it, and `https` is the assumption when the proxy didn't
+/// say: the wrong guess there costs a redirect, not a downgrade.
 ///
 /// This is believed where `X-Forwarded-Host` is not, because the worst a
 /// forged scheme achieves is a redirect to the one the visitor already used.
-/// A request over Tor came through no proxy, so the Tor listener states its
-/// scheme instead.
+/// A request over Tor, or over TLS npanel terminated, came through no proxy,
+/// so those listeners state the scheme instead.
 pub fn request_scheme(headers: &HeaderMap) -> &'static str {
     let forwarded = headers
         .get("x-forwarded-proto")

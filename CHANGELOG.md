@@ -6,6 +6,19 @@ it is tagged.
 
 ## [Unreleased]
 
+- npanel can serve HTTPS itself, no proxy needed. Set `HTTPS_PORT=443` and
+  `PORT=80`, and it gets a certificate from Let's Encrypt for the dashboard and
+  every site it serves, `www` redirects included, the moment each is added, and
+  renews them on its own. Plain HTTP answers challenges and redirects to HTTPS.
+  The Caddy setup is unchanged and still the default.
+- With it, HTTP/2, certificates and the ACME account kept in the database, a
+  backoff per name that keeps a misconfigured domain inside Let's Encrypt's
+  limits across restarts, and **Settings → Certificates** for the CA (with a
+  switch for Let's Encrypt's staging CA), a contact email, and every name that
+  is failing and why. Each site's page shows its certificates.
+- `/api/status` has a `tls` field and each host a `certificates` field, both
+  `null` behind a proxy.
+
 - npanel cleans up after itself. Once a day it keeps the newest 20 ready
   versions of each site, forgets the versions of sites no host points at, and
   deletes every stored file nothing uses. **Settings → Deploys → Versions kept

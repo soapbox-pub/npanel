@@ -12,42 +12,27 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use http::{header, Method, Request, Response, StatusCode};
-use parking_lot::Mutex;
-use rusqlite::OptionalExtension;
-
 use crate::db::Db;
 use crate::fields;
-use crate::hostname::www_apex;
 use crate::log::Logger;
-use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::settings::Settings;
+use crate::tls::names;
+use crate::tls::Budget;
 
 /// The only path this listener answers.
 const TLS_CHECK_PATH: &str = "/tls-check";
 
-/// The window both approval limits are expressed over, in ms.
-const HOUR_MS: f64 = 60.0 * 60.0 * 1000.0;
-
 pub struct TlsCheck {
     db: Db,
-    settings: Arc<Settings>,
     log: Logger,
     /// Never refused a certificate, whatever the budget looks like.
     dashboard_host: String,
-    per_host: Mutex<RateLimiter>,
-    total: Mutex<RateLimiter>,
+    budget: Budget,
 }
 
 impl TlsCheck {
     pub fn new(db: Db, settings: Arc<Settings>, log: Logger, dashboard_host: String) -> TlsCheck {
-        TlsCheck {
-            db,
-            settings,
-            log,
-            dashboard_host,
-            per_host: Mutex::new(RateLimiter::new(4096)),
-            total: Mutex::new(RateLimiter::new(1)),
-        }
+        TlsCheck { db, log, dashboard_host, budget: Budget::new(settings) }
     }
 
     pub async fn handle(&self, request: Request<Body>) -> Response<Body> {
@@ -98,18 +83,8 @@ impl TlsCheck {
             }
         }
 
-        let settings = self.settings.get();
-        let within_host = self
-            .per_host
-            .lock()
-            .take(domain, RateLimit { capacity: settings.tls_check_limit_per_host as f64, interval_ms: HOUR_MS });
-        // Short-circuit deliberately: a host already over its own limit must
-        // not go on draining the budget the other hosts share.
-        let within_total = within_host
-            && self.total.lock().take("", RateLimit { capacity: settings.tls_check_limit_total as f64, interval_ms: HOUR_MS });
-
-        if !within_total {
-            self.log.warn("tls_check_throttled", fields! { "domain" => domain, "scope" => if within_host { "total" } else { "host" } });
+        if let Err(scope) = self.budget.take(domain) {
+            self.log.warn("tls_check_throttled", fields! { "domain" => domain, "scope" => scope });
             return Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
                 .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -121,29 +96,11 @@ impl TlsCheck {
         reply(StatusCode::OK, "ok")
     }
 
-    /// Whether npanel answers for `domain` at all. A `www` name npanel only
-    /// redirects still needs a certificate: the redirect is an HTTPS response.
+    /// Whether npanel answers for `domain` at all, by the same rule its own
+    /// ACME client follows.
     async fn served(&self, domain: &str) -> anyhow::Result<bool> {
         let domain = domain.to_string();
-        self.db
-            .call(move |conn| {
-                let configured: Option<i64> = conn
-                    .prepare_cached("SELECT id FROM hosts WHERE hostname = ? AND enabled = 1")?
-                    .query_row([&domain], |r| r.get(0))
-                    .optional()?;
-                if configured.is_some() {
-                    return Ok(true);
-                }
-                let Some(apex) = www_apex(&domain) else {
-                    return Ok(false);
-                };
-                let redirects: Option<i64> = conn
-                    .prepare_cached("SELECT id FROM hosts WHERE hostname = ? AND enabled = 1 AND redirect_www = 1")?
-                    .query_row([apex], |r| r.get(0))
-                    .optional()?;
-                Ok(redirects.is_some())
-            })
-            .await
+        self.db.call(move |conn| Ok(names::qualifies(conn, &domain)?)).await
     }
 }
 

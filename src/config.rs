@@ -2,7 +2,8 @@
 //!
 //! npanel keeps file-based configuration deliberately tiny: only values that
 //! are system-level, or that could lock an admin out of the dashboard if set
-//! wrong, live here. Relays, Blossom fallbacks, file size limits and the resync
+//! wrong, live here. Which ports are bound is the clearest case: whether npanel
+//! terminates TLS itself, `HTTPS_PORT`, needs a restart however it is set. Relays, Blossom fallbacks, file size limits and the resync
 //! interval are stored in the database and edited from the dashboard — see
 //! `settings.rs`.
 
@@ -13,19 +14,25 @@ use anyhow::{bail, Result};
 
 use crate::log::LogLevel;
 
-/// The six variables, resolved and validated.
+/// The seven variables, resolved and validated.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Port the HTTP server listens on.
+    /// Port the HTTP server listens on. With `https_port` set, plain HTTP is
+    /// only for ACME challenges and redirects to HTTPS.
     pub port: u16,
     /// Address the HTTP server listens on.
     ///
     /// Loopback by default, because npanel is meant to be reachable only by the
     /// reverse proxy: it speaks plain HTTP, and certificate authorization on
-    /// `tls_check_port` answers without authentication.
+    /// `tls_check_port` answers without authentication. With `https_port` set
+    /// there is no proxy, and every address is the default.
     pub bind_address: IpAddr,
-    /// Port serving certificate authorization for the reverse proxy.
+    /// Port serving certificate authorization for the reverse proxy. Not
+    /// bound when npanel terminates TLS itself.
     pub tls_check_port: u16,
+    /// Port npanel serves HTTPS on itself, getting certificates over ACME.
+    /// Unset, a reverse proxy terminates TLS.
+    pub https_port: Option<u16>,
     /// Hostname serving the dashboard and JSON API. Requests with any other
     /// `Host` header are served as nsites.
     pub dashboard_host: String,
@@ -46,7 +53,17 @@ impl Config {
             Some(value) => parse_port(&value).ok_or_else(|| anyhow::anyhow!("PORT must be a valid port number (1-65535)."))?,
         };
 
+        let https_port = match get("HTTPS_PORT") {
+            None => None,
+            Some(value) => {
+                Some(parse_port(&value).ok_or_else(|| anyhow::anyhow!("HTTPS_PORT must be a valid port number (1-65535)."))?)
+            }
+        };
+
         let bind_address = match get("BIND_ADDRESS") {
+            // Facing the internet, every address: `::` takes IPv4 as well on
+            // Linux unless the host has turned that off.
+            None if https_port.is_some() => IpAddr::from([0u16; 8]),
             None => IpAddr::from([127, 0, 0, 1]),
             Some(value) => match value.trim().parse() {
                 Ok(address) => address,
@@ -59,8 +76,10 @@ impl Config {
             Some(value) => parse_port(&value)
                 .ok_or_else(|| anyhow::anyhow!("TLS_CHECK_PORT must be a valid port number (1-65535)."))?,
         };
-        if tls_check_port == port {
-            bail!("TLS_CHECK_PORT must be different from PORT.");
+        match https_port {
+            Some(https_port) if https_port == port => bail!("HTTPS_PORT must be different from PORT."),
+            None if tls_check_port == port => bail!("TLS_CHECK_PORT must be different from PORT."),
+            _ => {}
         }
 
         let Some(dashboard_host) = get("DASHBOARD_HOST") else {
@@ -82,7 +101,7 @@ impl Config {
 
         let data_dir = absolute(Path::new(&get("DATA_DIR").unwrap_or_else(|| "./data".into())));
 
-        Ok(Self { port, bind_address, tls_check_port, dashboard_host, log_level, data_dir })
+        Ok(Self { port, bind_address, tls_check_port, https_port, dashboard_host, log_level, data_dir })
     }
 
     /// Path of the SQLite database file.
@@ -183,6 +202,20 @@ mod tests {
         assert_eq!(c.dashboard_host, "panel.example.com");
         assert_eq!(c.bind_address.to_string(), "127.0.0.1");
         assert_eq!(c.log_level, LogLevel::Info);
+        assert_eq!(c.https_port, None);
+    }
+
+    #[test]
+    fn https() {
+        let c = config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("PORT", "80")]).unwrap();
+        assert_eq!(c.https_port, Some(443));
+        assert_eq!(c.bind_address.to_string(), "::");
+        // The check port isn't bound, so it may be anything.
+        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("PORT", "3001")]).is_ok());
+        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "80"), ("PORT", "80")]).is_err());
+        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "0")]).is_err());
+        let pinned = config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("BIND_ADDRESS", "0.0.0.0")]).unwrap();
+        assert_eq!(pinned.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]

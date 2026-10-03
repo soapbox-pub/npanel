@@ -10,7 +10,6 @@
 //! (a build is immutable), and the blob itself is a kept memory mapping.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,7 +22,7 @@ use http::{Method, Request, Response, StatusCode};
 use parking_lot::{Mutex, RwLock};
 
 use crate::analytics::tracker::EVENT_PATH;
-use crate::analytics::Analytics;
+use crate::analytics::{Analytics, Peer};
 use crate::blobs::{BlobStore, Encoding, Variants};
 use crate::builds::current_build;
 use crate::db::{BuildKind, Db};
@@ -43,8 +42,9 @@ use crate::util::{http_date, lowercase_extname};
 /// Where a request came from, as settled by the listener that accepted it.
 ///
 /// Neither field can be trusted to the request itself: behind the proxy the
-/// scheme comes from `X-Forwarded-Proto`, while a request over Tor has no
-/// proxy in front of it and no header worth reading. Deciding both once, at
+/// scheme comes from `X-Forwarded-Proto`, while a request over Tor, or over
+/// TLS npanel terminated itself, has no proxy in front of it and no header
+/// worth reading. Deciding both once, at
 /// the boundary, keeps the question of which headers may be believed out of
 /// everything below.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,9 +191,9 @@ impl SiteServer {
     }
 
     /// Serve one request for a site, as it reached the listener `origin`
-    /// describes. `peer` is the connection's address where it may stand in
-    /// for the visitor's; only analytics reads it.
-    pub async fn serve(&self, request: Request<Body>, origin: RequestOrigin, peer: Option<IpAddr>) -> Reply {
+    /// describes. `peer` is who the connection came from; only analytics
+    /// reads it.
+    pub async fn serve(&self, request: Request<Body>, origin: RequestOrigin, peer: Peer) -> Reply {
         // The one path that isn't the site's, on any site: npanel's own event
         // endpoint, which the tracker in every counting site's build reports
         // to. Ahead of everything, preflights included.

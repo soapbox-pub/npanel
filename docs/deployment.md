@@ -8,6 +8,9 @@ DNS is the same either way. For the other two, pick one path: [Docker
 Compose](#docker-compose), which brings up npanel and Caddy together, or
 sections 2–5, which install the release binary under systemd.
 
+The proxy is optional. npanel can terminate TLS itself, getting and renewing a
+certificate for every site on its own — see [without a proxy](#without-a-proxy).
+
 ## 1. DNS
 
 Point every hostname you plan to serve at the box:
@@ -241,6 +244,9 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
+# With HTTPS_PORT set, npanel binds 80 and 443 itself, which needs this.
+#AmbientCapabilities=CAP_NET_BIND_SERVICE
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
@@ -369,6 +375,80 @@ point here: each handshake asks again, each `ok` starts an order that fails
 validation, and anyone can drive that loop by connecting with the name as SNI.
 Refusals cost nothing, and the dashboard hostname is never throttled. See
 [configuration](configuration.md#tls_check_limit_per_host).
+
+## Without a proxy
+
+npanel can serve HTTPS itself, with a certificate from Let's Encrypt for every
+name it serves: the dashboard, each enabled site, and the `www` of each site
+that redirects it. Each is ordered as soon as the name is added and renewed
+with a third of its lifetime left, and nothing restarts for either. Set
+`HTTPS_PORT` in `.env`:
+
+```
+DASHBOARD_HOST="panel.example.com"
+DATA_DIR="/var/lib/npanel"
+HTTPS_PORT="443"
+PORT="80"
+```
+
+Port 443 serves everything, over HTTP/2 or HTTP/1.1. Port 80 answers the
+certificate authority's HTTP-01 challenges and sends everything else to HTTPS;
+nothing is served in the clear. `BIND_ADDRESS` defaults to every address, IPv6
+and IPv4 both, and `TLS_CHECK_PORT` isn't used. Both ports must be open to the
+internet: the certificate authority validates over 443 (TLS-ALPN-01) and 80
+(HTTP-01), alternating from one attempt to the next.
+
+**Setting `HTTPS_PORT` agrees to the certificate authority's terms of
+service** — [Let's Encrypt's](https://letsencrypt.org/repository/), by default.
+
+Binding ports below 1024 needs a capability the `npanel` user doesn't have.
+The sample unit carries the line, commented out; uncomment it:
+
+```ini
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+```
+
+then `sudo systemctl daemon-reload && sudo systemctl restart npanel`. Stop any
+web server already holding 80 or 443 first.
+
+On Docker, drop the `caddy` service and publish npanel's ports instead. Docker
+lets a container's own user bind low ports, so nothing else is needed:
+
+```yaml
+services:
+  npanel:
+    environment:
+      HTTPS_PORT: "443"
+      PORT: "80"
+    ports:
+      - "80:80"
+      - "443:443"
+```
+
+Keep the published ports the same as the container's: the redirect to HTTPS
+names `HTTPS_PORT`, so `443:8443` would send visitors to `:8443`.
+
+DNS works as [section 1](#1-dns) describes, and has to point here before a site
+is added: npanel orders the certificate at once, and a name the certificate
+authority can't reach here fails. It isn't stuck — npanel tries again after two
+minutes, then four, and so on up to once an hour, with the challenge it didn't
+use last time — but fixing DNS promptly gets the certificate sooner. A site's
+page in the dashboard shows its certificates, and the reason for any failure;
+**Settings → Certificates** lists every name that is failing.
+
+Try a new setup against Let's Encrypt's staging CA first, with the switch under
+**Settings → Certificates**: its certificates aren't trusted by browsers, but
+its limits are far higher, so a mistake costs nothing. Switch back once
+everything validates.
+
+Certificates, their keys, and the ACME account are kept in the database, so a
+[database backup](#backups) covers them, and a restart serves what is stored
+without asking for anything. The backoff a failing name has earned is stored
+too, so restarting doesn't start it over.
+
+Without a proxy, nothing in a request's headers is taken from one:
+`X-Forwarded-For` and `X-Forwarded-Proto` are ignored, analytics count the
+address that connected, and the scheme is `https`.
 
 ### Other proxies
 
@@ -606,6 +686,12 @@ is off by more than a minute. Run NTP.
 **Login fails with "This account has no access to npanel."** The signature is
 valid but the pubkey isn't a user. Add it from the Users page, or bootstrap with
 `make-admin`.
+
+**A site has no certificate, with `HTTPS_PORT` set.** Its page in the dashboard
+says why, in the certificate authority's words, and the log has it as
+`tls_certificate_failed`. Usually DNS doesn't point here yet, or a firewall
+blocks port 80 or 443. npanel keeps trying on its own. A browser connecting
+before there is one gets a TLS error rather than someone else's certificate.
 
 **Caddy won't issue a certificate.** Confirm DNS resolves to the box, the host
 exists in the dashboard and is enabled, and that

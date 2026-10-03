@@ -6,6 +6,7 @@ its own, it keeps local storage in sync with Nostr.
 
 ```
         DNS ──► reverse proxy (TLS) ──► npanel :3000
+                 or, with HTTPS_PORT ──► npanel :443, its own TLS
                                           │
                     ┌─────────────────────┴────────────────────┐
                     │  Host = DASHBOARD_HOST?                  │
@@ -24,6 +25,7 @@ its own, it keeps local storage in sync with Nostr.
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
+   with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
 
 ## Request routing
@@ -42,11 +44,13 @@ letting a request for any site ask for the dashboard instead. A proxy that
 rewrites `Host` has to be configured not to; see
 [deployment](deployment.md#other-proxies).
 
-The scheme is a different matter, and comes from `X-Forwarded-Proto`
-(`request_scheme`, `src/app.rs`), defaulting to `https`. npanel terminates no
-TLS, so the local request always says `http` and redirects built from it would
-downgrade; believing the proxy here costs at worst a redirect to the scheme the
-visitor was already using.
+The scheme is a different matter. Behind a proxy it comes from
+`X-Forwarded-Proto` (`request_scheme`, `src/app.rs`), defaulting to `https`:
+the local request always says `http`, and redirects built from it would
+downgrade, so believing the proxy here costs at worst a redirect to the scheme
+the visitor was already using. Without a proxy — see
+[TLS without a proxy](#tls-without-a-proxy) — the listener that terminated TLS
+says `https` itself, and no forwarded header is read at all.
 
 Both are settled in that one middleware and handed to the site server as a
 `RequestOrigin` — nothing downstream reads a header to work out where a request
@@ -114,6 +118,61 @@ its origin. It finds its server at startup (`dashboard/src/lib/server.ts`): if
 otherwise it asks the reader for one, and remembers it. Every API response
 allows any origin, and NIP-98 binds a request to the API's URL rather than the
 page's, so a dashboard on another origin needs nothing else from the server.
+
+## TLS without a proxy
+
+With `HTTPS_PORT` set npanel terminates TLS itself, and gets every certificate
+it serves from an ACME certificate authority (`src/tls/`). It is optional: the
+proxy path above is unchanged, and nothing about serving a site differs between
+the two beyond where the bytes are encrypted.
+
+**Which names get one is the same rule either way.** `src/tls/names.rs` answers
+it name by name for Caddy's `/tls-check` and all at once for npanel's own
+client: the dashboard hostname, every enabled host, and the `www` of each root
+domain that redirects it. Two answers to one question can't drift if one
+function gives both.
+
+**Certificates are reconciled**, like builds and onions. Startup, a host being
+added, renamed, enabled or disabled, a setting changing, and a timer all run
+the same routine on the TLS runtime's thread: read the names, read what is
+stored, serve exactly the stored certificates that are wanted and unexpired,
+then order any name that is due — one without a certificate, or one with a
+third of its lifetime left — one at a time. Nothing is remembered between two
+runs, so the runtime restarts as cheaply as the others.
+
+A name that fails waits before its next attempt — two minutes, doubling to an
+hour — and the backoff is stored with it, so a restart doesn't start it over.
+That pacing is what keeps a name whose DNS points elsewhere within Let's
+Encrypt's five failed validations an hour. Each attempt validates by one
+challenge, alternating between TLS-ALPN-01 and HTTP-01, rather than trying both
+and spending two. A renewal that fails leaves the old certificate serving until
+it expires. The two hourly limits that meter `/tls-check` meter orders here,
+and the dashboard host is exempt from them in both.
+
+**npanel keeps the keys.** Certificates, their private keys and the ACME
+account are rows in the database, kept per CA directory, as onion keys are. A
+database backup is a complete one, and a restart serves what is stored from
+the first connection, loaded before the listener opens. Switching to the
+staging CA and back finds production's certificates where they were.
+
+**Handshakes never wait.** The listener's certificate resolver reads an
+`ArcSwap` map by SNI and nothing else; every change to it is made on the TLS
+runtime and swapped in whole. A name with no certificate — not yet, or not
+ever — gets no handshake at all rather than some other name's certificate. The
+listener offers `h2` and `http/1.1`, and a CA validating TLS-ALPN-01 offers
+only `acme-tls/1`, which is answered with that name's challenge certificate
+and closed once the handshake is done.
+
+**Plain HTTP serves nothing.** `PORT` answers HTTP-01 challenges and sends
+every name npanel would serve to the same path over HTTPS with a `308`, kept
+for an hour like the `www` redirect; any other name is a `404`, so the
+redirect can't be pointed elsewhere.
+
+**No proxy means no forwarded headers.** A request off the TLS listener is
+handed to the app as `Via::Tls`, which fixes its scheme at `https` and its
+visitor at the address that connected (`Peer::Visitor`). `X-Forwarded-For`
+is the visitor's own to write there, so analytics no longer read it — as over
+Tor, where there is no address at all (`Peer::Unknown`).
 
 ## The nsite model
 

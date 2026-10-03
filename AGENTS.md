@@ -15,7 +15,7 @@ src/
   main.rs               entry point; wires everything together, and the CLI
   app.rs                Host-based routing: dashboard vs nsite
   server.rs             serving HTTP/1.1 on a listener
-  config.rs             the six environment variables, and .env
+  config.rs             the seven environment variables, and .env
   log.rs                one flat JSON object per line
   hostname.rs, psl.rs   hostname validation and root-domain rules
   net.rs                public-address checks, and the resolver downloads use
@@ -34,6 +34,7 @@ src/
   deploy.rs             the runtime sync and builds run on, and its handle
   supervise.rs          a runtime on a thread of its own, restarted if it dies
   tls_check.rs          certificate authorization, on its own port
+  tls/                  HTTPS without a proxy: ACME certificates, renewed
   analytics/            the Plausible-compatible analytics runtime
   blobs.rs              content-addressed filesystem store
   hash.rs               BlobHash, a blob's name, parsed where it enters
@@ -74,7 +75,7 @@ needs a matching `Cargo.toml` version and `CHANGELOG.md` section.
   which runs on the blocking pool; CPU-heavy work (compression, user-agent
   parsing) goes through `spawn_blocking`. Don't hold a `parking_lot` guard
   across an `.await`.
-- Only six things are environment variables. Everything else belongs in the
+- Only seven things are environment variables. Everything else belongs in the
   `settings` table so admins can change it without a restart. Adding a setting:
   a field in the `settings!` list, a default, a branch in `validate`, and a
   subscriber if anything reacts to it. Then surface it on the dashboard's

@@ -41,6 +41,7 @@ mod site_preview;
 mod sites;
 mod supervise;
 mod sync;
+mod tls;
 mod tls_check;
 mod tor;
 mod util;
@@ -52,7 +53,7 @@ use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use crate::analytics::{Analytics, AnalyticsConfig};
-use crate::app::App;
+use crate::app::{App, Via};
 use crate::blobs::BlobStore;
 use crate::config::Config;
 use crate::db::Db;
@@ -154,22 +155,32 @@ async fn run(config: Config, log: Logger) -> Result<()> {
 
     let shutdown = CancellationToken::new();
 
-    // A second listener, on its own port, so the proxy can ask which hostnames
-    // may have a certificate without that question being answerable from the
-    // internet. Bound first, so a port in use fails startup.
-    let tls_listener = server::bind(SocketAddr::new(config.bind_address, config.tls_check_port)).await?;
-    let listener = server::bind(SocketAddr::new(config.bind_address, config.port)).await?;
+    // Certificates, when npanel gets them itself, on a thread of their own.
+    // Started before the listeners so that what is already stored is served
+    // from the first connection.
+    let tls = match config.https_port {
+        Some(_) => Some(Arc::new(
+            tls::TlsService::start(tls::TlsDeps {
+                db: db.clone(),
+                settings: settings.clone(),
+                log,
+                dashboard_host: config.dashboard_host.clone(),
+                acme_root: None,
+            })
+            .await?,
+        )),
+        None => None,
+    };
 
-    let tls_check = Arc::new(tls_check::TlsCheck::new(db.clone(), settings.clone(), log, config.dashboard_host.clone()));
-    let tls_server = tokio::spawn(server::serve(
-        tls_listener,
-        move |request, _| {
-            let tls_check = tls_check.clone();
-            async move { tls_check.handle(request).await }
-        },
-        shutdown.clone(),
-        log,
-    ));
+    // Bound before anything is served, so a port in use fails startup.
+    let listener = server::bind(SocketAddr::new(config.bind_address, config.port)).await?;
+    let second_listener = match config.https_port {
+        Some(https_port) => server::bind(SocketAddr::new(config.bind_address, https_port)).await?,
+        // A second listener, on its own port, so the proxy can ask which
+        // hostnames may have a certificate without that question being
+        // answerable from the internet.
+        None => server::bind(SocketAddr::new(config.bind_address, config.tls_check_port)).await?,
+    };
 
     let api = api::router(Arc::new(api::ApiDeps {
         db: db.clone(),
@@ -179,6 +190,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         dns: dns::DnsTargets::new(config.dashboard_host.clone(), settings.clone(), log),
         log,
         tor: tor.clone(),
+        tls: tls.clone(),
         site_csp,
         previews,
         serve_cache,
@@ -188,22 +200,64 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     let dashboard = dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log);
     dashboard.warm();
     let app = Arc::new(App { dashboard_host: config.dashboard_host.clone(), site, dashboard, api });
-    let main_server = tokio::spawn(server::serve(
-        listener,
-        move |request, remote| {
-            let app = app.clone();
-            async move { app.handle(request, remote.ip()).await }
-        },
-        shutdown.clone(),
-        log,
-    ));
+
+    let servers = match (&tls, config.https_port) {
+        (Some(tls), Some(https_port)) => {
+            // Plain HTTP answers the CA's HTTP-01 challenges and sends
+            // everything else to HTTPS, which serves the lot.
+            let redirect = Arc::new(tls.redirect(https_port));
+            let plain = tokio::spawn(server::serve(
+                listener,
+                move |request, _| {
+                    let redirect = redirect.clone();
+                    async move { redirect.handle(&request) }
+                },
+                shutdown.clone(),
+                log,
+            ));
+            let https = tokio::spawn(tls::serve(
+                second_listener,
+                tls.server_config(),
+                move |request, remote| {
+                    let app = app.clone();
+                    async move { app.handle(request, Via::Tls(remote.ip())).await }
+                },
+                shutdown.clone(),
+                log,
+            ));
+            [plain, https]
+        }
+        _ => {
+            let tls_check = Arc::new(tls_check::TlsCheck::new(db.clone(), settings.clone(), log, config.dashboard_host.clone()));
+            let tls_server = tokio::spawn(server::serve(
+                second_listener,
+                move |request, _| {
+                    let tls_check = tls_check.clone();
+                    async move { tls_check.handle(request).await }
+                },
+                shutdown.clone(),
+                log,
+            ));
+            let main_server = tokio::spawn(server::serve(
+                listener,
+                move |request, remote| {
+                    let app = app.clone();
+                    async move { app.handle(request, Via::Proxy(remote.ip())).await }
+                },
+                shutdown.clone(),
+                log,
+            ));
+            [tls_server, main_server]
+        }
+    };
 
     log.info(
         "started",
         fields! {
             "bind_address" => config.bind_address.to_string(),
             "port" => config.port,
-            "tls_check_port" => config.tls_check_port,
+            "https_port" => config.https_port,
+            "tls_check_port" => config.https_port.is_none().then_some(config.tls_check_port),
             "dashboard_host" => config.dashboard_host.as_str(),
             "data_dir" => config.data_dir.display().to_string(),
         },
@@ -213,8 +267,12 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     log.info("shutting_down", fields! { "signal" => signal });
 
     shutdown.cancel();
-    let _ = tls_server.await;
-    let _ = main_server.await;
+    for server in servers {
+        let _ = server.await;
+    }
+    if let Some(tls) = &tls {
+        tls.stop().await;
+    }
     tor.stop().await;
     deployments.stop().await;
     analytics.stop().await;

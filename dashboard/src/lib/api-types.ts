@@ -69,6 +69,12 @@ export interface Host {
    * Assigned by npanel, not by staff, and stable once it exists.
    */
   onion: string | null;
+  /**
+   * The certificates for its name and its redirected `www`, when npanel gets
+   * certificates itself (`HTTPS_PORT`). Null behind a proxy, and missing
+   * from servers before it was added.
+   */
+  certificates?: CertificateStatus[] | null;
   pinned_event_id: string | null;
   created_by: string;
   created_at: number;
@@ -173,6 +179,10 @@ export interface Settings {
   allowed_host_suffixes: string[];
   tls_check_limit_per_host: number;
   tls_check_limit_total: number;
+  /** The ACME directory certificates come from, when npanel gets them itself. */
+  acme_directory: string;
+  /** Who the certificate authority writes to, or empty for nobody. */
+  acme_email: string;
   contact_npub: string;
   public_site_list: boolean;
   tor_enabled: boolean;
@@ -189,6 +199,29 @@ export interface TorStatus {
   services: number;
   /** Why Tor isn't working, as a sentence, or empty when nothing is wrong. */
   error: string;
+}
+
+/** One name's certificate, when npanel gets certificates itself. */
+export interface CertificateStatus {
+  hostname: string;
+  /** When the certificate being served expires, or null when there is none. */
+  expires_at: number | null;
+  /** Why the last attempt to get one failed, or null if it didn't. */
+  error: string | null;
+  /** Attempts that have failed in a row. */
+  failures: number;
+  attempted_at: number | null;
+}
+
+/** How npanel's own certificates stand, when it gets them itself. */
+export interface TlsStatus {
+  directory: string;
+  /** Names that may have a certificate. */
+  names: number;
+  /** Names with one that hasn't expired. */
+  issued: number;
+  /** Names whose last attempt failed, and why. */
+  failing: CertificateStatus[];
 }
 
 /** A site as it appears to someone who can't manage it. */
@@ -242,6 +275,8 @@ export interface ServerStatus {
   blob_bytes: number;
   relays: string[];
   tor: TorStatus;
+  /** Null behind a proxy, and missing from servers before it was added. */
+  tls?: TlsStatus | null;
 }
 
 /** One site's last 24 hours, as the list of sites draws it. */

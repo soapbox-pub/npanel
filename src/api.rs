@@ -42,6 +42,7 @@ use crate::site_csp::{SiteCsp, GATEWAY_CSP};
 use crate::site_env::{parse_env_name, parse_env_value, MAX_VARIABLES};
 use crate::site_preview::{SitePreview, SitePreviews};
 use crate::sites::{host_by_id, load_host, newest_event, site_event, site_key};
+use crate::tls::{CertificateStatus, TlsService};
 use crate::tor::TorService;
 
 /// Largest request body the API accepts. Bodies are read before the caller is
@@ -63,6 +64,8 @@ pub struct ApiDeps {
     pub dns: DnsTargets,
     pub log: Logger,
     pub tor: Arc<TorService>,
+    /// Only when npanel terminates TLS itself.
+    pub tls: Option<Arc<TlsService>>,
     pub site_csp: Arc<SiteCsp>,
     pub previews: Arc<SitePreviews>,
     pub serve_cache: Arc<ServeCache>,
@@ -439,9 +442,11 @@ struct HostDetails {
     onion: Option<String>,
     active: Option<SiteEvent>,
     preview: SitePreview,
+    /// Its names' certificates, when npanel gets them itself.
+    certificates: Option<Vec<CertificateStatus>>,
 }
 
-fn host_details(conn: &Connection, previews: &SitePreviews, host: &Host) -> anyhow::Result<HostDetails> {
+fn host_details(conn: &Connection, previews: &SitePreviews, tls: Option<&TlsService>, host: &Host) -> anyhow::Result<HostDetails> {
     let build = current_build(conn, host.id, BuildKind::Clearnet)?;
     let latest = newest_event(conn, &host.address())?;
     let onion = conn.prepare_cached("SELECT address FROM onion_services WHERE host_id = ?")?.query_row([host.id], |r| r.get(0)).optional()?;
@@ -450,7 +455,8 @@ fn host_details(conn: &Connection, previews: &SitePreviews, host: &Host) -> anyh
         None => None,
     };
     let preview = previews.preview(conn, host, build.as_ref())?;
-    Ok(HostDetails { build, latest, onion, active, preview })
+    let certificates = tls.map(|tls| tls.host_certificates(conn, host)).transpose()?;
+    Ok(HostDetails { build, latest, onion, active, preview, certificates })
 }
 
 /// A host as the API shows it, including its deploy state: the version its
@@ -482,6 +488,7 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "merge_deployments": host.merge_deployments,
         "analytics": host.analytics,
         "onion": details.onion,
+        "certificates": details.certificates,
         "pinned_event_id": host.pinned_event_id,
         "created_by": host.created_by,
         "created_at": host.created_at,
@@ -493,9 +500,9 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
 }
 
 async fn serialize_host(deps: &Deps, host: Host) -> anyhow::Result<Value> {
-    let previews = deps.previews.clone();
+    let (previews, tls) = (deps.previews.clone(), deps.tls.clone());
     let h = host.clone();
-    let details = deps.db.call(move |conn| host_details(conn, &previews, &h)).await?;
+    let details = deps.db.call(move |conn| host_details(conn, &previews, tls.as_deref(), &h)).await?;
     host_json(deps, &host, details).await
 }
 
@@ -525,7 +532,7 @@ fn host_summary(host: &Host) -> Map<String, Value> {
 
 async fn list_hosts(State(deps): State<Deps>, user: AuthUser) -> ApiResult {
     let public = deps.settings.get().public_site_list;
-    let (u, previews) = (user.clone(), deps.previews.clone());
+    let (u, previews, tls) = (user.clone(), deps.previews.clone(), deps.tls.clone());
     let (hosts, others) = deps
         .db
         .call(move |conn| {
@@ -553,7 +560,7 @@ async fn list_hosts(State(deps): State<Deps>, user: AuthUser) -> ApiResult {
             let hosts = hosts
                 .into_iter()
                 .map(|host| {
-                    let details = host_details(conn, &previews, &host)?;
+                    let details = host_details(conn, &previews, tls.as_deref(), &host)?;
                     Ok((host, details))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -669,6 +676,9 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     deps.serve_cache.clear();
     deps.deployments.hosts_changed();
     deps.tor.hosts_changed();
+    if let Some(tls) = &deps.tls {
+        tls.hosts_changed();
+    }
     // A site another host already serves has a ready version to build from
     // straight away, and no deploy is coming along to say so.
     deps.deployments.rebuild(vec![host.id]);
@@ -801,6 +811,12 @@ async fn update_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     if changed("enabled") {
         deps.tor.hosts_changed();
     }
+    // A certificate is for a name, and a `www` one for a host redirecting it.
+    if changed("enabled") || changed("hostname") || changed("redirect_www") {
+        if let Some(tls) = &deps.tls {
+            tls.hosts_changed();
+        }
+    }
 
     ok(json!({ "host": serialize_host(&deps, updated).await? }))
 }
@@ -820,6 +836,9 @@ async fn delete_host(State(deps): State<Deps>, user: AuthUser, Path(hostname): P
     deps.serve_cache.clear();
     deps.deployments.hosts_changed();
     deps.tor.hosts_changed();
+    if let Some(tls) = &deps.tls {
+        tls.hosts_changed();
+    }
     deps.analytics.hosts_changed().await;
     ok(json!({ "ok": true }))
 }
@@ -1499,6 +1518,10 @@ const DISK_BYTES: &str = "size + MAX(COALESCE(br_size, 0), 0) + MAX(COALESCE(gzi
 
 /// Server-side status: aggregates, not row fetches, since the footer polls it.
 async fn status_route(State(deps): State<Deps>) -> ApiResult {
+    let tls = match &deps.tls {
+        Some(tls) => Some(tls.status().await?),
+        None => None,
+    };
     let (hosts, ready, blobs, bytes) = deps
         .db
         .call(|conn| {
@@ -1516,6 +1539,7 @@ async fn status_route(State(deps): State<Deps>) -> ApiResult {
         "blob_bytes": bytes,
         "relays": deps.settings.get().relays,
         "tor": deps.tor.status(),
+        "tls": tls,
     }))
 }
 

@@ -82,6 +82,8 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   allowed_host_suffixes: { label: 'Allowed domains' },
   tls_check_limit_per_host: { label: 'Certificates per domain', format: (value) => `${value} an hour` },
   tls_check_limit_total: { label: 'Certificates in total', format: (value) => `${value} an hour` },
+  acme_directory: { label: 'Certificate authority' },
+  acme_email: { label: 'Certificate authority email' },
   contact_npub: { label: 'Homepage contact' },
   public_site_list: { label: 'Public site list' },
   tor_enabled: { label: 'Tor' },

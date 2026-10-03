@@ -73,8 +73,17 @@ EXPOSE 3000 3001
 # opened; the second call proves the proxy can still get certificates
 # authorized. The dashboard hostname is never metered, so this spends no part of
 # the issuance budget.
+#
+# With HTTPS_PORT set there is no proxy and no check port, and HTTPS can't be
+# asked for the dashboard's certificate by address; what's left to ask is
+# whether plain HTTP knows to redirect the dashboard, which means the database
+# opened.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null --header "host: ${DASHBOARD_HOST}" "http://127.0.0.1:${PORT}/api/instance" && \
-      wget -q -O /dev/null "http://127.0.0.1:${TLS_CHECK_PORT}/tls-check?domain=${DASHBOARD_HOST}"
+  CMD if [ -n "${HTTPS_PORT}" ]; then \
+        wget -S -q -O /dev/null --max-redirect=0 --header "host: ${DASHBOARD_HOST}" "http://127.0.0.1:${PORT}/" 2>&1 | grep -q " 308 "; \
+      else \
+        wget -q -O /dev/null --header "host: ${DASHBOARD_HOST}" "http://127.0.0.1:${PORT}/api/instance" && \
+        wget -q -O /dev/null "http://127.0.0.1:${TLS_CHECK_PORT}/tls-check?domain=${DASHBOARD_HOST}"; \
+      fi
 
 CMD ["npanel"]

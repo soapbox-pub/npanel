@@ -114,13 +114,14 @@ way — DNS, TLS, backups, and a systemd unit.
 
 ## Configuration
 
-Six environment variables, and that's the whole file:
+Seven environment variables, and that's the whole file:
 
 | Variable          | Default     | Meaning                                     |
 | ----------------- | ----------- | ------------------------------------------- |
 | `PORT`            | `3000`      | Port the HTTP server listens on             |
 | `BIND_ADDRESS`    | `127.0.0.1` | Address it listens on; only the proxy should reach it |
 | `TLS_CHECK_PORT`  | `3001`      | Port answering the proxy's certificate questions, kept off the public one |
+| `HTTPS_PORT`      | —           | Serve HTTPS here, with certificates from Let's Encrypt, instead of behind a proxy |
 | `DASHBOARD_HOST`  | —           | Hostname that serves the dashboard and API  |
 | `LOG_LEVEL`       | `info`      | `debug`, `info`, `warn`, or `error`         |
 | `DATA_DIR`        | `./data`    | Holds the SQLite database and the blob store |

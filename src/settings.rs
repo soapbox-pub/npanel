@@ -25,6 +25,10 @@ use crate::identifiers::parse_relay_url;
 use crate::log::Logger;
 use crate::nostr::nip19::{self, Decoded};
 
+/// Let's Encrypt's production directory, where certificates come from unless
+/// an admin says otherwise.
+pub const LETS_ENCRYPT: &str = "https://acme-v02.api.letsencrypt.org/directory";
+
 /// Declares [`SettingsValues`] and everything that has to name each of its
 /// fields: [`KEYS`], and reading or replacing one field by its key. One list,
 /// so a setting can't be added to one of them and forgotten in another.
@@ -86,10 +90,15 @@ settings! {
     dns_targets: Vec<String>,
     /// Domains hostnames may sit under, or empty to allow any hostname.
     allowed_host_suffixes: Vec<String>,
-    /// Certificates `/tls-check` will authorize for one hostname per hour.
+    /// Certificates authorized for one hostname per hour: by `/tls-check`
+    /// behind a proxy, or as ACME orders with `HTTPS_PORT`.
     tls_check_limit_per_host: i64,
-    /// Certificates `/tls-check` will authorize across all hostnames per hour.
+    /// Certificates authorized across all hostnames per hour, the same way.
     tls_check_limit_total: i64,
+    /// The ACME directory certificates come from, with `HTTPS_PORT`.
+    acme_directory: String,
+    /// Who the CA writes to about certificates, or empty for nobody.
+    acme_email: String,
     /// Whoever runs this instance, shown on the logged-out homepage.
     contact_npub: String,
     /// Whether the sites this gateway serves are listed publicly.
@@ -119,6 +128,8 @@ impl Default for SettingsValues {
             allowed_host_suffixes: vec![],
             tls_check_limit_per_host: 60,
             tls_check_limit_total: 600,
+            acme_directory: LETS_ENCRYPT.into(),
+            acme_email: String::new(),
             contact_npub: String::new(),
             public_site_list: false,
             tor_enabled: false,
@@ -316,6 +327,8 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "allowed_host_suffixes" => Ok(strings(value, |s| host_suffix(s.trim()))?.into()),
         "tls_check_limit_per_host" => integer(value, 1, 10_000),
         "tls_check_limit_total" => integer(value, 1, 100_000),
+        "acme_directory" => Ok(acme_directory(string(value)?.trim())?.into()),
+        "acme_email" => Ok(email(string(value)?.trim())?.into()),
         "contact_npub" => Ok(contact_npub(string(value)?.trim())?.into()),
         "public_site_list" | "tor_enabled" => boolean(value),
         "analytics_timezone" => Ok(time_zone(string(value)?.trim())?.into()),
@@ -380,6 +393,27 @@ fn blossom_url(value: &str) -> Result<String, String> {
         url.set_path(&path);
     }
     Ok(url.to_string())
+}
+
+/// An ACME directory, which RFC 8555 requires be served over HTTPS.
+fn acme_directory(value: &str) -> Result<String, String> {
+    match url::Url::parse(value) {
+        Ok(url) if url.scheme() == "https" && url.host_str().is_some() => Ok(url.to_string()),
+        _ => Err(format!("Use the https:// URL of an ACME directory, eg {LETS_ENCRYPT}")),
+    }
+}
+
+/// An email address, loosely: the CA is the one that decides.
+fn email(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    match value.split_once('@') {
+        Some((local, domain)) if !local.is_empty() && domain.contains('.') && !value.contains(char::is_whitespace) => {
+            Ok(value.to_string())
+        }
+        _ => Err(format!("Not an email address: {value}")),
+    }
 }
 
 fn host_suffix(value: &str) -> Result<String, String> {
@@ -454,6 +488,11 @@ mod tests {
         assert_eq!(parse_setting("dns_targets", &json!(["GW.example.com."])).unwrap(), json!(["gw.example.com"]));
         assert_eq!(parse_setting("analytics_timezone", &json!("europe/berlin")).unwrap(), json!("Europe/Berlin"));
         assert!(parse_setting("analytics_timezone", &json!("Mars/Olympus")).is_err());
+        assert_eq!(parse_setting("acme_directory", &json!(" https://ca.example/dir ")).unwrap(), json!("https://ca.example/dir"));
+        assert!(parse_setting("acme_directory", &json!("http://ca.example/dir")).is_err());
+        assert_eq!(parse_setting("acme_email", &json!("")).unwrap(), json!(""));
+        assert_eq!(parse_setting("acme_email", &json!("ops@example.com")).unwrap(), json!("ops@example.com"));
+        assert!(parse_setting("acme_email", &json!("ops")).is_err());
         let hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         assert_eq!(parse_setting("contact_npub", &json!(hex)).unwrap(), json!(nip19::npub_encode(hex)));
         assert!(parse_setting("contact_npub", &json!(nip19::nsec_encode(hex))).unwrap_err().contains("private key"));

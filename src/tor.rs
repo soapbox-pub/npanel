@@ -47,6 +47,7 @@ use tor_keymgr::KeystoreSelector;
 use tor_llcrypto::pk::ed25519;
 use tor_proto::stream::IncomingStreamRequest;
 
+use crate::analytics::Peer;
 use crate::db::Db;
 use crate::deploy::Deployments;
 use crate::fields;
@@ -620,7 +621,7 @@ pub fn onion_handler(
                     .expect("response");
             }
             // There is no visitor address to give: the peer is Tor.
-            site.serve(request, RequestOrigin { hostname, scheme: "http" }, None).await
+            site.serve(request, RequestOrigin { hostname, scheme: "http" }, Peer::Unknown).await
         })
     }
 }

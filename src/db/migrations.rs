@@ -304,4 +304,28 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
             r#"DELETE FROM settings WHERE key IN ('tor_control_url', 'tor_control_password')"#,
         ],
     ),
+    (
+        "022_certificates",
+        &[
+            r#"CREATE TABLE acme_accounts (
+        directory TEXT PRIMARY KEY,
+        credentials TEXT NOT NULL,
+        email TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )"#,
+            r#"CREATE TABLE certificates (
+        directory TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        chain TEXT,
+        private_key TEXT,
+        not_before INTEGER,
+        not_after INTEGER,
+        issued_at INTEGER,
+        failures INTEGER NOT NULL DEFAULT 0,
+        attempted_at INTEGER,
+        error TEXT,
+        PRIMARY KEY (directory, hostname)
+      )"#,
+        ],
+    ),
 ];

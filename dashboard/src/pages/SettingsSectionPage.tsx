@@ -2,6 +2,7 @@ import { useSeoMeta } from '@unhead/react';
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 
+import { CertificateRow } from '@/components/CertificateRow';
 import { FieldRow, Row, RowIcon, Section, ToggleRow } from '@/components/Grouped';
 import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
@@ -12,11 +13,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
-import type { TorStatus as TorStatusView } from '@/lib/api-types';
+import type { TlsStatus as TlsStatusView, TorStatus as TorStatusView } from '@/lib/api-types';
 import { decodePubkey } from '@/lib/format';
 import { findSettingsSection } from '@/lib/settings-sections';
 import { cn } from '@/lib/utils';
 import NotFound from '@/pages/NotFound';
+
+const LETS_ENCRYPT = 'https://acme-v02.api.letsencrypt.org/directory';
+const LETS_ENCRYPT_STAGING = 'https://acme-staging-v02.api.letsencrypt.org/directory';
 
 interface Draft {
   relays?: string;
@@ -31,6 +35,8 @@ interface Draft {
   dnsTargets?: string;
   tlsCheckLimitPerHost?: string;
   tlsCheckLimitTotal?: string;
+  acmeDirectory?: string;
+  acmeEmail?: string;
   contactNpub?: string;
   publicSiteList?: boolean;
   torEnabled?: boolean;
@@ -73,6 +79,8 @@ export function SettingsSectionPage() {
   const dnsTargets = draft.dnsTargets ?? current?.dns_targets.join('\n') ?? '';
   const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
   const tlsCheckLimitTotal = draft.tlsCheckLimitTotal ?? String(current?.tls_check_limit_total ?? '');
+  const acmeDirectory = draft.acmeDirectory ?? current?.acme_directory ?? LETS_ENCRYPT;
+  const acmeEmail = draft.acmeEmail ?? current?.acme_email ?? '';
   const contactNpub = draft.contactNpub ?? current?.contact_npub ?? '';
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
   const torEnabled = draft.torEnabled ?? current?.tor_enabled ?? false;
@@ -93,6 +101,8 @@ export function SettingsSectionPage() {
         dns_targets: lines(dnsTargets),
         tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
         tls_check_limit_total: Number(tlsCheckLimitTotal),
+        acme_directory: acmeDirectory.trim(),
+        acme_email: acmeEmail.trim(),
         contact_npub: contactNpub.trim(),
         public_site_list: publicSiteList,
         tor_enabled: torEnabled,
@@ -267,8 +277,59 @@ export function SettingsSectionPage() {
         </Section>
       )}
 
+      {section.id === 'certificates' && status.data?.tls && (
+        <>
+          <TlsSummary status={status.data.tls} />
+          <Section
+            title="Certificate authority"
+            footer="Setting HTTPS_PORT agrees to the certificate authority's terms of service. Try a new setup against Let's Encrypt's staging CA, whose certificates browsers don't trust, before it counts against the real one's limits."
+          >
+            <FieldRow label="ACME directory" htmlFor="acme-directory">
+              <Input
+                id="acme-directory"
+                value={acmeDirectory}
+                onChange={(event) => setDraft({ ...draft, acmeDirectory: event.target.value })}
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono text-sm"
+              />
+            </FieldRow>
+            {(acmeDirectory === LETS_ENCRYPT || acmeDirectory === LETS_ENCRYPT_STAGING) && (
+              <ToggleRow
+                id="acme-staging"
+                label="Use the staging CA"
+                description="Every site needs a new certificate when this changes."
+                checked={acmeDirectory === LETS_ENCRYPT_STAGING}
+                onCheckedChange={(staging) =>
+                  setDraft({ ...draft, acmeDirectory: staging ? LETS_ENCRYPT_STAGING : LETS_ENCRYPT })
+                }
+              />
+            )}
+            <FieldRow label="Email" htmlFor="acme-email">
+              <Input
+                id="acme-email"
+                type="email"
+                value={acmeEmail}
+                onChange={(event) => setDraft({ ...draft, acmeEmail: event.target.value })}
+                placeholder="Nobody"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <p className="text-xs text-muted-foreground">Where the certificate authority writes about problems.</p>
+            </FieldRow>
+          </Section>
+        </>
+      )}
+
       {section.id === 'certificates' && (
-        <Section footer="Caps how often npanel lets your proxy request a certificate, so a misconfigured domain can't use up your certificate authority's limits.">
+        <Section
+          title={status.data?.tls ? 'Limits' : undefined}
+          footer={
+            status.data?.tls
+              ? "Caps how often npanel orders a certificate, so a misconfigured domain can't use up your certificate authority's limits."
+              : "Caps how often npanel lets your proxy request a certificate, so a misconfigured domain can't use up your certificate authority's limits."
+          }
+        >
           <NumberRow
             id="tls-check-limit-per-host"
             label="Per domain"
@@ -380,6 +441,25 @@ function NumberRow({
         {unit}
       </span>
     </Row>
+  );
+}
+
+/**
+ * How npanel's own certificates stand, and which names can't get one: the
+ * question to answer before anyone asks why a site won't load.
+ */
+function TlsSummary({ status }: { status: TlsStatusView }) {
+  return (
+    <Section
+      title="HTTPS"
+      footer={`${status.issued} of ${status.names} ${status.names === 1 ? 'domain has' : 'domains have'} a certificate. npanel gets them itself and renews them before they expire.`}
+    >
+      {status.failing.length ? (
+        status.failing.map((certificate) => <CertificateRow key={certificate.hostname} certificate={certificate} />)
+      ) : (
+        <Row label="Nothing is failing" />
+      )}
+    </Section>
   );
 }
 

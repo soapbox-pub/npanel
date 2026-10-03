@@ -65,6 +65,10 @@ otherwise, and `429` with a `Retry-After` once `tls_check_limit_per_host` or
 `tls_check_limit_total` is spent. Refusals aren't metered, and `DASHBOARD_HOST`
 is exempt. Nothing else is served on that port.
 
+With `HTTPS_PORT` set npanel gets certificates itself and that port isn't
+bound; how they stand is in [`/api/status`](#get-apistatus) and each host's
+`certificates`.
+
 ## Instance
 
 ### `GET /api/instance`
@@ -180,6 +184,9 @@ A host object:
   "merge_deployments": false,
   "analytics": false,
   "onion": "abc…xyz.onion",
+  "certificates": [
+    { "hostname": "example.org", "expires_at": 1761000000, "error": null, "failures": 0, "attempted_at": 1753000000 }
+  ],
   "pinned_event_id": null,
   "created_by": "<hex>",
   "created_at": 1754000000,
@@ -196,6 +203,14 @@ gets one a moment after it is created, and deleting a host takes its address
 with it for good. It is stable otherwise — a restart of npanel or of Tor
 republishes the same address. There is no field to set it and no per-host way to
 opt out.
+
+`certificates` is read-only, and `null` unless npanel gets certificates itself
+(`HTTPS_PORT`). It lists the host's own name and, if it redirects it, its `www`;
+a disabled host has none. `expires_at` is when the certificate being served
+expires, `null` while there is none. `error` is why the last attempt failed,
+in the certificate authority's words, and `failures` how many have failed in a
+row — `null` and `0` once one succeeds. A name nothing has been tried for yet
+has all four empty.
 
 A version object:
 
@@ -753,6 +768,8 @@ back in if it ever happens anyway.)
     "allowed_host_suffixes": [],
     "tls_check_limit_per_host": 60,
     "tls_check_limit_total": 600,
+    "acme_directory": "https://acme-v02.api.letsencrypt.org/directory",
+    "acme_email": "",
     "contact_npub": "",
     "public_site_list": false
   },
@@ -829,6 +846,14 @@ visits every stored blob, and the footer polls the status.
     "progress": 100,
     "services": 12,
     "error": ""
+  },
+  "tls": {
+    "directory": "https://acme-v02.api.letsencrypt.org/directory",
+    "names": 13,
+    "issued": 12,
+    "failing": [
+      { "hostname": "new.example.org", "expires_at": null, "error": "The CA could not validate new.example.org: …", "failures": 2, "attempted_at": 1754000000 }
+    ]
   }
 }
 ```
@@ -841,6 +866,11 @@ network and ready to answer, `progress` how far through joining it npanel is,
 as a percentage, and `services` how many onion services are running. `error` is
 empty while nothing is wrong and otherwise says what is, as a sentence — npanel
 keeps trying, so it describes a live condition rather than a permanent one. See [Tor](deployment.md#tor).
+
+`tls` is `null` behind a proxy. With `HTTPS_PORT` set, `names` is how many
+names may have a certificate, `issued` how many have an unexpired one from
+`directory`, and `failing` every wanted name whose last attempt failed, shaped
+like a host's `certificates`. See [without a proxy](deployment.md#without-a-proxy).
 
 ## Site responses
 

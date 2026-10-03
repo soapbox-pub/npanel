@@ -4,7 +4,7 @@ npanel splits configuration in two.
 
 **Environment variables** cover things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are six of them, and they require a restart.
+set wrong. There are seven of them, and they require a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
@@ -16,13 +16,18 @@ Copy `.env.example` to `.env` and edit it. npanel loads `.env` from its working
 directory at startup, without overriding anything already set in the environment.
 
 On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
-compose, which passes them to the containers; the image fixes the other four.
+compose, which passes them to the containers; the image fixes the rest.
 See [deployment](deployment.md#docker-compose).
 
 ### `PORT`
 
 Default `3000`. The port the HTTP server binds. Your reverse proxy forwards
 here. Must be 1–65535 or startup fails.
+
+With [`HTTPS_PORT`](#https_port) set there is no proxy, and this is plain HTTP
+facing the internet — `80`, since that is where a certificate authority's
+HTTP-01 challenge connects. It then answers those challenges and redirects
+everything else to HTTPS, and serves nothing in the clear.
 
 ### `BIND_ADDRESS`
 
@@ -44,6 +49,10 @@ The Docker image sets `0.0.0.0` for the reason above — a container's loopback 
 reachable by nothing else, not even the proxy beside it — and `compose.yaml`
 takes the place of the firewall by never publishing either port.
 
+With [`HTTPS_PORT`](#https_port) set the default is `::` instead, every address,
+IPv6 and IPv4 alike: there is no proxy, and visitors connect directly. On a host
+with IPv6 turned off entirely, set `0.0.0.0`.
+
 ### `TLS_CHECK_PORT`
 
 Default `3001`. The port that answers your reverse proxy's certificate
@@ -62,6 +71,22 @@ the sites that need them.
 Nothing else is served there, and it must be reachable only by the proxy. See
 [deployment](deployment.md#5-tls-with-caddy).
 
+Not bound with [`HTTPS_PORT`](#https_port) set: there is no proxy to ask.
+
+### `HTTPS_PORT`
+
+Unset by default, and a reverse proxy terminates TLS. Set it — to `443` — and
+npanel serves HTTPS itself on that port, getting a certificate for every name
+it serves from an ACME certificate authority, Let's Encrypt unless
+[`acme_directory`](#acme_directory) says otherwise, and renewing each before it
+expires. [`PORT`](#port) becomes the plain-HTTP side, which must be `80`. Must
+differ from `PORT`, or startup fails.
+
+Setting it agrees to the certificate authority's terms of service. See
+[deployment](deployment.md#without-a-proxy).
+
+The port is named in the redirects plain HTTP sends, so if anything forwards
+ports to npanel, forward them unchanged.
 ### `DASHBOARD_HOST`
 
 Required, with no default. The hostname that serves the dashboard and the JSON
@@ -74,7 +99,8 @@ This one value does a lot of work:
   Requests with any other hostname are served as nsites.
 - NIP-98 auth events are checked against it, so a signature made for a different
   hostname is rejected.
-- `/api/tls-check` approves it for a certificate.
+- It is always approved for a certificate — by `/tls-check`, or by npanel's own
+  ACME client with `HTTPS_PORT` — and never counts against the limits below.
 
 Because it's compared to the *public* hostname, it must be the name users type
 in the browser, not the address your proxy forwards to.
@@ -285,8 +311,9 @@ exist keep working, so tightening it never takes a site offline.
 
 ### `tls_check_limit_per_host`
 
-Default `60`, allowed range 1–10000. How many certificates `/api/tls-check` will
-authorize for a single hostname in an hour.
+Default `60`, allowed range 1–10000. How many certificates `/tls-check` will
+authorize for a single hostname in an hour. With [`HTTPS_PORT`](#https_port) it
+is how many certificates npanel orders for one hostname in an hour instead.
 
 Caddy asks before every TLS handshake for a name it holds no certificate for, so
 a normal host costs one approval and then goes quiet. A host whose DNS never
@@ -315,6 +342,36 @@ out of npanel itself.
 
 Throttled asks are logged as `tls_check_throttled`.
 
+With [`HTTPS_PORT`](#https_port), the same two limits meter npanel's own orders,
+logged as `tls_order_throttled` when one is held back. They matter less there:
+npanel waits longer after each failed attempt for a name — two minutes, then
+four, eight, and so on to an hour — so a name whose DNS points elsewhere costs
+five attempts in its first hour and one an hour after that, within Let's
+Encrypt's limit of five failed validations per name an hour. Let's Encrypt also
+caps new orders at 300 per three hours for an account, which `600` an hour does
+not respect: lower `tls_check_limit_total` to `100` on a gateway with many
+names failing at once.
+
+### `acme_directory`
+
+Default `https://acme-v02.api.letsencrypt.org/directory`, Let's Encrypt. The
+ACME directory npanel gets certificates from with [`HTTPS_PORT`](#https_port);
+ignored behind a proxy. Must be an `https://` URL.
+
+Point it at Let's Encrypt's staging CA,
+`https://acme-staging-v02.api.letsencrypt.org/directory`, to try a new setup
+without spending the real one's limits. Its certificates aren't trusted by
+browsers. The Settings page has a switch for exactly that.
+
+Certificates and accounts are kept per directory. Switching serves the new
+one's certificates only, getting each name one as it goes, and switching back
+finds the old ones still there if they haven't expired.
+
+### `acme_email`
+
+Default empty. Where the certificate authority writes about problems with the
+certificates — Let's Encrypt no longer sends expiry warnings, but does write
+about incidents that affect them. Changing it updates the account.
 ### `contact_npub`
 
 Default empty. Whoever runs this instance, shown on the logged-out homepage

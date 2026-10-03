@@ -194,16 +194,14 @@ impl Analytics {
 
     /// Record an event, read on the listener that received it and handed to
     /// the analytics runtime. `site` is the host the request's hostname
-    /// names, the only one it may record for. `peer` is the connection's
-    /// address, which only counts when the proxy didn't name the visitor; a
-    /// listener with no proxy in front, whose peer is never the visitor —
-    /// Tor's — passes `None`, and then nothing in the request is taken as the
-    /// visitor's address either.
+    /// names, the only one it may record for. `peer` is who the connection
+    /// came from, which decides whether any header naming the visitor is
+    /// believed (see [`Peer`]).
     ///
     /// The tracker posts `text/plain`, which spares it a preflight, but a
     /// client of Plausible's API may send JSON and preflight it, so both are
     /// met.
-    pub async fn forward_event(&self, request: Request<Body>, site: Option<i64>, peer: Option<IpAddr>) -> Response<Body> {
+    pub async fn forward_event(&self, request: Request<Body>, site: Option<i64>, peer: Peer) -> Response<Body> {
         let mut response = self.receive(request, site, peer).await;
         let headers = response.headers_mut();
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
@@ -212,7 +210,7 @@ impl Analytics {
         response
     }
 
-    async fn receive(&self, request: Request<Body>, site: Option<i64>, peer: Option<IpAddr>) -> Response<Body> {
+    async fn receive(&self, request: Request<Body>, site: Option<i64>, peer: Peer) -> Response<Body> {
         let (parts, body) = request.into_parts();
         if parts.method == Method::OPTIONS {
             return StatusCode::NO_CONTENT.into_response();
@@ -406,18 +404,37 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     Ok(())
 }
 
+/// Who is at the other end of the connection an event arrived on, which
+/// decides where the visitor's address comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Peer {
+    /// The reverse proxy, whose `X-Forwarded-For` names the visitor.
+    Proxy(IpAddr),
+    /// The visitor: npanel terminated TLS itself, so there is no proxy and
+    /// every header is the visitor's to write.
+    Visitor(IpAddr),
+    /// Nobody whose address means anything: Tor.
+    Unknown,
+}
+
 /// The visitor's address, used to tell visitors apart and to place them, and
-/// then forgotten. The proxy's word for it, since behind one the socket is
-/// always the proxy.
+/// then forgotten.
 ///
-/// The first `X-Forwarded-For` entry, which behind a CDN is still the visitor
-/// where the last would be the CDN. With no `peer` there is no proxy, and
-/// every header is the sender's to write, so there is no address at all.
-fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, peer: Option<IpAddr>) -> String {
-    let Some(peer) = peer else { return String::new() };
-    let forwarded = forwarded_for.and_then(|f| f.split(',').next()).map(str::trim).filter(|f| !f.is_empty());
-    let real = real_ip.map(str::trim).filter(|r| !r.is_empty());
-    forwarded.or(real).map_or_else(|| peer.to_string(), str::to_string)
+/// Behind a proxy it is the proxy's word for it, since the socket is always
+/// the proxy: the first `X-Forwarded-For` entry, which behind a CDN is still
+/// the visitor where the last would be the CDN. Without one, the headers are
+/// the sender's to write and only the socket can be believed — and over Tor
+/// there is not even that, so there is no address at all.
+fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, peer: Peer) -> String {
+    match peer {
+        Peer::Proxy(proxy) => {
+            let forwarded = forwarded_for.and_then(|f| f.split(',').next()).map(str::trim).filter(|f| !f.is_empty());
+            let real = real_ip.map(str::trim).filter(|r| !r.is_empty());
+            forwarded.or(real).map_or_else(|| proxy.to_string(), str::to_string)
+        }
+        Peer::Visitor(visitor) => visitor.to_string(),
+        Peer::Unknown => String::new(),
+    }
 }
 
 /// Write what's pending. The in-memory state is only held long enough to take
@@ -489,10 +506,12 @@ mod tests {
 
     #[test]
     fn client_ips() {
-        let proxy = Some(IpAddr::from([9, 9, 9, 9]));
+        let proxy = Peer::Proxy(IpAddr::from([9, 9, 9, 9]));
         assert_eq!(client_ip(Some("1.2.3.4, 10.0.0.1"), Some("5.6.7.8"), proxy), "1.2.3.4");
         assert_eq!(client_ip(None, Some(" 5.6.7.8 "), proxy), "5.6.7.8");
         assert_eq!(client_ip(Some(""), None, proxy), "9.9.9.9");
-        assert_eq!(client_ip(Some("1.2.3.4"), Some("5.6.7.8"), None), "");
+        let visitor = Peer::Visitor(IpAddr::from([9, 9, 9, 9]));
+        assert_eq!(client_ip(Some("1.2.3.4"), Some("5.6.7.8"), visitor), "9.9.9.9");
+        assert_eq!(client_ip(Some("1.2.3.4"), Some("5.6.7.8"), Peer::Unknown), "");
     }
 }
