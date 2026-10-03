@@ -26,6 +26,7 @@ interface Draft {
   maxSiteFiles?: string;
   deployAttempts?: string;
   resyncInterval?: string;
+  keepVersions?: string;
   allowedHostSuffixes?: string;
   dnsTargets?: string;
   tlsCheckLimitPerHost?: string;
@@ -67,6 +68,7 @@ export function SettingsSectionPage() {
   const maxSiteFiles = draft.maxSiteFiles ?? String(current?.max_site_files ?? '');
   const deployAttempts = draft.deployAttempts ?? String(current?.deploy_attempts ?? '');
   const resyncInterval = draft.resyncInterval ?? String(current?.resync_interval ?? '');
+  const keepVersions = draft.keepVersions ?? String(current?.keep_versions ?? '');
   const allowedHostSuffixes = draft.allowedHostSuffixes ?? current?.allowed_host_suffixes.join('\n') ?? '';
   const dnsTargets = draft.dnsTargets ?? current?.dns_targets.join('\n') ?? '';
   const tlsCheckLimitPerHost = draft.tlsCheckLimitPerHost ?? String(current?.tls_check_limit_per_host ?? '');
@@ -86,6 +88,7 @@ export function SettingsSectionPage() {
         max_site_files: Number(maxSiteFiles),
         deploy_attempts: Number(deployAttempts),
         resync_interval: Number(resyncInterval),
+        keep_versions: Number(keepVersions),
         allowed_host_suffixes: lines(allowedHostSuffixes),
         dns_targets: lines(dnsTargets),
         tls_check_limit_per_host: Number(tlsCheckLimitPerHost),
@@ -251,6 +254,15 @@ export function SettingsSectionPage() {
             max={10}
             value={deployAttempts}
             onChange={(value) => setDraft({ ...draft, deployAttempts: value })}
+          />
+          <NumberRow
+            id="keep-versions"
+            label="Versions kept per site"
+            description="Older ones are forgotten once a day. The served and pinned versions are always kept. 0 keeps every version."
+            min={0}
+            max={1000}
+            value={keepVersions}
+            onChange={(value) => setDraft({ ...draft, keepVersions: value })}
           />
         </Section>
       )}

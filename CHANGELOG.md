@@ -6,6 +6,19 @@ it is tagged.
 
 ## [Unreleased]
 
+- npanel cleans up after itself. Once a day it keeps the newest 20 ready
+  versions of each site, forgets the versions of sites no host points at, and
+  deletes every stored file nothing uses. **Settings → Deploys → Versions kept
+  per site** sets how many; 0 keeps them all. It is safe beside deploys in
+  progress, so there is no `prune-blobs` timer to set up.
+- `prune-blobs` now runs that same prune on demand. It applies the setting
+  unless given `--keep N`, and `N` counts ready versions only: failed and
+  superseded ones no longer take up places meant for versions you can roll
+  back to.
+- The dashboard shows each version's size and what a site stores, and
+  **Settings** shows what is waiting to be cleaned up and what the last cleanup
+  freed. Disk used now counts compressed copies too.
+
 - Tor is built in. npanel runs Arti, the Tor Project's Rust implementation of
   Tor, on a thread of its own, so onion addresses need no Tor daemon, no control
   port and no `tor` container. Turning on **Settings → Tor** is the whole setup.

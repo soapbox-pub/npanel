@@ -35,6 +35,7 @@ use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
 use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
+use crate::prune::LastPrune;
 use crate::serve::ServeCache;
 use crate::settings::{Settings, SettingsValues, KEYS};
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
@@ -65,6 +66,7 @@ pub struct ApiDeps {
     pub site_csp: Arc<SiteCsp>,
     pub previews: Arc<SitePreviews>,
     pub serve_cache: Arc<ServeCache>,
+    pub last_prune: LastPrune,
     pub dashboard_host: String,
 }
 
@@ -210,6 +212,7 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/settings", get(get_settings).put(put_settings))
         .route("/api/audit-log", get(audit_log))
         .route("/api/status", get(status_route))
+        .route("/api/storage", get(storage))
         .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
@@ -844,10 +847,31 @@ async fn versions(State(deps): State<Deps>, user: AuthUser, Path(hostname): Path
                 .query_map(params![host.pubkey, host.kind, host.identifier, limit], SiteEvent::from_row)?
                 .collect::<rusqlite::Result<_>>()?;
             let build = current_build(conn, host.id, BuildKind::Clearnet)?;
+            let mut size = conn.prepare_cached("SELECT COALESCE(SUM(size), 0) FROM blobs WHERE sha256 IN (SELECT sha256 FROM site_files WHERE event_id = ?)")?;
+            let mut list = Vec::with_capacity(versions.len());
+            for version in &versions {
+                let mut json = version_json(version);
+                json["size"] = size.query_row([&version.event_id], |r| r.get::<_, i64>(0))?.into();
+                list.push(json);
+            }
+            // Every blob the site's versions and this host's builds keep on
+            // disk, each counted once however many of them share it.
+            let (stored, blobs, bytes): (i64, i64, i64) = conn.query_row(
+                &format!(
+                    "SELECT (SELECT COUNT(*) FROM site_events WHERE pubkey = ?1 AND kind = ?2 AND identifier = ?3), COUNT(*), COALESCE(SUM({DISK_BYTES}), 0)
+                     FROM blobs WHERE sha256 IN (
+                         SELECT sha256 FROM site_files JOIN site_events USING (event_id) WHERE pubkey = ?1 AND kind = ?2 AND identifier = ?3
+                         UNION SELECT sha256 FROM host_build_files JOIN host_builds ON host_builds.id = build_id WHERE host_id = ?4
+                     )"
+                ),
+                params![host.pubkey, host.kind, host.identifier, host.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
             Ok(json!({
                 "active_event_id": build.map(|b| b.event_id),
                 "pinned_event_id": host.pinned_event_id,
-                "versions": versions.iter().map(version_json).collect::<Vec<_>>(),
+                "versions": list,
+                "storage": { "versions": stored, "blobs": blobs, "bytes": bytes },
             }))
         })
         .await?;
@@ -1469,6 +1493,10 @@ async fn audit_log(State(deps): State<Deps>, _: Admin, Query(query): Query<HashM
     ok(json!({ "entries": entries }))
 }
 
+/// The disk a `blobs` row takes up, its compressed copies included. A copy's
+/// size is -1 when there is none, and `NULL` when nobody has looked.
+const DISK_BYTES: &str = "size + MAX(COALESCE(br_size, 0), 0) + MAX(COALESCE(gzip_size, 0), 0)";
+
 /// Server-side status: aggregates, not row fetches, since the footer polls it.
 async fn status_route(State(deps): State<Deps>) -> ApiResult {
     let (hosts, ready, blobs, bytes) = deps
@@ -1476,8 +1504,9 @@ async fn status_route(State(deps): State<Deps>) -> ApiResult {
         .call(|conn| {
             let hosts: i64 = conn.query_row("SELECT COUNT(*) FROM hosts", [], |r| r.get(0))?;
             let ready: i64 = conn.query_row("SELECT COUNT(*) FROM site_events WHERE status = ?", [DeployStatus::Ready], |r| r.get(0))?;
-            let (blobs, bytes): (i64, Option<i64>) = conn.query_row("SELECT COUNT(*), SUM(size) FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok((hosts, ready, blobs, bytes.unwrap_or(0)))
+            let (blobs, bytes): (i64, i64) =
+                conn.query_row(&format!("SELECT COUNT(*), COALESCE(SUM({DISK_BYTES}), 0) FROM blobs"), [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok((hosts, ready, blobs, bytes))
         })
         .await?;
     ok(json!({
@@ -1488,4 +1517,25 @@ async fn status_route(State(deps): State<Deps>) -> ApiResult {
         "relays": deps.settings.get().relays,
         "tor": deps.tor.status(),
     }))
+}
+
+/// What pruning would free now, and how it last went. Apart from the status,
+/// which is polled, since finding what nothing references visits every blob.
+async fn storage(State(deps): State<Deps>, _: Admin) -> ApiResult {
+    let (blobs, bytes) = deps
+        .db
+        .call(|conn| {
+            Ok(conn.query_row(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(SUM({DISK_BYTES}), 0) FROM blobs
+                     WHERE NOT EXISTS (SELECT 1 FROM site_files WHERE site_files.sha256 = blobs.sha256)
+                       AND NOT EXISTS (SELECT 1 FROM host_build_files WHERE host_build_files.sha256 = blobs.sha256)"
+                ),
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )?)
+        })
+        .await?;
+    let last = deps.last_prune.lock().clone();
+    ok(json!({ "unreferenced": { "blobs": blobs, "bytes": bytes }, "last_prune": last }))
 }

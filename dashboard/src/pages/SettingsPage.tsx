@@ -3,9 +3,9 @@ import { useSeoMeta } from '@unhead/react';
 import { LinkRow, Row, RowIcon, Section } from '@/components/Grouped';
 import { PageHeader } from '@/components/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
-import { useSettings, useStatus } from '@/hooks/useNpanel';
-import type { Settings } from '@/lib/api-types';
-import { formatBytes } from '@/lib/format';
+import { useSettings, useStatus, useStorage } from '@/hooks/useNpanel';
+import type { Settings, Storage } from '@/lib/api-types';
+import { formatBytes, timeAgo } from '@/lib/format';
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/lib/settings-sections';
 
 /**
@@ -58,6 +58,8 @@ function summary(id: SettingsSectionId, settings: Settings): string | undefined 
         : 'Any domain';
     case 'nostr':
       return `${settings.relays.length} ${settings.relays.length === 1 ? 'relay' : 'relays'}`;
+    case 'deploys':
+      return settings.keep_versions ? `Keeps ${settings.keep_versions} ${settings.keep_versions === 1 ? 'version' : 'versions'}` : 'Keeps every version';
     case 'tor':
       return settings.tor_enabled ? 'On' : 'Off';
     case 'analytics':
@@ -73,12 +75,14 @@ function summary(id: SettingsSectionId, settings: Settings): string | undefined 
  */
 function ServerInformation() {
   const status = useStatus();
+  const storage = useStorage();
   const rows: [string, string][] = status.data
     ? [
         ['Sites', String(status.data.hosts)],
         ['Deployed versions', String(status.data.ready_versions)],
         ['Stored files', String(status.data.blobs)],
         ['Disk used', formatBytes(status.data.blob_bytes)],
+        ...(storage.data ? cleanup(storage.data) : []),
         ['Relays', String(status.data.relays.length)],
       ]
     : [];
@@ -98,6 +102,16 @@ function ServerInformation() {
       )}
     </Section>
   );
+}
+
+/** What the daily prune has freed, and has yet to. */
+function cleanup(storage: Storage): [string, string][] {
+  const rows: [string, string][] = [['Waiting to be cleaned up', formatBytes(storage.unreferenced.bytes)]];
+  const last = storage.last_prune;
+  if (last) {
+    rows.push(['Last cleaned up', `${timeAgo(last.finished_at)}, freed ${formatBytes(last.bytes)}`]);
+  }
+  return rows;
 }
 
 export default SettingsPage;

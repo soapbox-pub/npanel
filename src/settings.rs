@@ -79,6 +79,9 @@ settings! {
     deploy_attempts: i64,
     /// Seconds between full manifest re-fetches from relays.
     resync_interval: i64,
+    /// Ready versions kept per site when the daily prune runs, or 0 to keep
+    /// every one.
+    keep_versions: i64,
     /// What staff are told to point hostnames at. Empty means detect it.
     dns_targets: Vec<String>,
     /// Domains hostnames may sit under, or empty to allow any hostname.
@@ -111,6 +114,7 @@ impl Default for SettingsValues {
             max_site_files: 50_000,
             deploy_attempts: 3,
             resync_interval: 600,
+            keep_versions: 20,
             dns_targets: vec![],
             allowed_host_suffixes: vec![],
             tls_check_limit_per_host: 60,
@@ -293,6 +297,7 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "max_site_files" => integer(value, 1, 1_000_000),
         "deploy_attempts" => integer(value, 1, 10),
         "resync_interval" => integer(value, 60, 86_400),
+        "keep_versions" => integer(value, 0, 1000),
         "dns_targets" => {
             let targets = strings(value, |s| dns_target(s.trim()))?;
             if targets.len() > 8 {
@@ -442,6 +447,8 @@ mod tests {
         assert_eq!(parse_setting("resync_interval", &json!(60.5)).unwrap_err(), "Invalid value for resync_interval: Expected a whole number, got 60.5.");
         assert_eq!(parse_setting("tor_enabled", &json!("yes")).unwrap_err(), "Invalid value for tor_enabled: Expected true or false, got text.");
         assert_eq!(parse_setting("resync_interval", &json!(60.0)).unwrap(), json!(60));
+        assert_eq!(parse_setting("keep_versions", &json!(0)).unwrap(), json!(0));
+        assert!(parse_setting("keep_versions", &json!(-1)).is_err());
         assert!(parse_setting("resync_interval", &json!("60")).is_err());
         assert!(parse_setting("dns_targets", &json!(["1.2.3.4", "gw.example.com"])).is_err());
         assert_eq!(parse_setting("dns_targets", &json!(["GW.example.com."])).unwrap(), json!(["gw.example.com"]));

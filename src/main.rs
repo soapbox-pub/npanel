@@ -27,6 +27,7 @@ mod mime;
 mod net;
 mod nostr;
 mod nsite_address;
+mod prune;
 mod psl;
 mod rate_limit;
 mod scripts;
@@ -104,6 +105,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     // One instance: serving reads it, and every writer that changes what
     // serving would answer — the API, the deploy runtime, Tor — clears it.
     let serve_cache = Arc::new(ServeCache::new(db.clone()));
+    let last_prune = prune::LastPrune::default();
 
     // Relays, downloads, compression and builds, on threads of their own so
     // that a deploy never makes a visitor wait.
@@ -116,6 +118,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
             let cache = serve_cache.clone();
             Arc::new(move || cache.clear())
         },
+        last_prune: last_prune.clone(),
     }));
 
     // npanel's Plausible server, on a thread of its own.
@@ -179,6 +182,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         site_csp,
         previews,
         serve_cache,
+        last_prune,
         dashboard_host: config.dashboard_host.clone(),
     }));
     let dashboard = dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log);

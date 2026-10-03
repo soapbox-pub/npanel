@@ -9,6 +9,7 @@ import type {
   HostPatch,
   HostVersion,
   Instance,
+  ListedVersion,
   Me,
   Nip05Name,
   NpanelUser,
@@ -17,7 +18,9 @@ import type {
   ServerStatus,
   Settings,
   SiteFile,
+  SiteStorage,
   Sparkline,
+  Storage,
 } from './api-types.ts';
 import type { StatsQueryBody, StatsResponse } from './analytics/query.ts';
 
@@ -91,6 +94,10 @@ export class ApiClient {
     return this.request('GET', '/api/status');
   }
 
+  storage(): Promise<Storage> {
+    return this.request('GET', '/api/storage');
+  }
+
   dns(): Promise<DnsTarget> {
     return this.request('GET', '/api/dns');
   }
@@ -128,7 +135,8 @@ export class ApiClient {
   versions(hostname: string): Promise<{
     active_event_id: string | null;
     pinned_event_id: string | null;
-    versions: HostVersion[];
+    versions: ListedVersion[];
+    storage: SiteStorage;
   }> {
     return this.request('GET', `/api/hosts/${path(hostname)}/versions`);
   }

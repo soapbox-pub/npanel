@@ -13,7 +13,9 @@ use crate::identifiers::parse_pubkey;
 use crate::log::Logger;
 use crate::mime::is_compressible;
 use crate::nostr::nip19::npub_encode;
-use crate::sites::{active_event, record_variant_sizes};
+use crate::prune::{forget_versions, sweep_now};
+use crate::settings::Settings;
+use crate::sites::record_variant_sizes;
 use crate::util::format_bytes;
 
 /// Bootstrap the first admin, or promote someone from the command line. There
@@ -53,16 +55,14 @@ pub fn make_admin(config: &Config, log: &Logger, input: Option<&str>) -> Result<
     })
 }
 
-/// How long a blob nothing references yet is left alone. A build stores the
-/// files it generates before it writes the rows naming them.
-const GRACE_SECONDS: i64 = 60 * 60;
-
-/// Reclaim disk space. With `--keep N`, old versions of each site are
-/// forgotten first — never the version a host is serving, and never a pinned
-/// one. Then every blob no remaining version or build references is deleted.
+/// Reclaim disk space now, as the server does once a day. Versions of sites
+/// no host points at are forgotten, and so is everything beyond each site's
+/// newest N ready versions — N from `--keep`, or else the `keep_versions`
+/// setting. Then every blob no remaining version or build references is
+/// deleted.
 pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()> {
     let dry_run = args.iter().any(|a| a == "--dry-run");
-    let keep = match args.iter().position(|a| a == "--keep") {
+    let keep_arg = match args.iter().position(|a| a == "--keep") {
         None => None,
         Some(index) => match args.get(index + 1).and_then(|v| v.parse::<usize>().ok()).filter(|n| *n >= 1) {
             Some(n) => Some(n),
@@ -72,80 +72,23 @@ pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()>
 
     let db = Db::open(&config.database_path(), Some(log))?;
     let blobs = BlobStore::new(&config.blobs_dir());
+    let keep = match keep_arg {
+        Some(keep) => Some(keep),
+        None => usize::try_from(Settings::load(&db, None)?.get().keep_versions).ok().filter(|keep| *keep > 0),
+    };
 
-    db.with(|conn| {
-        if let Some(keep) = keep {
-            let hosts: Vec<crate::db::Host> =
-                conn.prepare(&format!("SELECT {} FROM hosts", crate::db::HOST_COLUMNS))?.query_map([], crate::db::Host::from_row)?.collect::<rusqlite::Result<_>>()?;
-            let mut protected: HashSet<String> = HashSet::new();
-            for host in &hosts {
-                if let Some(pinned) = &host.pinned_event_id {
-                    protected.insert(pinned.clone());
-                }
-                if let Some(active) = active_event(conn, host)? {
-                    protected.insert(active.event_id);
-                }
-            }
-            // A build serves on without the versions it was made from, but the
-            // dashboard describes the site by the version it serves.
-            for event_id in conn.prepare("SELECT DISTINCT event_id FROM host_builds")?.query_map([], |r| r.get::<_, String>(0))? {
-                protected.insert(event_id?);
-            }
+    let forgotten = db.with(|conn| forget_versions(conn, keep, dry_run))?;
+    let kept = keep.map_or_else(|| "every version of the sites hosts point at".into(), |keep| format!("{keep} ready version(s) per site"));
+    println!("{} {} old version(s), keeping {kept}.", if dry_run { "Would remove" } else { "Removed" }, forgotten.versions);
+    if !dry_run && forgotten.versions > 0 && !forgotten.rebuild.is_empty() {
+        println!("Hosts that merge deployments hold on to those versions' files until the server's next daily prune rebuilds them.");
+    }
 
-            let sites: Vec<(String, i64, String)> = conn
-                .prepare("SELECT DISTINCT pubkey, kind, identifier FROM site_events")?
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-
-            let mut removed = 0;
-            for (pubkey, kind, identifier) in sites {
-                let versions: Vec<String> = conn
-                    .prepare("SELECT event_id FROM site_events WHERE pubkey = ? AND kind = ? AND identifier = ? ORDER BY created_at DESC")?
-                    .query_map(params![pubkey, kind, identifier], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for event_id in versions.into_iter().skip(keep).filter(|id| !protected.contains(id)) {
-                    if !dry_run {
-                        // site_files goes with it: it cascades.
-                        conn.execute("DELETE FROM deploy_log WHERE event_id = ?", [&event_id])?;
-                        conn.execute("DELETE FROM site_events WHERE event_id = ?", [&event_id])?;
-                    }
-                    removed += 1;
-                }
-            }
-            println!("{} {removed} old version(s), keeping {keep} per site.", if dry_run { "Would remove" } else { "Removed" });
-        }
-
-        // Read as text and parsed, so a row that names no real hash references
-        // nothing rather than stopping the prune: only hashes on disk are ever
-        // deleted, and those always parse.
-        let mut referenced: HashSet<BlobHash> = HashSet::new();
-        for sql in ["SELECT DISTINCT sha256 FROM site_files", "SELECT DISTINCT sha256 FROM host_build_files"] {
-            for sha in conn.prepare(sql)?.query_map([], |r| r.get::<_, String>(0))? {
-                referenced.extend(BlobHash::parse(&sha?));
-            }
-        }
-        for sha in conn.prepare("SELECT sha256 FROM blobs WHERE seen_at > ?")?.query_map([crate::util::now() - GRACE_SECONDS], |r| r.get::<_, String>(0))? {
-            referenced.extend(BlobHash::parse(&sha?));
-        }
-
-        let (mut deleted, mut bytes) = (0, 0u64);
-        for sha256 in blobs.list() {
-            if referenced.contains(&sha256) {
-                continue;
-            }
-            // Compressed copies go with the blob, so they count too.
-            if let Some(v) = blobs.variants(sha256) {
-                bytes += v.identity + v.br.unwrap_or(0) + v.gzip.unwrap_or(0);
-            }
-            if !dry_run {
-                blobs.delete(sha256);
-                conn.execute("DELETE FROM blobs WHERE sha256 = ?", [sha256])?;
-            }
-            deleted += 1;
-        }
-        println!("{} {deleted} unreferenced blob(s), {}.", if dry_run { "Would delete" } else { "Deleted" }, format_bytes(bytes));
-        Ok(())
-    })
+    // A dry run can't see the blobs the versions it would forget would free,
+    // since it forgot nothing.
+    let swept = sweep_now(&db, &blobs, dry_run)?;
+    println!("{} {} unreferenced blob(s), {}.", if dry_run { "Would delete" } else { "Deleted" }, swept.blobs, format_bytes(swept.bytes));
+    Ok(())
 }
 
 /// Store compressed copies of blobs that predate npanel making them, and

@@ -541,25 +541,29 @@ previous one, and sites answer `503` for the few seconds until theirs lands.
 
 ## Reclaiming disk space
 
-Every version of every site is kept, along with its files. On a site that
-deploys often this adds up.
+npanel does this by itself. Once a day it keeps the newest 20 ready versions of
+each site, forgets versions of sites no host points at, and deletes every
+stored file nothing uses any more. **Settings → Deploys → Versions kept per
+site** changes how many; `0` keeps every version. **Settings** shows how much
+is waiting to be cleaned up and what the last cleanup freed. See
+[`keep_versions`](configuration.md#keep_versions).
+
+To clean up now rather than wait for the day's run:
 
 ```sh
 cd /etc/npanel
-sudo -u npanel npanel prune-blobs --keep 10 --dry-run
-sudo -u npanel npanel prune-blobs --keep 10
+sudo -u npanel npanel prune-blobs --dry-run
+sudo -u npanel npanel prune-blobs
 ```
 
-On Docker, `docker compose exec npanel npanel prune-blobs --keep 10`.
+On Docker, `docker compose exec npanel npanel prune-blobs`.
 
-`--keep N` forgets all but the newest N versions of each site, then deletes
-every blob no remaining version or host build references. The version a host is
-currently serving and any pinned version are never removed, and neither is a
-blob recorded in the last hour, which may belong to a build still in progress. Without `--keep` it only
-deletes unreferenced blobs. `--dry-run` reports what would go.
-
-A monthly timer is reasonable. Note that pruning a version also removes the
-history you'd roll back to, so keep more than you think you need.
+It applies the setting, or `--keep N` in its place. The version a host is
+serving and any pinned version are never removed, and neither is a file
+recorded in the last hour, which may belong to a build still in progress.
+`--dry-run` reports what would go, though not the files that forgetting
+versions would then free, since it forgets nothing. It is safe to run while
+the server is.
 
 ## Compressing what's already stored
 

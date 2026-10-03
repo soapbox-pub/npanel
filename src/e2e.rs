@@ -131,6 +131,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     let settings = Settings::load(&db, None).unwrap();
     let blobs = BlobStore::allowing_private(&dir.path().join("blobs"));
     let serve_cache = Arc::new(ServeCache::new(db.clone()));
+    let last_prune = crate::prune::LastPrune::default();
 
     let cache = serve_cache.clone();
     let deployer = Deployer::new(DeployerDeps {
@@ -141,6 +142,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         log,
         serving_changed: Arc::new(move || cache.clear()),
         retry_backoff: Some(Duration::from_millis(10)),
+        last_prune: last_prune.clone(),
     });
 
     let analytics = Arc::new(Analytics::start(
@@ -186,6 +188,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         site_csp,
         previews: Arc::new(crate::site_preview::SitePreviews::new(blobs.clone())),
         serve_cache,
+        last_prune,
         dashboard_host: "panel.example.com".into(),
     }));
     let app = App {
@@ -322,6 +325,17 @@ async fn a_published_site_is_deployed_built_and_served() {
         sources,
         [("/app.js".into(), "site".into()), ("/index.html".into(), "site".into()), ("/robots.txt".into(), "generated".into()), ("/sitemap.xml".into(), "generated".into())]
     );
+
+    // A version's size is its files'; what the site stores counts the
+    // generated files and compressed copies too.
+    let (_, versions) = gw.api("GET", "/api/hosts/docs.example.com/versions", None).await;
+    assert_eq!(versions["versions"][0]["size"], page.len() + script.len());
+    assert_eq!(versions["storage"]["versions"], 1);
+    assert_eq!(versions["storage"]["blobs"], 4);
+    assert!(versions["storage"]["bytes"].as_u64().unwrap() > (page.len() + script.len()) as u64);
+    let (status, storage) = gw.api("GET", "/api/storage", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(storage, serde_json::json!({ "unreferenced": { "blobs": 0, "bytes": 0 }, "last_prune": null }));
 
     // NIP-05 names answer at once, and are the gateway's rather than the site's.
     let (status, _) = gw.api("PUT", "/api/hosts/docs.example.com/nip05/Bob", Some(serde_json::json!({ "pubkey": npub, "relays": ["wss://R.example.com/"] }))).await;

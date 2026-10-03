@@ -13,6 +13,20 @@ export interface HostVersion {
   ready_at: number | null;
 }
 
+/** A version as the list of versions shows it. */
+export interface ListedVersion extends HostVersion {
+  /** Bytes of its files stored so far, each counted once. */
+  size: number;
+}
+
+/** What one site keeps on disk. */
+export interface SiteStorage {
+  versions: number;
+  blobs: number;
+  /** Every file its versions and builds keep, compressed copies included, each counted once. */
+  bytes: number;
+}
+
 export interface Host {
   /** The API's identifier for a host: unique, and what every route keys on. */
   hostname: string;
@@ -153,6 +167,8 @@ export interface Settings {
   max_site_files: number;
   deploy_attempts: number;
   resync_interval: number;
+  /** Ready versions kept per site by the daily prune, or 0 for every one. */
+  keep_versions: number;
   dns_targets: string[];
   allowed_host_suffixes: string[];
   tls_check_limit_per_host: number;
@@ -222,6 +238,7 @@ export interface ServerStatus {
   hosts: number;
   ready_versions: number;
   blobs: number;
+  /** Disk the stored files take up, compressed copies included. */
   blob_bytes: number;
   relays: string[];
   tor: TorStatus;
@@ -234,4 +251,20 @@ export interface Sparkline {
   change: number | null;
   /** Visitors in each hour, oldest first. */
   hours: number[];
+}
+
+/** How the daily prune last went. */
+export interface PruneReport {
+  finished_at: number;
+  versions: number;
+  blobs: number;
+  bytes: number;
+}
+
+/** What pruning would free, and how it last went. */
+export interface Storage {
+  /** Stored files nothing references, which the next prune deletes. */
+  unreferenced: { blobs: number; bytes: number };
+  /** Null until the server has pruned since it started. */
+  last_prune: PruneReport | null;
 }

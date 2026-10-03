@@ -136,6 +136,11 @@ impl Variants {
             Encoding::Gzip => self.gzip,
         }
     }
+
+    /// The disk the blob takes up, its compressed copies included.
+    pub fn on_disk(&self) -> u64 {
+        self.identity + self.br.unwrap_or(0) + self.gzip.unwrap_or(0)
+    }
 }
 
 /// Why a download failed, as the deploy log records it.

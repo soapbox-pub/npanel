@@ -58,6 +58,17 @@ export function useStatus() {
   });
 }
 
+/** What pruning would free, and how it last went. Admins only. */
+export function useStorage(enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('storage'),
+    queryFn: () => api!.storage(),
+    enabled: !!api && enabled,
+  });
+}
+
 /** The DNS records staff must create for a hostname to reach this server. */
 export function useDnsTarget() {
   const api = useApi();

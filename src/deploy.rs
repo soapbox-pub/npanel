@@ -3,7 +3,8 @@
 //! Everything expensive about deploying a site happens here: checking the
 //! signature of every event a relay sends, downloading and hashing every
 //! blob, compressing at brotli's slowest setting, rewriting pages for a build,
-//! and the database writes that record each step. It runs on a runtime of its
+//! the database writes that record each step, and pruning what is no longer
+//! needed. It runs on a runtime of its
 //! own, on threads of its own, so serving goes on answering requests for the
 //! whole of a large deploy.
 //!
@@ -26,6 +27,7 @@ use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::nostr::service::{NostrService, NostrSource};
 use crate::nsite_address::NsiteAddress;
+use crate::prune::{LastPrune, Pruner, PrunerDeps};
 use crate::settings::Settings;
 use crate::sync::{SyncWorker, SyncWorkerDeps};
 
@@ -42,11 +44,13 @@ pub trait Deployments: Send + Sync {
     fn sync_site(&self, address: NsiteAddress);
 }
 
-/// Sync and builds, wired together: everything the deploy runtime does.
+/// Sync, builds and pruning, wired together: everything the deploy runtime
+/// does.
 #[derive(Clone)]
 pub struct Deployer {
     pub builder: HostBuilder,
     pub sync: SyncWorker,
+    pruner: Pruner,
     log: Logger,
 }
 
@@ -58,6 +62,7 @@ pub struct DeployerDeps {
     pub log: Logger,
     pub serving_changed: Arc<dyn Fn() + Send + Sync>,
     pub retry_backoff: Option<Duration>,
+    pub last_prune: LastPrune,
 }
 
 impl Deployer {
@@ -70,6 +75,14 @@ impl Deployer {
             log: deps.log,
             retry_backoff: deps.retry_backoff.unwrap_or(crate::builds::RETRY_BACKOFF),
         });
+        let pruner = Pruner::new(PrunerDeps {
+            db: deps.db.clone(),
+            blobs: deps.blobs.clone(),
+            settings: deps.settings.clone(),
+            builder: builder.clone(),
+            log: deps.log,
+            last: deps.last_prune,
+        });
         let sync = SyncWorker::new(SyncWorkerDeps {
             db: deps.db,
             blobs: deps.blobs,
@@ -79,7 +92,7 @@ impl Deployer {
             log: deps.log,
             retry_backoff: deps.retry_backoff.unwrap_or(crate::sync::RETRY_BACKOFF),
         });
-        Deployer { builder, sync, log: deps.log }
+        Deployer { builder, sync, pruner, log: deps.log }
     }
 
     /// Builds first, so a deploy that finishes early finds nothing stale left
@@ -89,9 +102,11 @@ impl Deployer {
             self.log.error("build_start_failed", crate::log::err_fields(error));
         }
         self.sync.start().await;
+        self.pruner.start();
     }
 
     pub async fn stop(&self) {
+        self.pruner.stop().await;
         self.sync.stop().await;
         self.builder.stop().await;
     }
@@ -147,6 +162,7 @@ pub struct DeployConfig {
     pub settings: Arc<Settings>,
     pub log: Logger,
     pub serving_changed: Arc<dyn Fn() + Send + Sync>,
+    pub last_prune: LastPrune,
 }
 
 impl DeployService {
@@ -198,6 +214,7 @@ async fn run(config: &DeployConfig, rx: &mut mpsc::UnboundedReceiver<Command>) {
         log: config.log,
         serving_changed: config.serving_changed.clone(),
         retry_backoff: None,
+        last_prune: config.last_prune.clone(),
     });
 
     deployer.start().await;

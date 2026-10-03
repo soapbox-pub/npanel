@@ -201,8 +201,8 @@ short of publishing.
 
 ## Housekeeping
 
-Every version of every site is kept, along with its files, so a data directory
-you have been testing against grows. The production tools work locally:
+A server prunes once a day, ten minutes after it starts, which a development
+server you keep restarting may never reach. The production tools work locally:
 
 ```sh
 cargo run -- prune-blobs --keep 3 --dry-run

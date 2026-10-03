@@ -409,8 +409,8 @@ serving until the new one is complete, which is usually a moment.
 
 ### `DELETE /api/hosts/:hostname`
 
-`{ "ok": true }`. Removes the mapping; stored versions and blobs are untouched
-until `prune-blobs` runs.
+`{ "ok": true }`. Removes the mapping. The site's stored versions and blobs go
+at the next daily prune, unless another host points at the same site.
 
 ### `GET /api/hosts/:hostname/versions?limit=50`
 
@@ -418,11 +418,16 @@ until `prune-blobs` runs.
 {
   "active_event_id": "<hex or null>",
   "pinned_event_id": "<hex or null>",
-  "versions": [ ... ]
+  "versions": [ ... ],
+  "storage": { "versions": 12, "blobs": 340, "bytes": 52428800 }
 }
 ```
 
-Newest first. `limit` is clamped to 1–200.
+Newest first. `limit` is clamped to 1–200. Each version carries a `size`: the
+bytes of its files stored so far, each counted once. `storage` is what the
+site keeps on disk: how many versions, and every file they and this host's
+builds use, compressed copies included, each counted once however many
+versions share it.
 
 ### `GET /api/hosts/:hostname/versions/:eventId/log`
 
@@ -794,6 +799,21 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 
 ## Status
 
+### `GET /api/storage` — admin
+
+```json
+{
+  "unreferenced": { "blobs": 20, "bytes": 1048576 },
+  "last_prune": { "finished_at": 1760000000, "versions": 4, "blobs": 120, "bytes": 31457280 }
+}
+```
+
+`unreferenced` is what nothing uses any more, which the next prune deletes;
+it doesn't count what forgetting versions would then free. `last_prune` is how
+the last automatic prune went, or `null` if there hasn't been one since the
+server started. Apart from `/api/status` because finding what nothing uses
+visits every stored blob, and the footer polls the status.
+
 ### `GET /api/status`
 
 ```json
@@ -813,7 +833,8 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 }
 ```
 
-Available to any authenticated user.
+Available to any authenticated user. `blob_bytes` counts compressed copies
+too: it is the disk the stored files take up.
 
 `tor.enabled` is the setting; `connected` is whether npanel is on the Tor
 network and ready to answer, `progress` how far through joining it npanel is,

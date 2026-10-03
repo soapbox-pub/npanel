@@ -109,7 +109,7 @@ way — DNS, TLS, backups, and a systemd unit.
 | ----------------------------------------------- | --------------------------------------------- |
 | `npanel`                                        | Runs the gateway                              |
 | `npanel make-admin <npub>`                      | Adds or promotes an admin                     |
-| `npanel prune-blobs [--keep N] [--dry-run]`     | Forgets old versions and unreferenced blobs   |
+| `npanel prune-blobs [--keep N] [--dry-run]`     | Runs the daily prune now                      |
 | `npanel compress-blobs [--dry-run]`             | Stores compressed copies of older blobs       |
 
 ## Configuration

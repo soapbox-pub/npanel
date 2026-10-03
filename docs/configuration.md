@@ -209,6 +209,27 @@ backstop for manifests missed during relay downtime or a restart. Lowering it
 makes npanel notice sooner at the cost of more relay traffic. Changing it
 re-arms the timer immediately.
 
+### `keep_versions`
+
+Default `20`, allowed range 0–1000. How many ready versions of each site npanel
+keeps; `0` keeps every one. Once a day, and as soon as this changes, npanel
+forgets the ready versions past the newest `keep_versions` of each site, and
+deletes every stored file no remaining version or build uses.
+
+Only ready versions count, because they are the ones a site can be rolled back
+to. A version that never finished deploying and is older than the newest ready
+one is forgotten whatever this says: only a site's newest version is ever
+deployed, so it never will be. The version a site is serving and the one it is
+pinned to are always kept, as is anything newer than the newest ready version,
+which may still be deploying.
+
+Versions of a site no host points at are forgotten whatever this says, `0`
+included. A disabled host still points at its site. Adding a host for the site
+again fetches its newest version from relays.
+
+On a host that merges deployments, this also bounds how far back the merge
+reaches. See [pruning](architecture.md#pruning).
+
 ### `dns_targets`
 
 Default empty. What the dashboard tells staff to point a domain at, shown in

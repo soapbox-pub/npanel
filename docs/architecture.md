@@ -169,9 +169,8 @@ Only a site's newest version is deployed — one that a newer manifest overtook
 while it waited fails as superseded — and a version over `max_site_files` or
 `max_site_size` fails without being retried. An author publishing manifests as
 fast as they can is downloaded one bounded version at a time, not one version
-per manifest. Superseded versions still hold their blobs until `prune-blobs`
-removes them, so a gateway serving sites it doesn't trust should run it on a
-schedule.
+per manifest. Superseded versions hold their blobs until the daily prune
+removes them (see [pruning](#pruning)).
 
 Downloads only go to public addresses, and there is no way to turn that off.
 Download targets are not npanel's to choose — they come from the manifest's own
@@ -376,6 +375,38 @@ makes, so serving answers `Accept-Encoding` without touching the disk; a `NULL`
 row falls back to statting the sidecars until the next deploy that references
 the blob — or one run of `npanel compress-blobs` — fills it in.
 
+### Pruning
+
+Nothing would otherwise ever be deleted: every version of every site stays,
+with its files. So once a day, ten minutes after starting, and whenever
+`keep_versions` changes, the deploy runtime prunes (`src/prune.rs`). The
+`prune-blobs` command runs the same code on demand.
+
+It forgets versions first, in one transaction: every version of a site no host
+points at, and each site's ready versions past the newest `keep_versions`. Only
+ready versions count, because they are what a site can roll back to. One that
+never got there and is older than the newest ready version can never be
+deployed — only a site's newest is — so it goes too. Anything newer may still
+be deploying and is left alone, as are the version a host serves, its pin, and
+every version a build names.
+
+A merged build holds the files of every version in its chain, so forgetting
+versions frees nothing on that host until it is rebuilt with the shorter
+chain. Every prune therefore asks the builder to reconcile every merged host,
+which rebuilds only those whose chain actually changed — including after a
+`prune-blobs` run, which can't reach a running server's builder.
+
+Then it deletes every blob nothing references. Listing the store is the slow
+part and holds no connection; the deleting happens five hundred blobs to a
+write transaction, and each blob is asked again, inside it, whether any
+version or build references it or it was recorded in the last hour. The file
+is gone before the transaction commits. That is what makes pruning safe beside
+a deploy that comes to need a blob pruning has picked: a manifest naming it
+either committed first, and is seen, or waits on the transaction, and its
+deploy finds the blob missing and downloads it again. A version is never
+marked ready on a blob pruning has just deleted. The hour is for a build,
+which stores the files it generates before it writes the rows naming them.
+
 ## Serving a site
 
 `src/serve.rs` handles a request in a few steps: find the host, find its
@@ -429,7 +460,7 @@ up to its pin rather than past it, and only `ready` versions are in it: an
 unfinished deploy's blobs may not be on disk, and merging must not undo the
 invariant that serving never reaches one. The chain is capped, because a build
 writes a row for every path anywhere in it. Pruning is what bounds it in
-practice: `prune-blobs --keep N` forgets old versions first, so the next build
+practice: the daily prune forgets old versions first, so the next build
 reaches exactly as far back as the versions still in the database — and it
 deletes only blobs no remaining version or build references, so a build can
 never resolve a path to a blob pruning took away.

@@ -7,10 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useUpdateHost, useVersions } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
-import type { HostVersion } from '@/lib/api-types';
-import { fullDate, timeAgo } from '@/lib/format';
+import type { HostVersion, ListedVersion, SiteStorage } from '@/lib/api-types';
+import { formatBytes, fullDate, timeAgo } from '@/lib/format';
 
-/** Every version the site has published, with rollback: the reason npanel keeps them all. */
+/** Every version the site has kept, with rollback. */
 export function VersionList({ hostname }: { hostname: string }) {
   const versions = useVersions(hostname);
   const updateHost = useUpdateHost();
@@ -47,11 +47,12 @@ export function VersionList({ hostname }: { hostname: string }) {
     return <p className="py-12 text-center text-muted-foreground">Nothing has been published yet.</p>;
   }
 
-  const { active_event_id: activeId, pinned_event_id: pinnedId } = versions.data;
+  const { active_event_id: activeId, pinned_event_id: pinnedId, storage } = versions.data;
 
   return (
     <>
       <Section
+        title={stored(storage)}
         footer={pinnedId ? 'Pinned: new deploys are downloaded but not served until you unpin.' : undefined}
       >
         {versions.data.versions.map((version) => (
@@ -102,9 +103,15 @@ export function VersionList({ hostname }: { hostname: string }) {
   );
 }
 
-function files(version: HostVersion): string {
-  if (version.status === 'ready') return `${version.files_total} ${version.files_total === 1 ? 'file' : 'files'}`;
+function files(version: ListedVersion): string {
+  if (version.status === 'ready') {
+    return `${version.files_total} ${version.files_total === 1 ? 'file' : 'files'}, ${formatBytes(version.size)}`;
+  }
   return `${version.files_ready} of ${version.files_total} files`;
+}
+
+function stored(storage: SiteStorage): string {
+  return `${storage.versions} ${storage.versions === 1 ? 'version' : 'versions'} · ${formatBytes(storage.bytes)} stored`;
 }
 
 function VersionState({ version }: { version: HostVersion }) {

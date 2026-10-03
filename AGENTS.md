@@ -30,6 +30,7 @@ src/
   nostr/                events, NIP-19, the relay pool, and relay lookups
   sync.rs               the sync worker: subscribe, resync, deploy
   builds.rs             host builds: the frozen bundle each host serves
+  prune.rs              forgetting old versions and deleting unused blobs, daily
   deploy.rs             the runtime sync and builds run on, and its handle
   supervise.rs          a runtime on a thread of its own, restarted if it dies
   tls_check.rs          certificate authorization, on its own port
