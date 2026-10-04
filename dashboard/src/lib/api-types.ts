@@ -65,6 +65,11 @@ export interface Host {
   /** Whether visits to the site are counted, and shown on the dashboard. */
   analytics: boolean;
   /**
+   * Whether crawlers asking for a page whose path names a Nostr event — a
+   * profile, a note, an article — get that event's preview and content.
+   */
+  link_previews: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -99,6 +104,7 @@ export interface HostPatch {
   seo?: boolean;
   merge_deployments?: boolean;
   analytics?: boolean;
+  link_previews?: boolean;
   pinned_event_id?: string | null;
 }
 
@@ -188,6 +194,16 @@ export interface Settings {
   tor_enabled: boolean;
   /** The IANA time zone every site's analytics are reported in. */
   analytics_timezone: string;
+  /** Which User-Agents get link previews, as a case-insensitive pattern. */
+  link_preview_crawler_pattern: string;
+  /** Seconds a fetched preview is served before it is fetched again. */
+  link_preview_ttl: number;
+  /** Lookups that may run at once; past it, crawlers get the page as published. */
+  link_preview_concurrency: number;
+  /** Lookups that may go to relays in a minute. Cached previews don't count. */
+  link_preview_misses_per_minute: number;
+  /** Previews kept on disk. */
+  link_preview_max_entries: number;
 }
 
 /** Whether npanel is on the Tor network, and what it has published there. */
@@ -302,4 +318,53 @@ export interface Storage {
   unreferenced: { blobs: number; bytes: number };
   /** Null until the server has pruned since it started. */
   last_prune: PruneReport | null;
+}
+
+/** What the link preview cache holds, and how lookups have gone since the server started. */
+export interface LinkPreviewStatus {
+  /** Entities with a preview. */
+  found: number;
+  /** Entities a lookup found nothing for, remembered for a few minutes. */
+  not_found: number;
+  /** What the cache takes up on disk. */
+  bytes: number;
+  /** Previews held in memory. */
+  in_memory: number;
+  /** Lookups running now. */
+  running: number;
+  stats: {
+    /** Answered from memory. */
+    hits: number;
+    /** Handed to the lookup thread: the cache on disk, then relays. */
+    lookups: number;
+    /** Lookups that went to relays. */
+    fetches: number;
+    /** Pages sent without a preview because as many lookups were running as may. */
+    busy: number;
+    /** Pages sent without a preview because the lookup took too long. */
+    timeouts: number;
+    /** Lookups that didn't go to relays because the minute's were spent. */
+    over_budget: number;
+  };
+}
+
+/** A preview as crawlers will be shown it, less the article in the page's body. */
+export interface LinkPreviewCard {
+  kind: 'profile' | 'article' | 'post' | 'video';
+  /** The event's own title. A note has none, and its page is titled after its author. */
+  title: string | null;
+  description: string | null;
+  image: string | null;
+  video: string | null;
+  author: { pubkey: string; npub: string; name: string | null; picture: string | null };
+  published: number | null;
+}
+
+/** What refreshing one preview found. */
+export interface RefreshedLinkPreview {
+  key: string;
+  /** The entity as a person writes it: its NIP-19 form, or a NIP-05 name. */
+  entity: string;
+  /** Null when nothing could be found for it. */
+  card: LinkPreviewCard | null;
 }

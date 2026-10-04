@@ -20,6 +20,7 @@ use http::header::{self, HeaderMap, HeaderValue};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
 use parking_lot::{Mutex, RwLock};
+use sha2::{Digest, Sha256};
 
 use crate::analytics::tracker::EVENT_PATH;
 use crate::analytics::{Analytics, Peer};
@@ -30,6 +31,9 @@ use crate::fields;
 use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
+use crate::link_previews::entity::Entity;
+use crate::link_previews::splice::{splice, Page};
+use crate::link_previews::LinkPreviews;
 use crate::log::{with_err, Logger};
 use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
@@ -67,6 +71,10 @@ const ASSET_CACHE_CONTROL: &str = "public, max-age=3600, must-revalidate";
 /// nothing has cached, so it still gets them at once; only an offline shell
 /// naming the old version sees a change one load late.
 const ENV_CACHE_CONTROL: &str = "public, max-age=0, stale-while-revalidate=31536000";
+
+/// The largest page a link preview is spliced into. A shell is a few
+/// kilobytes; anything near this is a page with no room left for a preview.
+const MAX_PREVIEW_PAGE: u64 = 512 * 1024;
 
 /// How long a browser may reuse a preflight result, in seconds.
 const PREFLIGHT_MAX_AGE: &str = "86400";
@@ -171,6 +179,7 @@ pub struct SiteServerDeps {
     pub site_csp: Arc<SiteCsp>,
     pub serve_cache: Arc<ServeCache>,
     pub analytics: Arc<Analytics>,
+    pub link_previews: Arc<LinkPreviews>,
     pub log: Logger,
 }
 
@@ -326,6 +335,20 @@ impl SiteServer {
             return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
         };
 
+        // A page whose path names a Nostr event answers crawlers with that
+        // event's preview, and everyone else as published — so a cache in
+        // between has to keep the two apart.
+        let previewed = site.host.host.link_previews && file.status == 200 && content_type(&file.path).starts_with("text/html");
+        let entity = if previewed { Entity::from_path(path) } else { None };
+        if let Some(entity) = &entity {
+            let crawler = request.method == Method::GET && self.deps.link_previews.is_crawler(header_str(&request.headers, header::USER_AGENT));
+            if crawler && variants.identity <= MAX_PREVIEW_PAGE {
+                if let Some(reply) = self.link_preview(request, origin, site, &file, entity).await {
+                    return Ok(reply);
+                }
+            }
+        }
+
         // Everything below is about the representation this picks, not the
         // blob: its size, its `ETag`, and the bytes a `Range` counts from.
         let encoding = negotiate_encoding(header_str(&request.headers, header::ACCEPT_ENCODING), &variants);
@@ -344,6 +367,9 @@ impl SiteServer {
 
         if let Some(encoding) = encoding {
             builder = builder.header(header::CONTENT_ENCODING, encoding.as_str());
+        }
+        if entity.is_some() {
+            builder = builder.header(header::VARY, "user-agent");
         }
 
         // Names the one spelling of this page, so `/foo`, `/foo/` and
@@ -434,6 +460,37 @@ impl SiteServer {
         }
 
         Ok(builder.status(status).body(Body::from(body)).expect("response"))
+    }
+
+    /// The page about the Nostr event `entity` names, for a crawler: the
+    /// site's own document, with the event's preview in its head and the
+    /// event itself at the top of its body. `None` sends the page as
+    /// published, whatever the reason — this is never worth an error.
+    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, entity: &Entity) -> Option<Reply> {
+        let card = self.deps.link_previews.card(entity).await?;
+        let document = self.open(file.sha256, None).await.ok()?;
+
+        let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
+        let path = request.uri.path();
+        let url = format!("{site_origin}{}", path.strip_suffix('/').filter(|p| !p.is_empty()).unwrap_or(path));
+        let body = splice(&document, &card, &Page { url: &url, origin: &site_origin })?;
+
+        // Made per request, so its tag is its own hash: a card refreshed
+        // behind a crawler's back is a different page.
+        let etag = format!("\"{}\"", &hex::encode(Sha256::digest(&body))[..32]);
+        let builder = Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(header::CACHE_CONTROL, CACHE_CONTROL)
+            .header(header::ETAG, &etag)
+            .header(header::VARY, "user-agent")
+            .header("x-nsite-addr", site.naddr.clone());
+
+        self.deps.log.debug("site_link_preview", fields! { "hostname" => origin.hostname.as_str(), "path" => path, "key" => entity.key() });
+
+        if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
+            return Some(builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response"));
+        }
+        Some(builder.status(StatusCode::OK).header(header::CONTENT_LENGTH, body.len()).body(Body::from(body)).expect("response"))
     }
 
     /// A blob's bytes for a response body. A kept mapping answers right

@@ -597,7 +597,8 @@ On Docker the same call runs in a throwaway container against the volume — see
 [The volumes](#the-volumes).
 
 To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
-named by hash, so incremental syncs are cheap.
+named by hash, so incremental syncs are cheap. `previews.sqlite3` is a cache of
+what relays said, and needn't be backed up at all.
 
 ## Upgrading
 

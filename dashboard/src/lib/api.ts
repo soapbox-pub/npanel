@@ -9,11 +9,13 @@ import type {
   HostPatch,
   HostVersion,
   Instance,
+  LinkPreviewStatus,
   ListedVersion,
   Me,
   Nip05Name,
   NpanelUser,
   PublicSite,
+  RefreshedLinkPreview,
   SiteCard,
   ServerStatus,
   Settings,
@@ -231,6 +233,19 @@ export class ApiClient {
 
   updateSettings(patch: Partial<Settings>): Promise<{ settings: Settings; changed: string[] }> {
     return this.request('PUT', '/api/settings', patch);
+  }
+
+  linkPreviews(): Promise<LinkPreviewStatus> {
+    return this.request('GET', '/api/link-previews');
+  }
+
+  /** Fetch one preview again, by anything that names its entity. */
+  refreshLinkPreview(entity: string): Promise<RefreshedLinkPreview> {
+    return this.request('POST', '/api/link-previews/refresh', { entity });
+  }
+
+  clearLinkPreviews(): Promise<{ cleared: number }> {
+    return this.request('DELETE', '/api/link-previews');
   }
 
   auditLog(limit = 100): Promise<{ entries: AuditEntry[] }> {

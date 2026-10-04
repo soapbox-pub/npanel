@@ -1,20 +1,44 @@
 import { useSeoMeta } from '@unhead/react';
-import { useState } from 'react';
+import { type FormEvent, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { CertificateRow } from '@/components/CertificateRow';
 import { FieldRow, Row, RowIcon, Section, ToggleRow } from '@/components/Grouped';
 import { PageHeader } from '@/components/PageHeader';
 import { PubkeyLabel } from '@/components/PubkeyLabel';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
-import { useDnsTarget, useSettings, useStatus, useUpdateSettings } from '@/hooks/useNpanel';
+import {
+  useClearLinkPreviews,
+  useDnsTarget,
+  useLinkPreviews,
+  useRefreshLinkPreview,
+  useSettings,
+  useStatus,
+  useUpdateSettings,
+} from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
-import type { TlsStatus as TlsStatusView, TorStatus as TorStatusView } from '@/lib/api-types';
-import { decodePubkey } from '@/lib/format';
+import type {
+  LinkPreviewStatus,
+  RefreshedLinkPreview,
+  TlsStatus as TlsStatusView,
+  TorStatus as TorStatusView,
+} from '@/lib/api-types';
+import { decodePubkey, formatBytes } from '@/lib/format';
 import { findSettingsSection } from '@/lib/settings-sections';
 import { cn } from '@/lib/utils';
 import NotFound from '@/pages/NotFound';
@@ -41,6 +65,11 @@ interface Draft {
   publicSiteList?: boolean;
   torEnabled?: boolean;
   analyticsTimezone?: string;
+  crawlerPattern?: string;
+  linkPreviewTtl?: string;
+  linkPreviewConcurrency?: string;
+  linkPreviewMissesPerMinute?: string;
+  linkPreviewMaxEntries?: string;
 }
 
 /**
@@ -85,6 +114,12 @@ export function SettingsSectionPage() {
   const publicSiteList = draft.publicSiteList ?? current?.public_site_list ?? false;
   const torEnabled = draft.torEnabled ?? current?.tor_enabled ?? false;
   const analyticsTimezone = draft.analyticsTimezone ?? current?.analytics_timezone ?? 'UTC';
+  const crawlerPattern = draft.crawlerPattern ?? current?.link_preview_crawler_pattern ?? '';
+  const linkPreviewTtl = draft.linkPreviewTtl ?? String(current?.link_preview_ttl ?? '');
+  const linkPreviewConcurrency = draft.linkPreviewConcurrency ?? String(current?.link_preview_concurrency ?? '');
+  const linkPreviewMissesPerMinute =
+    draft.linkPreviewMissesPerMinute ?? String(current?.link_preview_misses_per_minute ?? '');
+  const linkPreviewMaxEntries = draft.linkPreviewMaxEntries ?? String(current?.link_preview_max_entries ?? '');
 
   const save = async () => {
     try {
@@ -107,6 +142,11 @@ export function SettingsSectionPage() {
         public_site_list: publicSiteList,
         tor_enabled: torEnabled,
         analytics_timezone: analyticsTimezone,
+        link_preview_crawler_pattern: crawlerPattern.trim(),
+        link_preview_ttl: Number(linkPreviewTtl),
+        link_preview_concurrency: Number(linkPreviewConcurrency),
+        link_preview_misses_per_minute: Number(linkPreviewMissesPerMinute),
+        link_preview_max_entries: Number(linkPreviewMaxEntries),
       });
 
       setDraft({});
@@ -390,6 +430,75 @@ export function SettingsSectionPage() {
         </Section>
       )}
 
+      {section.id === 'link-previews' && (
+        <>
+          <LinkPreviewCache />
+          <RefreshLinkPreview />
+          <Section
+            title="Lookups"
+            footer="Previews are looked up on a thread of their own, so a crawl never slows a site down. When a lookup can't start or takes too long, the crawler gets the page as it was published."
+          >
+            <NumberRow
+              id="link-preview-ttl"
+              label="Look up again after"
+              unit="seconds"
+              min={60}
+              value={linkPreviewTtl}
+              onChange={(value) => setDraft({ ...draft, linkPreviewTtl: value })}
+            />
+            <NumberRow
+              id="link-preview-concurrency"
+              label="Lookups at once"
+              min={1}
+              max={4096}
+              value={linkPreviewConcurrency}
+              onChange={(value) => setDraft({ ...draft, linkPreviewConcurrency: value })}
+            />
+            <NumberRow
+              id="link-preview-misses"
+              label="Relay lookups"
+              description="Previews already cached don't count. This caps what someone making up links can make npanel ask relays for."
+              unit="a minute"
+              min={1}
+              value={linkPreviewMissesPerMinute}
+              onChange={(value) => setDraft({ ...draft, linkPreviewMissesPerMinute: value })}
+            />
+            <NumberRow
+              id="link-preview-max-entries"
+              label="Previews kept"
+              description="The least recently looked up go first."
+              min={100}
+              value={linkPreviewMaxEntries}
+              onChange={(value) => setDraft({ ...draft, linkPreviewMaxEntries: value })}
+            />
+          </Section>
+          <Section footer="A case-insensitive regular expression, matched against the User-Agent. Everyone it doesn't match gets the page as published.">
+            <FieldRow label="Crawlers" htmlFor="crawler-pattern">
+              <Textarea
+                id="crawler-pattern"
+                value={crawlerPattern}
+                onChange={(event) => setDraft({ ...draft, crawlerPattern: event.target.value })}
+                rows={4}
+                spellCheck={false}
+                className="font-mono text-xs break-all"
+              />
+              {crawlerPattern !== settings.data?.defaults.link_preview_crawler_pattern && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="h-auto px-0 text-xs"
+                  onClick={() =>
+                    setDraft({ ...draft, crawlerPattern: settings.data?.defaults.link_preview_crawler_pattern ?? '' })
+                  }
+                >
+                  Use the default
+                </Button>
+              )}
+            </FieldRow>
+          </Section>
+        </>
+      )}
+
       {dirty && (
         <div className="fixed inset-x-0 bottom-20 z-20 flex justify-center px-4 md:bottom-6 md:pl-64">
           <div className="material flex items-center gap-3 rounded-full bg-popover py-2 pr-2 pl-5 shadow-xl ring-1 ring-black/10 dark:ring-white/10">
@@ -403,6 +512,169 @@ export function SettingsSectionPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * What the cache holds and how lookups have gone, with the one thing to do
+ * about all of it: start over.
+ */
+function LinkPreviewCache() {
+  const previews = useLinkPreviews();
+  const clear = useClearLinkPreviews();
+  const { toast } = useToast();
+
+  const clearAll = async () => {
+    try {
+      const { cleared } = await clear.mutateAsync();
+      toast({ title: 'Link previews cleared', description: `${cleared} ${cleared === 1 ? 'preview' : 'previews'} will be looked up again.` });
+    } catch (error) {
+      toast({
+        title: "Couldn't clear link previews",
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  return (
+    <Section
+      title="Cache"
+      footer="Turn link previews on for each site under its settings. Counts are since the server started."
+      action={
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-7 text-destructive hover:text-destructive" disabled={!previews.data || clear.isPending}>
+              Clear cache…
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Clear every link preview?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Each is looked up on relays again the next time a crawler asks for it.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction variant="destructive" onClick={clearAll}>
+                Clear
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      }
+    >
+      {previews.isLoading ? (
+        <Skeleton className="h-48 rounded-none" />
+      ) : previews.error ? (
+        <p className="px-4 py-3 text-sm text-muted-foreground">
+          {previews.error instanceof Error ? previews.error.message : 'Unavailable.'}
+        </p>
+      ) : (
+        previews.data && cacheRows(previews.data).map(([label, value]) => (
+          <Row key={label} label={label}>
+            <span className="text-sm text-muted-foreground tabular-nums">{value}</span>
+          </Row>
+        ))
+      )}
+    </Section>
+  );
+}
+
+function cacheRows(status: LinkPreviewStatus): [string, string][] {
+  const { stats } = status;
+  const count = (n: number) => n.toLocaleString();
+  return [
+    ['Previews', count(status.found)],
+    ['Found nothing', count(status.not_found)],
+    ['Disk used', formatBytes(status.bytes)],
+    ['Answered from memory', count(stats.hits)],
+    ['Looked up', count(stats.lookups)],
+    ['Fetched from relays', count(stats.fetches)],
+    ['Sent without a preview', count(stats.busy + stats.timeouts)],
+    ['Relay lookups held back', count(stats.over_budget)],
+  ];
+}
+
+/** Look one entity up again, and show what crawlers will now be given. */
+function RefreshLinkPreview() {
+  const [entity, setEntity] = useState('');
+  const [result, setResult] = useState<RefreshedLinkPreview>();
+  const refresh = useRefreshLinkPreview();
+  const { toast } = useToast();
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!entity.trim()) return;
+    try {
+      setResult(await refresh.mutateAsync(entity.trim()));
+    } catch (error) {
+      setResult(undefined);
+      toast({
+        title: "Couldn't refresh that preview",
+        description: error instanceof Error ? error.message : String(error),
+        variant: 'destructive',
+      });
+    }
+  };
+
+  return (
+    <Section
+      title="Refresh a preview"
+      footer="When a post or profile was edited and a crawler still shows the old version. Paste an npub, a note, an naddr, a NIP-05 name, or a link to a page."
+    >
+      <form onSubmit={submit} className="flex gap-2 py-3 pr-4 pl-4">
+        <Input
+          aria-label="What to refresh"
+          value={entity}
+          onChange={(event) => setEntity(event.target.value)}
+          placeholder="nevent1…, alex@example.com, https://…"
+          autoComplete="off"
+          spellCheck={false}
+          className="font-mono text-sm"
+        />
+        <Button type="submit" disabled={!entity.trim() || refresh.isPending} className="shrink-0">
+          {refresh.isPending ? 'Looking up…' : 'Refresh'}
+        </Button>
+      </form>
+      {result && <RefreshedPreview result={result} />}
+    </Section>
+  );
+}
+
+/** A refreshed preview, drawn roughly as a chat app would unfurl it. */
+function RefreshedPreview({ result }: { result: RefreshedLinkPreview }) {
+  const { card } = result;
+
+  if (!card) {
+    return (
+      <Row label="Nothing found" description={`No relay had ${result.entity}. Crawlers get the page as published.`} />
+    );
+  }
+
+  const author = card.author.name ?? `${card.author.npub.slice(0, 12)}…`;
+  const image = card.image ?? card.author.picture;
+
+  return (
+    <div className="pl-4">
+      <div data-row className="flex gap-3 border-t py-3 pr-4">
+        {image && (
+          <img
+            src={image}
+            alt=""
+            className={cn('shrink-0 rounded-md bg-muted object-cover', card.image ? 'h-20 w-32' : 'size-12 rounded-full')}
+            referrerPolicy="no-referrer"
+          />
+        )}
+        <div className="min-w-0 space-y-1">
+          <p className="text-sm font-medium break-words">{card.title ?? author}</p>
+          {card.title && <p className="text-xs text-muted-foreground">{author}</p>}
+          {card.description && <p className="line-clamp-3 text-xs text-muted-foreground break-words">{card.description}</p>}
+          <p className="font-mono text-[11px] text-muted-foreground/80 break-all">{result.entity}</p>
+        </div>
+      </div>
     </div>
   );
 }

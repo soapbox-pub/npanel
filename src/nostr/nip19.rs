@@ -17,7 +17,7 @@ pub enum Decoded {
     Nsec(String),
     Note(String),
     Nprofile { pubkey: String, relays: Vec<String> },
-    Nevent { id: String },
+    Nevent { id: String, relays: Vec<String>, author: Option<String> },
     Naddr { pubkey: String, kind: u32, identifier: String, relays: Vec<String> },
 }
 
@@ -65,7 +65,9 @@ pub fn decode(value: &str) -> Result<Decoded, Error> {
         "nevent" => {
             let tlv = parse_tlv(&data)?;
             let id = tlv.first(0).ok_or_else(|| error("missing TLV 0 for nevent"))?;
-            Ok(Decoded::Nevent { id: key(id)? })
+            // The author is a hint, and one of the wrong length is no hint.
+            let author = tlv.first(2).and_then(|author| key(author).ok());
+            Ok(Decoded::Nevent { id: key(id)?, relays: tlv.strings(1), author })
         }
         "naddr" => {
             let tlv = parse_tlv(&data)?;
@@ -98,6 +100,28 @@ pub fn nsec_encode(secret_hex: &str) -> String {
 
 // TLV entries are written highest type first, as nostr-tools writes them, so
 // that an entity npanel encodes is byte-identical to one the dashboard does.
+
+/// An event's note; empty for an id that isn't one, as [`npub_encode`].
+pub fn note_encode(id_hex: &str) -> String {
+    encode_key("note", id_hex)
+}
+
+/// An event's nevent, naming its author; empty for an id or pubkey that isn't
+/// one, as [`npub_encode`].
+#[cfg(test)]
+pub fn nevent_encode(id_hex: &str, relays: &[String], author: Option<&str>) -> String {
+    let Some(id) = key_bytes(id_hex) else { return String::new() };
+    let mut data = Vec::new();
+    if let Some(author) = author {
+        let Some(author) = key_bytes(author) else { return String::new() };
+        push_tlv(&mut data, 2, &author);
+    }
+    for relay in relays {
+        push_tlv(&mut data, 1, relay.as_bytes());
+    }
+    push_tlv(&mut data, 0, &id);
+    bech32_encode("nevent", &data)
+}
 
 #[cfg(test)]
 pub fn nprofile_encode(pubkey_hex: &str, relays: &[String]) -> String {
@@ -330,6 +354,14 @@ mod tests {
     fn nprofile_round_trip() {
         let nprofile = nprofile_encode(PUBKEY, &["wss://r.example.com".into()]);
         assert!(matches!(decode(&nprofile).unwrap(), Decoded::Nprofile { pubkey, .. } if pubkey == PUBKEY));
+    }
+
+    #[test]
+    fn nevent_round_trip() {
+        let id = "a".repeat(64);
+        let nevent = nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY));
+        assert_eq!(decode(&nevent).unwrap(), Decoded::Nevent { id: id.clone(), relays: vec!["wss://r.example.com".into()], author: Some(PUBKEY.into()) });
+        assert_eq!(decode(&note_encode(&id)).unwrap(), Decoded::Note(id));
     }
 
     #[test]

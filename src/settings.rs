@@ -107,6 +107,19 @@ settings! {
     tor_enabled: bool,
     /// The IANA time zone analytics are reported in.
     analytics_timezone: String,
+    /// Which User-Agents get a link preview, as a case-insensitive pattern.
+    link_preview_crawler_pattern: String,
+    /// Seconds a fetched link preview is served before it is fetched again.
+    link_preview_ttl: i64,
+    /// Link preview lookups that may run at once. Past it, a crawler gets
+    /// the page as published.
+    link_preview_concurrency: i64,
+    /// Link preview lookups that may go to relays in a minute. Cached
+    /// previews don't count, so this is what a stranger making up event ids
+    /// can make npanel ask relays for.
+    link_preview_misses_per_minute: i64,
+    /// Link previews kept on disk. The least recently fetched go first.
+    link_preview_max_entries: i64,
 }
 
 impl Default for SettingsValues {
@@ -134,6 +147,11 @@ impl Default for SettingsValues {
             public_site_list: false,
             tor_enabled: false,
             analytics_timezone: "UTC".into(),
+            link_preview_crawler_pattern: crate::link_previews::DEFAULT_CRAWLER_PATTERN.into(),
+            link_preview_ttl: 3600,
+            link_preview_concurrency: 256,
+            link_preview_misses_per_minute: 600,
+            link_preview_max_entries: 100_000,
         }
     }
 }
@@ -332,6 +350,11 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "contact_npub" => Ok(contact_npub(string(value)?.trim())?.into()),
         "public_site_list" | "tor_enabled" => boolean(value),
         "analytics_timezone" => Ok(time_zone(string(value)?.trim())?.into()),
+        "link_preview_crawler_pattern" => Ok(crawler_pattern(string(value)?.trim())?.into()),
+        "link_preview_ttl" => integer(value, 60, 30 * 86_400),
+        "link_preview_concurrency" => integer(value, 1, 4096),
+        "link_preview_misses_per_minute" => integer(value, 1, 100_000),
+        "link_preview_max_entries" => integer(value, 100, 10_000_000),
         _ => Err("Unknown setting.".into()),
     }
 }
@@ -456,6 +479,22 @@ fn contact_npub(value: &str) -> Result<String, String> {
     }
 }
 
+/// A pattern User-Agents are matched against, which must compile within the
+/// size every pattern is held to.
+fn crawler_pattern(value: &str) -> Result<String, String> {
+    if value.is_empty() {
+        return Err("Enter a pattern. One that matches nothing would turn link previews off; turn them off per site instead.".into());
+    }
+    if value.len() > 4096 {
+        return Err("Use a pattern of at most 4096 characters.".into());
+    }
+    crate::link_previews::crawler_pattern(value).map_err(|error| match error {
+        regex::Error::CompiledTooBig(_) => "That pattern is too large. Use a shorter one.".to_string(),
+        _ => format!("Not a valid pattern: {value}"),
+    })?;
+    Ok(value.to_string())
+}
+
 /// An IANA time zone, in its canonical spelling.
 fn time_zone(value: &str) -> Result<String, String> {
     let zone = chrono_tz::Tz::from_str_insensitive(value)
@@ -496,6 +535,11 @@ mod tests {
         let hex = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
         assert_eq!(parse_setting("contact_npub", &json!(hex)).unwrap(), json!(nip19::npub_encode(hex)));
         assert!(parse_setting("contact_npub", &json!(nip19::nsec_encode(hex))).unwrap_err().contains("private key"));
+        assert_eq!(parse_setting("link_preview_crawler_pattern", &json!(" googlebot|bingbot ")).unwrap(), json!("googlebot|bingbot"));
+        assert!(parse_setting("link_preview_crawler_pattern", &json!("(unclosed")).unwrap_err().contains("Not a valid pattern"));
+        assert!(parse_setting("link_preview_crawler_pattern", &json!("")).is_err());
+        assert!(parse_setting("link_preview_crawler_pattern", &json!("a{1000}{1000}")).unwrap_err().contains("too large"));
+        assert!(parse_setting("link_preview_concurrency", &json!(0)).is_err());
     }
 
     #[tokio::test]

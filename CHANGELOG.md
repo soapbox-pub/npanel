@@ -6,6 +6,23 @@ it is tagged.
 
 ## [Unreleased]
 
+- Link previews for Nostr pages. A site that shows Nostr content at the paths
+  Nostr web clients use — `/npub1…`, `/nevent1…`, `/naddr1…`, `/name@domain` —
+  can turn on **Link previews for Nostr pages**, and crawlers then get the
+  event's own title, description and image, as Open Graph, Twitter and
+  schema.org tags, and the post or article itself as text a search engine can
+  index. Everyone else gets the page as published. This replaces routing
+  crawlers to a separate server from the proxy.
+- Lookups run on a thread of their own and never slow a site down: a preview
+  that can't be had within a couple of seconds sends the page as published,
+  never an error. Lookups are cached in `DATA_DIR/previews.sqlite3`, batched
+  into one query per relay, and capped per minute.
+- **Settings → Link Previews** shows what is cached and how lookups have gone,
+  refreshes one preview from a pasted npub, nevent, NIP-05 name or URL, clears
+  the cache, and sets which User-Agents count as crawlers.
+- A single-page app now gets its shell for a path like `/@bob@example.com`,
+  which was a `404` because `.com` read as a file extension.
+
 - npanel can serve HTTPS itself, no proxy needed. Set `HTTPS_PORT=443` and
   `PORT=80`, and it gets a certificate from Let's Encrypt for the dashboard and
   every site it serves, `www` redirects included, the moment each is added, and

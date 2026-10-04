@@ -20,6 +20,9 @@ when the relays and Blossom servers it came from are down.
 - **Analytics built in.** Flip a switch on a site and npanel counts its visits
   the way Plausible does — no cookies, nothing identifying stored — and shows
   them in a Plausible-style dashboard.
+- **Link previews for Nostr.** A site that shows Nostr posts at `/npub1…`,
+  `/nevent1…` or `/naddr1…` can have crawlers given each post's own title,
+  image and text, so links unfurl and search engines can index them.
 
 ## Performance
 

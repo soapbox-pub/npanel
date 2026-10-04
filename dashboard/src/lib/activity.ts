@@ -67,6 +67,7 @@ const SITE_FLAGS: { key: string; label: string; inverted?: boolean }[] = [
   { key: 'analytics', label: 'Analytics' },
   { key: 'hidden', label: 'Public site list', inverted: true },
   { key: 'seo', label: 'Search engine defaults' },
+  { key: 'link_previews', label: 'Link previews' },
 ];
 
 /** Settings, as the Settings page labels them. */
@@ -91,6 +92,11 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   tor_control_url: { label: 'Tor control address' },
   tor_control_password: { label: 'Tor control password', secret: true },
   analytics_timezone: { label: 'Analytics time zone', format: (value) => String(value).replaceAll('_', ' ') },
+  link_preview_crawler_pattern: { label: 'Link preview crawlers' },
+  link_preview_ttl: { label: 'Link previews kept for', format: (value) => `${value} seconds` },
+  link_preview_concurrency: { label: 'Link preview lookups at once' },
+  link_preview_misses_per_minute: { label: 'Link preview relay lookups', format: (value) => `${value} a minute` },
+  link_preview_max_entries: { label: 'Link previews kept' },
 };
 
 const ROLES: Record<string, string> = { admin: 'Admin', staff: 'Staff' };
@@ -205,6 +211,20 @@ export function describe(entry: AuditEntry): Activity {
 
     case 'settings.update':
       return settingUpdate(target, entry.old_value, entry.new_value);
+
+    case 'link_preview.refresh':
+      return {
+        kind: 'settings',
+        sentence: ['refreshed the link preview for', { strong: target }],
+        details: after.found === false ? [{ type: 'value', label: 'Found', value: 'Nothing' }] : [],
+      };
+
+    case 'link_preview.clear':
+      return {
+        kind: 'settings',
+        sentence: ['cleared the link preview cache'],
+        details: [{ type: 'value', label: 'Previews', value: String(after.entries ?? 0) }],
+      };
 
     default:
       return {

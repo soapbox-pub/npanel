@@ -24,6 +24,7 @@ its own, it keeps local storage in sync with Nostr.
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
+   a crawler on /<nip19> ──► previews thread ──► relays ──► previews.sqlite3
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
    with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
@@ -492,7 +493,9 @@ answer, and the one crawlers, uptime checks and `curl -f` are entitled to. With
 site's shell under a `200`: `/404.html` first, because NIP-5A names it as the
 fallback path and an nsyte build publishes its shell there for exactly that
 reason, then `/index.html`, for a build that expects the `try_files` every
-other static host does. Requests for anything else keep their `404` in both
+other static host does. A path whose last segment has an `@` in it —
+`/@bob@example.com`, the way Nostr and fediverse clients route a NIP-05 name or
+a handle — is a document too: its dot is a domain's, not an extension. Requests for anything else keep their `404` in both
 modes — a script or stylesheet answered with a page of HTML and a `200` doesn't
 render the site, it turns a plain missing file into a parse error somewhere
 else. `/.well-known/` skips every fallback, in both modes: what asks there is
@@ -900,6 +903,92 @@ planner, left to itself, starts from the visits and scans a site's events once
 for each. On a site of ten thousand visits a day a month's report takes a few
 hundred milliseconds to a few seconds, all of it on the analytics thread.
 
+## Link previews
+
+A Nostr web client is usually a static app: one `index.html` that reads the
+path — `/npub1…`, `/nevent1…`, `/naddr1…` — and fetches the event from relays
+in the browser. A crawler doesn't run it, so every link to a post unfurls as
+the app's own name, and search engines index the same empty shell under every
+URL. A site with `link_previews` on has those pages answered for crawlers with
+the event itself (`src/link_previews/`).
+
+**What qualifies.** A `GET` for a path of one segment that is a NIP-19 entity —
+npub, nprofile, note, nevent, naddr — or a NIP-05 name, with or without an `@`
+in front, where the site's answer is an HTML page under a `200`, from a
+User-Agent matching `link_preview_crawler_pattern`. With the `spa` flag that is
+the shell; without it, a site that publishes a page at that path. Everything
+else is served exactly as it would be, and every response on such a path
+carries `Vary: User-Agent`, so a shared cache doesn't hand one audience's page
+to the other.
+
+**What a crawler gets.** The site's own page, with what its head says about the
+page — its title, description, Open Graph and Twitter tags, canonical link —
+replaced by what the event says, as the same tags and as schema.org JSON-LD, and
+the event as an `<article>` at the top of the body: a note's text with its
+links, images and mentions, an article's Markdown rendered, a profile's name,
+picture and about. The page is otherwise as published, so it is still the
+site's — its styles, its icon, its scripts. The image is the event's own, else
+the author's avatar (drawn as a small card), else the site's own `og:image`.
+Wording that names the site — "Alex on Ditto" — comes from the page's
+`og:site_name`, or its title up to the first separator, so one cached preview
+serves every site. Sites with their own idea of how a preview should look were
+considered and left out: the fields are the same everywhere, and a site that
+wants more can publish pages of its own.
+
+The article is visible, not hidden. A search engine reads text it can see, and
+treats text it can't as an attempt to deceive it. It goes before whatever the
+app renders into, so a crawler that runs scripts sees both.
+
+**Escaping is the security boundary.** Anyone can send a crawler's User-Agent,
+so the page is served on the site's origin to whoever asks. Nothing an author
+wrote reaches it as markup: text and attributes are escaped, URLs are kept only
+when they are `http(s)` (`javascript:` and `data:` are dropped, not
+neutralized), HTML embedded in an article is read as text, and the JSON-LD
+escapes `<`, `>` and `&` so no value can close its script element. A `nostr:`
+mention becomes a link to the site's own page for it; an `nsec` never becomes
+anything. The page goes out under the site's Content Security Policy like any
+other, and nothing npanel adds is a script that runs.
+
+**Serving never waits long.** Lookups happen on a runtime and a thread of their
+own, with a relay pool of their own, restarted with backoff like the analytics
+runtime. A request asks memory first; a card there is sent at once, and a stale
+one is sent while a fresh one is fetched behind it. Otherwise it hands the
+lookup across and waits two and a half seconds at most. A lookup that can't
+start — `link_preview_concurrency` are running, or the runtime is starting —
+or doesn't finish in time sends the page as published. Neither is ever an
+error: the worst a visitor sees is the site. A lookup that outlives its
+request goes on, and fills the cache for the next.
+
+**Relays are spared too.** A crawl asks for hundreds of entities at once, and
+npanel's deploys depend on the same relays, so lookups that arrive within fifty
+milliseconds of each other share one query per relay — one filter by id, one by
+author for profiles, one per kind for addresses — and are sorted out from the
+answer. Every lookup of one entity at once is the same lookup. Lookups that go
+to relays are metered by `link_preview_misses_per_minute`; cached cards never
+count, so the meter is exactly what a stranger requesting made-up ids can cost.
+A lookup over it is answered from whatever is cached. An entity's own relay
+hints are asked as well, and an author not found on any of those is looked for
+on the relays their kind 10002 says they write to. Every relay an author names
+is held to the rule deploys follow: `wss://`, public addresses, five at most.
+
+A NIP-05 name one of the gateway's hosts answers for is read from its database;
+any other is fetched from its domain, through the same public-addresses-only
+resolver blob downloads use, following no redirects, a 64 KB document at most.
+
+**Storage.** Cards are kept in memory, up to 32 MB of them, and in
+`DATA_DIR/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from
+the gateway's database, so clearing it and `VACUUM`ing it touch nothing else,
+and what it takes up is its size. A row is a card: its fields, and its article
+already rendered, so a cache hit costs a splice of the page and nothing more.
+Finding nothing is remembered too, for ten minutes at most, since nothing found
+may only mean the relays were slow; for the same reason a refetch that finds
+nothing where a card was found keeps the card and tries again in ten minutes.
+Past `link_preview_max_entries`, the least recently fetched rows go.
+
+**Settings → Link Previews** shows what is cached and how lookups have gone,
+refreshes one entity's card from whatever names it — an npub, a nevent, a NIP-05
+name, or the URL of a page — and clears the lot.
+
 ## Authentication
 
 NIP-98: the client signs a kind 27235 event naming the method and URL, and sends
@@ -948,7 +1037,8 @@ immediately retries every version that isn't ready — because that's often
 exactly what a failed deploy was waiting for.
 
 The deploy, analytics and Tor runtimes read the same settings and receive the same
-change notices, so their subscribers reconfigure exactly as the rest do.
+change notices, so their subscribers reconfigure exactly as the rest do. The previews runtime reads them afresh for every lookup, so a
+change applies to the next one with nothing to reconfigure.
 
 Nothing in the settings UI requires a restart, which is the point: the six
 environment variables are the only things that do.

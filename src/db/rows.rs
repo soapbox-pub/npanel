@@ -28,6 +28,8 @@ pub struct Host {
     pub seo: bool,
     pub merge_deployments: bool,
     pub analytics: bool,
+    /// Whether crawlers get a preview of the Nostr event a page's path names.
+    pub link_previews: bool,
     pub created_by: String,
     pub created_at: i64,
     pub updated_at: i64,
@@ -35,11 +37,11 @@ pub struct Host {
 
 pub const HOST_COLUMNS: &str = "hosts.id, hosts.hostname, hosts.pubkey, hosts.kind, hosts.identifier, \
     hosts.pinned_event_id, hosts.enabled, hosts.hidden, hosts.redirect_www, hosts.spa, hosts.csp, hosts.seo, \
-    hosts.merge_deployments, hosts.analytics, hosts.created_by, hosts.created_at, hosts.updated_at";
+    hosts.merge_deployments, hosts.analytics, hosts.link_previews, hosts.created_by, hosts.created_at, hosts.updated_at";
 
 /// How many columns [`HOST_COLUMNS`] selects, for a query that selects more
 /// after them.
-pub const HOST_COLUMN_COUNT: usize = 17;
+pub const HOST_COLUMN_COUNT: usize = 18;
 
 impl Host {
     pub fn from_row(row: &Row) -> rusqlite::Result<Host> {
@@ -58,9 +60,10 @@ impl Host {
             seo: row.get(11)?,
             merge_deployments: row.get(12)?,
             analytics: row.get(13)?,
-            created_by: row.get(14)?,
-            created_at: row.get(15)?,
-            updated_at: row.get(16)?,
+            link_previews: row.get(14)?,
+            created_by: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
         })
     }
 

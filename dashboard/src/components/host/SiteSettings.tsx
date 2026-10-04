@@ -185,6 +185,15 @@ export function PrivacySettings({ host }: { host: Host }) {
           checked={host.seo}
           onCheckedChange={(seo) => patch({ seo }, seo ? 'Search engine defaults on' : 'Search engine defaults off')}
         />
+        <ToggleRow
+          id="link-previews"
+          label="Link previews for Nostr pages"
+          description="Crawlers opening a page like /npub… or /note… get that post's title, image and text. For sites that show Nostr content."
+          checked={host.link_previews}
+          onCheckedChange={(link_previews) =>
+            patch({ link_previews }, link_previews ? 'Link previews on' : 'Link previews off')
+          }
+        />
       </Section>
     </div>
   );

@@ -120,6 +120,8 @@ Default `./data`, resolved to an absolute path. Contains:
 - `analytics.sqlite3` — visits and pageviews, for the sites that count them
 - `geo/` — the location database, downloaded once a site counts visits
 - `tor/` — Tor's directory cache and state, once Tor is turned on
+- `previews.sqlite3` — link previews of Nostr events, a cache that can be
+  deleted at any time
 
 Each is created when first needed. This directory is the entire state of the
 system; see [deployment](deployment.md#backups) for backups.
@@ -449,6 +451,51 @@ usually run by one team, reading all of its sites' numbers together. Changing it
 re-draws everything on the new clock, past days included, because events are
 stored with their exact time and bucketed only when a chart asks. Whether a site
 is counted at all is its own [`analytics`](api.md#patch-apihostshostname) flag.
+
+### `link_preview_crawler_pattern`
+
+Which User-Agents get a [link preview](architecture.md#link-previews): a
+regular expression, matched case-insensitively against the first 512
+characters of the header. The default names the search engines, and the
+services that unfurl a link pasted into a chat or a post — Google, Bing,
+DuckDuckGo, Apple, X, Discord, Facebook, LinkedIn, Slack, Telegram, WhatsApp,
+Mastodon and the other fediverse servers, Bluesky, and a few more. Everyone it
+doesn't match gets the page as published.
+
+It can't be empty: a pattern that matches nothing would be a way to turn
+previews off, which is a site's switch, not this one. It is compiled with a
+size limit, so a pattern that would be expensive to match is refused when it is
+saved.
+
+### `link_preview_ttl`
+
+Default `3600`. Seconds a preview is served before it is looked up again. A
+stale preview is still served while the new one is fetched behind it, so this
+decides how soon an edited post shows, not how often a crawler waits. A lookup
+that found nothing is believed for ten minutes at most, since nothing found may
+only mean the relays were slow.
+
+### `link_preview_concurrency`
+
+Default `256`. How many lookups may run at once. Past it, a crawler that asks
+for a preview nobody has cached gets the page as published straight away rather
+than waiting in line. A lookup spends nearly all its time waiting on relays, so
+this bounds open subscriptions rather than CPU: lookups run on a thread of their
+own, and never on the ones serving sites.
+
+### `link_preview_misses_per_minute`
+
+Default `600`. How many lookups may go to relays in a minute. Previews already
+cached don't count, stale ones included, so this is the most that someone
+requesting made-up event ids can make npanel ask relays for — which matters
+because those are the relays its deploys depend on too. A lookup over it is
+answered from what is cached, if anything.
+
+### `link_preview_max_entries`
+
+Default `100000`. How many previews are kept on disk, in
+`DATA_DIR/previews.sqlite3`. Past it, the least recently fetched go first. A
+preview is a few kilobytes, an article's up to a few hundred.
 
 ## Not a setting: the Content Security Policy
 

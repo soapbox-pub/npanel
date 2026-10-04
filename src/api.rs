@@ -32,6 +32,9 @@ use crate::dns::DnsTargets;
 use crate::fields;
 use crate::hostname::parse_hostname;
 use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse_relay_url};
+use crate::link_previews::card::Card;
+use crate::link_previews::entity::Entity;
+use crate::link_previews::{LinkPreviews, PreviewError};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
 use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
@@ -68,6 +71,7 @@ pub struct ApiDeps {
     pub tls: Option<Arc<TlsService>>,
     pub site_csp: Arc<SiteCsp>,
     pub previews: Arc<SitePreviews>,
+    pub link_previews: Arc<LinkPreviews>,
     pub serve_cache: Arc<ServeCache>,
     pub last_prune: LastPrune,
     pub dashboard_host: String,
@@ -86,6 +90,8 @@ pub enum ApiError {
     Forbidden(&'static str),
     NotFound(String),
     Conflict(String),
+    /// Something npanel runs isn't ready, or took too long: try again.
+    Unavailable(&'static str),
     Internal(anyhow::Error),
 }
 
@@ -116,6 +122,7 @@ impl IntoResponse for ApiError {
                 (status, message.as_str())
             }
             ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, *message),
+            ApiError::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, *message),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error."),
         };
         let mut response = json_reply(status, json!({ "error": message }));
@@ -216,6 +223,8 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/audit-log", get(audit_log))
         .route("/api/status", get(status_route))
         .route("/api/storage", get(storage))
+        .route("/api/link-previews", get(link_previews_status).delete(clear_link_previews))
+        .route("/api/link-previews/refresh", post(refresh_link_preview))
         .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
@@ -487,6 +496,7 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "seo": host.seo,
         "merge_deployments": host.merge_deployments,
         "analytics": host.analytics,
+        "link_previews": host.link_previews,
         "onion": details.onion,
         "certificates": details.certificates,
         "pinned_event_id": host.pinned_event_id,
@@ -523,6 +533,7 @@ fn host_summary(host: &Host) -> Map<String, Value> {
         ("seo", json!(i64::from(host.seo))),
         ("merge_deployments", json!(i64::from(host.merge_deployments))),
         ("analytics", json!(i64::from(host.analytics))),
+        ("link_previews", json!(i64::from(host.link_previews))),
         ("pinned_event_id", json!(host.pinned_event_id)),
     ] {
         summary.insert(key.into(), value);
@@ -593,6 +604,7 @@ struct Flags {
     seo: Option<bool>,
     merge_deployments: Option<bool>,
     analytics: Option<bool>,
+    link_previews: Option<bool>,
 }
 
 impl Flags {
@@ -607,6 +619,7 @@ impl Flags {
             ("seo", self.seo),
             ("merge_deployments", self.merge_deployments),
             ("analytics", self.analytics),
+            ("link_previews", self.link_previews),
         ]
         .into_iter()
         .filter_map(|(column, value)| Some((column, value?)))
@@ -638,6 +651,7 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     let seo = flags.seo.unwrap_or(true);
     let merge = flags.merge_deployments.unwrap_or(false);
     let analytics = flags.analytics.unwrap_or(false);
+    let link_previews = flags.link_previews.unwrap_or(false);
 
     let (u, name, addr) = (user.clone(), hostname.clone(), address.clone());
     let created = deps
@@ -647,9 +661,9 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
             let tx = conn.transaction()?;
             let inserted = tx.execute(
                 "INSERT INTO hosts (hostname, pubkey, kind, identifier, pinned_event_id, enabled, hidden, redirect_www, spa, csp, seo,
-                   merge_deployments, analytics, created_by, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, u.pubkey, now, now],
+                   merge_deployments, analytics, link_previews, created_by, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, link_previews, u.pubkey, now, now],
             );
             match inserted {
                 Err(error) if is_unique_violation(&error) => return Ok(None),
@@ -1562,4 +1576,64 @@ async fn storage(State(deps): State<Deps>, _: Admin) -> ApiResult {
         .await?;
     let last = deps.last_prune.lock().clone();
     ok(json!({ "unreferenced": { "blobs": blobs, "bytes": bytes }, "last_prune": last }))
+}
+
+impl From<PreviewError> for ApiError {
+    fn from(error: PreviewError) -> Self {
+        match error {
+            PreviewError::Failed(error) => ApiError::Internal(error),
+            other => ApiError::Unavailable(other.message()),
+        }
+    }
+}
+
+/// What the link preview cache holds, and how lookups have gone.
+async fn link_previews_status(State(deps): State<Deps>, _: Admin) -> ApiResult {
+    ok(json!(deps.link_previews.status().await?))
+}
+
+/// Fetch one entity's preview again, whatever is cached, and show what
+/// crawlers will now be given.
+async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>) -> ApiResult {
+    #[derive(Deserialize)]
+    struct Refresh {
+        entity: String,
+    }
+    let Refresh { entity } = body.json("Expected a JSON body with an entity.")?;
+    let entity = Entity::parse(&entity).map_err(bad)?;
+    let refreshed = deps.link_previews.refresh(entity).await?;
+
+    let (actor, target) = (user.pubkey.clone(), refreshed.entity.clone());
+    let found = refreshed.card.is_some();
+    deps.db.call(move |conn| Ok(audit(conn, &actor, "link_preview.refresh", Some(&target), None, Some(&json!({ "found": found })))?)).await?;
+
+    ok(json!({ "key": refreshed.key, "entity": refreshed.entity, "card": refreshed.card.as_deref().map(card_json) }))
+}
+
+/// Forget every preview, so each is fetched again the next time a crawler
+/// asks for it.
+async fn clear_link_previews(State(deps): State<Deps>, Admin(user): Admin) -> ApiResult {
+    let cleared = deps.link_previews.clear().await?;
+    let actor = user.pubkey.clone();
+    deps.db.call(move |conn| Ok(audit(conn, &actor, "link_preview.clear", None, Some(&json!({ "entries": cleared })), None)?)).await?;
+    ok(json!({ "cleared": cleared }))
+}
+
+/// A preview as the dashboard shows it: everything but the article, which a
+/// crawler reads and a person doesn't need to.
+fn card_json(card: &Card) -> Value {
+    json!({
+        "kind": card.kind,
+        "title": card.title,
+        "description": card.description,
+        "image": card.image,
+        "video": card.video.as_ref().map(|video| &video.url),
+        "author": {
+            "pubkey": card.author.pubkey,
+            "npub": nip19::npub_encode(&card.author.pubkey),
+            "name": card.author.name,
+            "picture": card.author.picture,
+        },
+        "published": card.published,
+    })
 }

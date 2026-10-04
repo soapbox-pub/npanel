@@ -201,6 +201,19 @@ export function useSettings(enabled = true) {
   });
 }
 
+/** What the link preview cache holds. Admins only. */
+export function useLinkPreviews(enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('link-previews'),
+    queryFn: () => api!.linkPreviews(),
+    enabled: !!api && enabled,
+    // The counts move as crawlers come and go, which nothing here causes.
+    refetchInterval: 10_000,
+  });
+}
+
 export function useAuditLog(enabled = true) {
   const api = useApi();
 
@@ -351,6 +364,26 @@ export function useUpdateSettings() {
 
   return useMutation({
     mutationFn: (patch: Partial<Settings>) => api!.updateSettings(patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useRefreshLinkPreview() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (entity: string) => api!.refreshLinkPreview(entity),
+    onSuccess: invalidate,
+  });
+}
+
+export function useClearLinkPreviews() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: () => api!.clearLinkPreviews(),
     onSuccess: invalidate,
   });
 }

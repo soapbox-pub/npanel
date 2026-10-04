@@ -170,6 +170,10 @@ pub struct ResolvedFile {
 /// requests are untouched: a script that answers `200` with a page of HTML
 /// fails somewhere harder to read.
 ///
+/// A last segment with an `@` in it is someone's address — `/@bob@example.com`,
+/// the way Nostr and fediverse clients route a NIP-05 name or a handle — and
+/// the dot in it is a domain's, not an extension, so the shell answers it too.
+///
 /// `/.well-known/` gets none of that: only a file the site really has. What
 /// asks for those paths is software probing for a capability, and a page of
 /// HTML — under a `200`, worse — tells it the site has one.
@@ -186,7 +190,8 @@ pub fn resolve_site_path(
     let html_path = (extensionless && normalized != "/").then(|| format!("{normalized}.html"));
     let index_path = extensionless.then(|| join_root(&format!("{normalized}/index.html")));
     let not_found = (!exact).then_some("/404.html");
-    let shell = !exact && spa && matches!(extension.to_lowercase().as_str(), "" | ".html" | ".htm");
+    let address = normalized.rsplit('/').next().is_some_and(|segment| segment.contains('@'));
+    let shell = !exact && spa && (address || matches!(extension.to_lowercase().as_str(), "" | ".html" | ".htm"));
 
     let mut candidates: Vec<&str> = vec![&normalized];
     candidates.extend(html_path.as_deref());
@@ -472,6 +477,8 @@ mod tests {
             assert_eq!(at("/missing", false), Some(("/404.html".into(), 404)));
             assert_eq!(at("/missing", true), Some(("/404.html".into(), 200)));
             assert_eq!(at("/missing.js", true), Some(("/404.html".into(), 404)));
+            assert_eq!(at("/@bob@example.com", true), Some(("/404.html".into(), 200)));
+            assert_eq!(at("/bob@example.com", false), Some(("/404.html".into(), 404)));
             assert_eq!(at("/a%62out.html", false), Some(("/about.html".into(), 200)));
             assert_eq!(at("/../app.js", false), Some(("/app.js".into(), 200)));
 

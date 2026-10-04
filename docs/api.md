@@ -281,6 +281,7 @@ Any subset of:
   "seo": true,
   "merge_deployments": true,
   "analytics": true,
+  "link_previews": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -304,8 +305,9 @@ leave `www` unserved.
 
 `spa` decides what a path the site has no file for returns, and defaults to
 off. Off, it's a `404`, carrying the site's own `/404.html` if it published
-one. On, a *document* request — a path with no extension, or one ending
-`.html` — gets the site's shell (`/404.html` if present, else `/index.html`)
+one. On, a *document* request — a path with no extension, one ending `.html`,
+or one ending in someone's address like `/@bob@example.com` — gets the site's
+shell (`/404.html` if present, else `/index.html`)
 with a `200`, so a client-side router can decide what the page is. Requests for
 anything else still `404` either way: a script or stylesheet that answers `200`
 with a page of HTML doesn't render the site, it fails somewhere harder to read.
@@ -414,6 +416,21 @@ in a page is widened just enough for the tracker — `'self'` added to whichever
 directives govern loading a script and `fetch`ing — and the header follows
 the page. A site that publishes files under `/_npanel/` has
 `/_npanel/script.js` shadowed while this is on.
+
+`link_previews` gives crawlers a preview of the Nostr event a page's path
+names, and defaults to `false`. It is for sites that show Nostr content under
+the paths Nostr web clients use — `/<npub>`, `/<nprofile>`, `/<note>`,
+`/<nevent>`, `/<naddr>`, and `/<name@domain>`, each with or without an `@` in
+front. A `GET` from a User-Agent matching
+[`link_preview_crawler_pattern`](configuration.md#link_preview_crawler_pattern),
+for one of those paths, where the site's answer is an HTML page with a `200`,
+gets that page with the event's title, description, image and video in its
+head — as Open Graph, Twitter and schema.org JSON-LD — and the event itself,
+escaped and rendered, as an `<article>` at the top of its body. Everyone else
+gets the page as published, and responses on those paths carry
+`Vary: User-Agent`. It is off by default because it changes what a page says
+depending on who asks, and only a site that routes those paths means them. See
+[link previews](architecture.md#link-previews).
 
 `hostname` is validated exactly as on create: `409` if it's already configured
 or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
@@ -814,7 +831,68 @@ key does.
 
 Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 `host.update`, `host.delete`, `host.grants`, `user.create`, `user.update`,
-`user.delete`, and `settings.update`.
+`user.delete`, `nip05.set`, `nip05.delete`, `env.set`, `env.delete`,
+`settings.update`, `link_preview.refresh`, and `link_preview.clear`.
+
+## Link previews — admin
+
+### `GET /api/link-previews`
+
+```json
+{
+  "found": 1520,
+  "not_found": 41,
+  "bytes": 9437184,
+  "in_memory": 830,
+  "running": 2,
+  "stats": { "hits": 20410, "lookups": 1930, "fetches": 1602, "busy": 0, "timeouts": 12, "over_budget": 0 }
+}
+```
+
+What the cache holds: entities with a preview, entities a lookup found nothing
+for (remembered for ten minutes at most), and what `previews.sqlite3` takes up
+on disk. `stats` count since the server started: answers from memory, lookups
+handed to the previews runtime, lookups that went to relays, pages sent without
+a preview because as many lookups were running as may (`busy`) or the lookup
+took too long (`timeouts`), and lookups that didn't go to relays because the
+minute's were spent. `503` while the previews runtime is starting.
+
+### `POST /api/link-previews/refresh`
+
+```json
+{ "entity": "nevent1..." }
+```
+
+Fetches one entity's preview again, whatever is cached, and keeps what it
+finds. `entity` is anything that names one: an npub, nprofile, note, nevent,
+naddr, or NIP-05 name, as a `nostr:` URI or not, or the URL of a page whose last
+path segment is one. Not held to the concurrency limit or the relay budget,
+which are for crawlers.
+
+```json
+{
+  "key": "e:<hex>",
+  "entity": "note1...",
+  "card": {
+    "kind": "post",
+    "title": null,
+    "description": "Hello from Nostr",
+    "image": "https://cdn.example.com/cat.png",
+    "video": null,
+    "author": { "pubkey": "<hex>", "npub": "npub1...", "name": "Alex", "picture": "https://..." },
+    "published": 1754000000
+  }
+}
+```
+
+`card` is `null` when nothing was found. `kind` is `profile`, `article`,
+`post`, or `video`. `400` for an entity that names nothing, `503` if the relays
+take longer than thirty seconds.
+
+### `DELETE /api/link-previews`
+
+`{ "cleared": 1561 }`. Forgets every preview, in memory and on disk, and gives
+the space back. Each is looked up again the next time a crawler asks.
 
 ## Status
 
@@ -883,7 +961,7 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 | `ETag`                    | The blob's sha256, quoted, suffixed per encoding |
 | `Last-Modified`           | The manifest event's `created_at`                |
 | `Content-Encoding`        | `br` or `gzip`, when a compressed copy was sent  |
-| `Vary`                    | Always `Accept-Encoding`                         |
+| `Vary`                    | `Accept-Encoding`, and `User-Agent` on a page with a link preview |
 | `Content-Security-Policy` | The site's own policy, or npanel's               |
 | `X-Nsite-Addr`            | Which nsite this hostname serves, as an `naddr`  |
 | `Onion-Location`          | The site's onion address, when it has one        |

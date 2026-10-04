@@ -328,4 +328,10 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
       )"#,
         ],
     ),
+    (
+        "023_hosts_link_previews",
+        &[
+            r#"ALTER TABLE hosts ADD COLUMN link_previews INTEGER NOT NULL DEFAULT 0"#,
+        ],
+    ),
 ];

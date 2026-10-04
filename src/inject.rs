@@ -110,7 +110,7 @@ fn is_space(byte: u8) -> bool {
 
 /// One piece of markup a page's tokenizer would see.
 #[derive(Debug, PartialEq, Eq)]
-enum Token {
+pub enum Token {
     /// `<name …>`, by its lowercased name.
     Start(Vec<u8>),
     /// `</name …>`.
@@ -127,7 +127,7 @@ enum Token {
 /// Not a parser: nothing is built from the tags, and no tag is implied. Only
 /// what the tokenizer decides matters here, and all of it is ASCII, so the
 /// site's own bytes need no decoding.
-fn tags(lower: &[u8]) -> Vec<(usize, usize, Token)> {
+pub fn tags(lower: &[u8]) -> Vec<(usize, usize, Token)> {
     let mut tags = Vec::new();
     let mut at = 0;
 
@@ -214,7 +214,7 @@ fn head_start(lower: &[u8]) -> Option<usize> {
 
 /// Where the head ends, from a document's lowercased bytes: before `</head>`,
 /// or failing that before `<body>`, or after `<html>` or the doctype.
-fn head_end(lower: &[u8]) -> Option<usize> {
+pub fn head_end(lower: &[u8]) -> Option<usize> {
     let tags = tags(lower);
     let find_tag = |token: Token| tags.iter().find(|(_, _, t)| *t == token);
 
@@ -224,18 +224,42 @@ fn head_end(lower: &[u8]) -> Option<usize> {
         .or_else(|| find_tag(Token::Start(b"html".to_vec())).or_else(|| find_tag(Token::Doctype)).map(|(_, end, _)| *end))
 }
 
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+pub fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 /// Every `<meta http-equiv="Content-Security-Policy">` in `head`, widened.
 /// Also reports whether any of them trusts scripts by hash alone.
-fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
+/// One attribute of a start tag, as the tokenizer reads it: its name, and
+/// its value with or without quotes.
+fn attribute_pattern() -> &'static Regex {
     static ATTRIBUTE: OnceLock<Regex> = OnceLock::new();
-    let attribute = ATTRIBUTE.get_or_init(|| {
+    ATTRIBUTE.get_or_init(|| {
         Regex::new(r#"(?-u)([^\t\n\x0C\r "'=/>]+)(?:[\t\n\x0C\r ]*=[\t\n\x0C\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\x0C\r "'>]+)))?"#)
             .expect("regex")
-    });
+    })
+}
+
+/// The attributes of a start tag of `name`, its bytes as [`tags`] found them:
+/// each name lowercased, each value with its character references decoded.
+/// The first of a name wins, as it does in a browser.
+pub fn attributes(tag: &[u8], name: &[u8]) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    let Some(inner) = tag.get(1 + name.len()..) else { return found };
+    for captures in attribute_pattern().captures_iter(inner) {
+        let name = latin1(&captures[1].to_ascii_lowercase());
+        if found.iter().any(|(seen, _)| *seen == name) {
+            continue;
+        }
+        let value = captures.get(2).or(captures.get(3)).or(captures.get(4)).map(|m| m.as_bytes()).unwrap_or(b"");
+        let value = String::from_utf8(value.to_vec()).unwrap_or_else(|_| latin1(value));
+        found.push((name, decode_attribute(&value)));
+    }
+    found
+}
+
+fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
+    let attribute = attribute_pattern();
 
     let mut strict_dynamic = false;
     let mut out = Vec::with_capacity(head.len());
@@ -282,7 +306,7 @@ fn allow_meta_policies(head: &[u8], script: &Script) -> (Vec<u8>, bool) {
 }
 
 /// Bytes as Latin-1 text: one character per byte.
-fn latin1(bytes: &[u8]) -> String {
+pub fn latin1(bytes: &[u8]) -> String {
     bytes.iter().map(|&b| b as char).collect()
 }
 

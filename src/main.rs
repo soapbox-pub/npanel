@@ -21,6 +21,7 @@ mod hostname;
 mod html;
 mod identifiers;
 mod inject;
+mod link_previews;
 mod log;
 mod manifest;
 mod mime;
@@ -130,6 +131,14 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         AnalyticsConfig { data_dir: config.data_dir.clone(), download_geo: true },
     ));
 
+    // Link previews for crawlers, looked up on a thread of their own.
+    let link_previews = Arc::new(link_previews::LinkPreviews::start(
+        db.clone(),
+        settings.clone(),
+        log,
+        link_previews::LinkPreviewsConfig { data_dir: config.data_dir.clone(), source: None },
+    ));
+
     let site_csp = Arc::new(site_csp::SiteCsp::new(db.clone(), blobs.clone(), log));
     let previews = Arc::new(site_preview::SitePreviews::new(blobs.clone()));
     let site = Arc::new(SiteServer::new(SiteServerDeps {
@@ -138,6 +147,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         site_csp: site_csp.clone(),
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
+        link_previews: link_previews.clone(),
         log,
     }));
 
@@ -193,6 +203,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         tls: tls.clone(),
         site_csp,
         previews,
+        link_previews: link_previews.clone(),
         serve_cache,
         last_prune,
         dashboard_host: config.dashboard_host.clone(),
@@ -276,6 +287,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     tor.stop().await;
     deployments.stop().await;
     analytics.stop().await;
+    link_previews.stop().await;
 
     Ok(())
 }

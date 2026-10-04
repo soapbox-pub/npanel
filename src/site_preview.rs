@@ -331,7 +331,7 @@ pub fn extract_meta(html: &str) -> RawMeta {
 }
 
 /// Trim, and cut to length on a word boundary where one is close enough.
-fn clamp(value: &str, max: usize) -> String {
+pub fn clamp(value: &str, max: usize) -> String {
     let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if text.chars().count() <= max {
         return text;

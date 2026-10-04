@@ -874,6 +874,7 @@ mod tests {
             seo: true,
             merge_deployments: false,
             analytics: false,
+            link_previews: false,
             created_by: String::new(),
             created_at: 0,
             updated_at: 0,
