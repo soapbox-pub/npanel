@@ -104,7 +104,7 @@ pub fn profile_card(event: &Event) -> Card {
     let author = Author { pubkey: event.pubkey.clone(), name: profile.name.clone(), picture: profile.picture.clone() };
     let name = author.display();
 
-    let mut body = format!("<article data-npanel-preview>\n<header>\n<h1>{}</h1>\n", escape(&name));
+    let mut body = format!("<article>\n<header>\n<h1>{}</h1>\n", escape(&name));
     if let Some(nip05) = &profile.nip05 {
         body.push_str(&format!("<p>{}</p>\n", escape(nip05.strip_prefix("_@").unwrap_or(nip05))));
     }
@@ -193,7 +193,7 @@ pub fn event_card(event: &Event, author: Option<&Event>) -> Card {
     };
     let title = title.map(|t| clamp(&t, MAX_TITLE));
 
-    let mut body = String::from("<article data-npanel-preview>\n<header>\n");
+    let mut body = String::from("<article>\n<header>\n");
     if let Some(title) = &title {
         body.push_str(&format!("<h1>{}</h1>\n", escape(title)));
     }

@@ -294,7 +294,7 @@ mod tests {
         assert!(out.contains(r#"<meta name="twitter:card" content="summary">"#), "{out}");
         assert!(out.contains("\"@type\":\"SocialMediaPosting\""), "{out}");
         // The article opens the body, and the app's root is left alone.
-        assert!(out.contains("<body class=\"x\"><article data-npanel-preview>"), "{out}");
+        assert!(out.contains("<body class=\"x\"><article>"), "{out}");
         assert!(out.contains("<div id=\"root\"></div>"), "{out}");
         assert!(out.contains("<p>Hello world</p>"), "{out}");
     }
@@ -333,7 +333,7 @@ mod tests {
     fn handles_pages_without_the_usual_parts() {
         let card = note("hi");
         let out = spliced("<html><head><title>Site</title></head><p>x</p></html>", &card);
-        assert!(out.contains("</head><article data-npanel-preview>"), "{out}");
+        assert!(out.contains("</head><article>"), "{out}");
         assert!(out.contains("<title>Alex on Site</title>"), "{out}");
         let out = spliced("<html><head><meta name=description content=x></head><body>", &card);
         assert!(out.contains("<body><article"), "{out}");
