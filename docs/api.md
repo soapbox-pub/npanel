@@ -309,6 +309,8 @@ one. On, a *document* request — a path with no extension, or one ending
 with a `200`, so a client-side router can decide what the page is. Requests for
 anything else still `404` either way: a script or stylesheet that answers `200`
 with a page of HTML doesn't render the site, it fails somewhere harder to read.
+Paths under `/.well-known/` are served only if the site has that exact file;
+anything else there is a plain `404` in both modes.
 
 `csp` decides whether this site is served under a `Content-Security-Policy` at
 all, and defaults to `true` — including for hosts created before the flag

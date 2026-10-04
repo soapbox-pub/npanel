@@ -169,6 +169,10 @@ pub struct ResolvedFile {
 /// since NIP-5A names it as the fallback path, then `/index.html`. Asset
 /// requests are untouched: a script that answers `200` with a page of HTML
 /// fails somewhere harder to read.
+///
+/// `/.well-known/` gets none of that: only a file the site really has. What
+/// asks for those paths is software probing for a capability, and a page of
+/// HTML — under a `200`, worse — tells it the site has one.
 pub fn resolve_site_path(
     conn: &Connection,
     build_id: i64,
@@ -176,16 +180,18 @@ pub fn resolve_site_path(
     spa: bool,
 ) -> rusqlite::Result<Option<ResolvedFile>> {
     let normalized = normalize_site_path(request_path);
+    let exact = normalized == "/.well-known" || normalized.starts_with("/.well-known/");
     let extension = extname(&normalized);
-    let extensionless = extension.is_empty();
+    let extensionless = !exact && extension.is_empty();
     let html_path = (extensionless && normalized != "/").then(|| format!("{normalized}.html"));
     let index_path = extensionless.then(|| join_root(&format!("{normalized}/index.html")));
-    let shell = spa && matches!(extension.to_lowercase().as_str(), "" | ".html" | ".htm");
+    let not_found = (!exact).then_some("/404.html");
+    let shell = !exact && spa && matches!(extension.to_lowercase().as_str(), "" | ".html" | ".htm");
 
     let mut candidates: Vec<&str> = vec![&normalized];
     candidates.extend(html_path.as_deref());
     candidates.extend(index_path.as_deref());
-    candidates.push("/404.html");
+    candidates.extend(not_found);
     if shell {
         candidates.push("/index.html");
     }
@@ -229,7 +235,7 @@ pub fn resolve_site_path(
     if let Some(file) = index_path.as_deref().and_then(|p| resolved(p, 200)) {
         return Ok(Some(file));
     }
-    if let Some(file) = resolved("/404.html", if shell { 200 } else { 404 }) {
+    if let Some(file) = not_found.and_then(|p| resolved(p, if shell { 200 } else { 404 })) {
         return Ok(Some(file));
     }
     if shell {
@@ -453,6 +459,8 @@ mod tests {
                     ("/guide/index.html", &sha('3')),
                     ("/404.html", &sha('4')),
                     ("/app.js", &sha('5')),
+                    ("/.well-known/apple-app-site-association", &sha('6')),
+                    ("/.well-known/matrix.html", &sha('7')),
                 ],
             );
 
@@ -466,6 +474,14 @@ mod tests {
             assert_eq!(at("/missing.js", true), Some(("/404.html".into(), 404)));
             assert_eq!(at("/a%62out.html", false), Some(("/about.html".into(), 200)));
             assert_eq!(at("/../app.js", false), Some(("/app.js".into(), 200)));
+
+            // Well-known paths: the file or nothing, SPA or not.
+            let aasa = "/.well-known/apple-app-site-association";
+            assert_eq!(at(aasa, true), Some((aasa.into(), 200)));
+            assert_eq!(at("/.well-known/webfinger", false), None);
+            assert_eq!(at("/.well-known/webfinger", true), None);
+            assert_eq!(at("/.well-known/matrix", false), None);
+            assert_eq!(at("/.well-known/", true), None);
             Ok(())
         })
         .unwrap();

@@ -495,7 +495,11 @@ reason, then `/index.html`, for a build that expects the `try_files` every
 other static host does. Requests for anything else keep their `404` in both
 modes — a script or stylesheet answered with a page of HTML and a `200` doesn't
 render the site, it turns a plain missing file into a parse error somewhere
-else. The flag is off for every existing host and every new one: folding `www`
+else. `/.well-known/` skips every fallback, in both modes: what asks there is
+software probing for a capability — Universal Links, WebFinger, Matrix — and
+any page at all, let alone one under a `200`, tells it the site has one. Those
+paths also get their content types by name (`src/mime.rs`), since the
+registered ones mostly have no extension. The flag is off for every existing host and every new one: folding `www`
 into a domain preserves what a response means and can default on, while turning
 a `404` into a `200` does not.
 

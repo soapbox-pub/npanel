@@ -19,6 +19,12 @@ it is tagged.
 - `/api/status` has a `tls` field and each host a `certificates` field, both
   `null` behind a proxy.
 
+- Files under `/.well-known/` are served with the content type their spec
+  requires, so `apple-app-site-association` is JSON and Universal Links work.
+  WebFinger, `host-meta`, NodeInfo, Matrix, OpenID/OAuth discovery, `lnurlp`
+  and others are covered too. A `/.well-known/` path the site has no file for
+  is now a plain `404`, never its `404.html` or SPA shell.
+
 - npanel cleans up after itself. Once a day it keeps the newest 20 ready
   versions of each site, forgets the versions of sites no host points at, and
   deletes every stored file nothing uses. **Settings → Deploys → Versions kept
