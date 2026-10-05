@@ -1,8 +1,8 @@
-import { AtSign, Boxes, Braces, FolderOpen, History, KeyRound, type LucideIcon, Server, Shield } from 'lucide-react';
+import { AtSign, Boxes, Braces, FolderOpen, History, KeyRound, type LucideIcon, Search, Server, Shield } from 'lucide-react';
 
 import type { TileColor } from '@/lib/tile-colors';
 
-export type SiteSectionId = 'nsite' | 'serving' | 'privacy' | 'access' | 'versions' | 'files' | 'nip05' | 'env';
+export type SiteSectionId = 'nsite' | 'serving' | 'privacy' | 'seo' | 'access' | 'versions' | 'files' | 'nip05' | 'env';
 
 export interface SiteSection {
   id: SiteSectionId;
@@ -21,6 +21,7 @@ export const SITE_SECTIONS: SiteSection[][] = [
     { id: 'nsite', label: 'nsite', icon: Boxes, color: 'indigo' },
     { id: 'serving', label: 'Serving', icon: Server, color: 'green' },
     { id: 'privacy', label: 'Privacy & Security', icon: Shield, color: 'blue' },
+    { id: 'seo', label: 'SEO', icon: Search, color: 'red' },
     { id: 'access', label: 'Access', icon: KeyRound, color: 'purple', adminOnly: true },
   ],
   [

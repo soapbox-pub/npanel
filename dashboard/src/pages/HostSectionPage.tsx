@@ -6,7 +6,7 @@ import { EnvEditor } from '@/components/host/EnvEditor';
 import { FileList } from '@/components/host/FileList';
 import { GrantsEditor } from '@/components/host/GrantsEditor';
 import { Nip05Editor } from '@/components/host/Nip05Editor';
-import { NsiteSettings, PrivacySettings, ServingSettings } from '@/components/host/SiteSettings';
+import { NsiteSettings, PrivacySettings, SeoSettings, ServingSettings } from '@/components/host/SiteSettings';
 import { VersionList } from '@/components/host/VersionList';
 import { PageHeader } from '@/components/PageHeader';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -66,6 +66,8 @@ function Content({ id, host }: { id: SiteSectionId; host: Host }) {
       return <ServingSettings host={host} />;
     case 'privacy':
       return <PrivacySettings host={host} />;
+    case 'seo':
+      return <SeoSettings host={host} />;
     case 'access':
       return <GrantsEditor hostname={host.hostname} />;
     case 'versions':

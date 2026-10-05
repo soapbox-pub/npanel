@@ -170,14 +170,17 @@ export function PrivacySettings({ host }: { host: Host }) {
           }
         />
       </Section>
+    </div>
+  );
+}
 
+/** How the site is found: by search engines, by crawlers making link previews, and on the site list. */
+export function SeoSettings({ host }: { host: Host }) {
+  const patch = usePatch(host.hostname);
+
+  return (
+    <div className="space-y-8">
       <Section>
-        <ToggleRow
-          id="listed"
-          label="Show on the public site list"
-          checked={!host.hidden}
-          onCheckedChange={(listed) => patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')}
-        />
         <ToggleRow
           id="seo"
           label="Search engine defaults"
@@ -193,6 +196,15 @@ export function PrivacySettings({ host }: { host: Host }) {
           onCheckedChange={(link_previews) =>
             patch({ link_previews }, link_previews ? 'Link previews on' : 'Link previews off')
           }
+        />
+      </Section>
+
+      <Section>
+        <ToggleRow
+          id="listed"
+          label="Show on the public site list"
+          checked={!host.hidden}
+          onCheckedChange={(listed) => patch({ hidden: !listed }, listed ? 'Site is now listed' : 'Site is now unlisted')}
         />
       </Section>
     </div>

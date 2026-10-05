@@ -253,6 +253,8 @@ function summary(id: SiteSectionId, host: Host): string | undefined {
       return host.spa ? 'Single-page app' : 'Static site';
     case 'privacy':
       return host.analytics ? 'Analytics on' : undefined;
+    case 'seo':
+      return host.hidden ? 'Unlisted' : undefined;
     case 'versions':
       if (host.pinned_event_id) return 'Pinned';
       return host.active ? `Updated ${timeAgo(host.active.created_at)}` : undefined;
