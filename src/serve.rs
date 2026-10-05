@@ -31,7 +31,7 @@ use crate::fields;
 use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
-use crate::link_previews::page::NostrPage;
+use crate::link_previews::page::Hints;
 use crate::link_previews::script::{self, Script, Scripts};
 use crate::link_previews::splice::{splice, Page};
 use crate::link_previews::{Answer, LinkPreviews, ScriptPage, IMAGE_WAIT, PREVIEW_PATH, WAIT};
@@ -353,21 +353,14 @@ impl SiteServer {
             return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
         };
 
-        // A page whose path names something on Nostr, on a site with link
-        // previews on and a script to draw them, answers crawlers with the
-        // script's preview and everyone else as published — so a cache in
-        // between has to keep the two apart.
-        let previewed = site.host.host.link_previews && file.status == 200 && content_type(&file.path).starts_with("text/html");
-        let nostr = if previewed { NostrPage::from_path(path) } else { None };
-        let script = match &nostr {
-            Some(_) => self.deps.scripts.for_build(version.build_id).await?,
-            None => None,
-        };
-        let previewable = nostr.zip(script);
-        if let Some((nostr, script)) = &previewable {
+        // A page the site's script previews, on a site with link previews on,
+        // answers crawlers with the script's preview and everyone else as
+        // published — so a cache in between has to keep the two apart.
+        let previewable = if site.host.host.link_previews && is_page(&file) { self.previewed(version.build_id, path).await? } else { None };
+        if let Some((script, hints)) = &previewable {
             let crawler = request.method == Method::GET && self.deps.link_previews.is_crawler(header_str(&request.headers, header::USER_AGENT));
             if crawler && variants.identity <= MAX_PREVIEW_PAGE {
-                if let Some(reply) = self.link_preview(request, origin, site, &file, nostr, script).await {
+                if let Some(reply) = self.link_preview(request, origin, site, &file, hints, script).await {
                     return Ok(reply);
                 }
             }
@@ -486,16 +479,26 @@ impl SiteServer {
         Ok(builder.status(status).body(Body::from(body)).expect("response"))
     }
 
-    /// A page about something on Nostr, for a crawler: the site's own
+    /// The site's script, and what the path says for it, if the script
+    /// previews the page at `path`.
+    async fn previewed(&self, build_id: i64, path: &str) -> anyhow::Result<Option<(Arc<Script>, Hints)>> {
+        let Some(script) = self.deps.scripts.for_build(build_id).await? else { return Ok(None) };
+        if !script.serves(path) {
+            return Ok(None);
+        }
+        Ok(Hints::of(path).map(|hints| (script, hints)))
+    }
+
+    /// A page the site's script previews, for a crawler: the site's own
     /// document, with its script's preview in its head and its article at the
     /// top of its body. `None` sends the page as published, whatever the
     /// reason — this is never worth an error.
-    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, nostr: &NostrPage, script: &Arc<Script>) -> Option<Reply> {
+    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, hints: &Hints, script: &Arc<Script>) -> Option<Reply> {
         let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
         let path = request.uri.path();
         let url = page_url(&site_origin, path);
 
-        let page = Arc::new(ScriptPage { script: script.clone(), page: script_page(request, &url), nostr: nostr.clone() });
+        let page = Arc::new(ScriptPage { script: script.clone(), page: script_page(request, &url), hints: hints.clone() });
         let Answer::Preview(preview) = self.deps.link_previews.preview(page.clone(), WAIT).await else { return None };
         let vary = self.deps.link_previews.vary(&page);
         let document = self.open(file.sha256, None).await.ok()?;
@@ -538,8 +541,11 @@ impl SiteServer {
         if !site.host.host.link_previews {
             return not_found();
         }
-        let Some(nostr) = NostrPage::from_path(page) else { return not_found() };
-        let Some(script) = self.deps.scripts.for_build(build_id).await? else { return not_found() };
+        // Only a page a crawler would get a preview of has an image.
+        if !self.resolve(build_id, page, site.host.host.spa).await?.is_some_and(|file| is_page(&file)) {
+            return not_found();
+        }
+        let Some((script, hints)) = self.previewed(build_id, page).await? else { return not_found() };
         let previews = &self.deps.link_previews;
 
         let named = request.uri.query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "v").map(|(_, v)| v.into_owned()));
@@ -550,7 +556,7 @@ impl SiteServer {
         }
 
         let url = page_url(&format!("{}://{}", origin.scheme, origin.hostname), page);
-        let page = Arc::new(ScriptPage { script, page: script_page(request, &url), nostr });
+        let page = Arc::new(ScriptPage { script, page: script_page(request, &url), hints });
         let preview = match previews.preview(page.clone(), IMAGE_WAIT).await {
             Answer::Preview(preview) => preview,
             Answer::Nothing => return not_found(),
@@ -688,6 +694,11 @@ impl SiteServer {
 
         Ok(Some(if request.method == Method::HEAD { builder.body(Body::empty()) } else { builder.body(Body::from(body)) }.expect("response")))
     }
+}
+
+/// Whether a file is an HTML page a site's script may preview.
+fn is_page(file: &ResolvedFile) -> bool {
+    file.status == 200 && content_type(&file.path).starts_with("text/html")
 }
 
 /// A page's URL, as its preview names it: no query, no trailing slash.

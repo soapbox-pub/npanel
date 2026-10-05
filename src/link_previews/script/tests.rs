@@ -15,32 +15,14 @@ impl EventSource for Relays {
     }
 }
 
-struct Site {
-    _dir: tempfile::TempDir,
-    blobs: BlobStore,
-    files: Vec<(String, BlobHash)>,
-}
-
-fn site(files: &[(&str, &str)]) -> Site {
+/// A script, loaded from a blob store of its own, kept as long as the
+/// directory is.
+fn script(source: &str) -> (tempfile::TempDir, Arc<Script>) {
     let dir = tempfile::tempdir().unwrap();
     let blobs = BlobStore::allowing_private(dir.path());
-    let files = files
-        .iter()
-        .map(|(path, source)| {
-            let sha256 = BlobHash::of(source.as_bytes());
-            blobs.put(sha256, source.as_bytes()).unwrap();
-            (format!("{DIR}{path}"), sha256)
-        })
-        .collect();
-    Site { _dir: dir, blobs, files }
-}
-
-fn script(files: &[(&str, &str)]) -> (Site, Arc<Script>) {
-    let site = site(files);
-    let loaded = load(&site.files, &site.blobs);
-    assert_eq!(loaded.problems, vec![]);
-    let script = Arc::new(loaded.script.unwrap());
-    (site, script)
+    let sha256 = BlobHash::of(source.as_bytes());
+    blobs.put(sha256, source.as_bytes()).unwrap();
+    (dir, Arc::new(load(sha256, &blobs).unwrap()))
 }
 
 fn page(url: &str) -> Page {
@@ -71,7 +53,7 @@ fn previewed(ran: Ran) -> Returned {
 }
 
 const PROFILE: &str = r#"
-import { name } from "./lib/name.js";
+const name = (e) => JSON.parse(e.content).name;
 
 export default {
   async preview(request, { nostr }) {
@@ -86,7 +68,7 @@ export default {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_handler_previews_what_its_queries_find() {
-    let (_site, script) = script(&[("preview.js", PROFILE), ("lib/name.js", "export const name = (e) => JSON.parse(e.content).name;")]);
+    let (_site, script) = script(PROFILE);
     let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex"}"#);
     let url = format!("https://ditto.example/{}", profile.pubkey);
 
@@ -138,7 +120,7 @@ export default {
   },
 };
 "##;
-    let (_site, script) = script(&[("preview.js", drawing)]);
+    let (_site, script) = script(drawing);
 
     let preview = previewed(run_page(&script, "https://x.example/now", vec![]).await.unwrap());
     assert_eq!(preview.title.as_deref(), Some("0,0,255,255 255,0,0,255"));
@@ -174,7 +156,7 @@ function structuredCloneMissing() {
   try { new Path2D("M0 0"); return "path data"; } catch (e) { return e instanceof TypeError; }
 }
 "#;
-    let (_site, script) = script(&[("preview.js", web)]);
+    let (_site, script) = script(web);
     let preview = previewed(run_page(&script, "https://x.example/npub1", vec![]).await.unwrap());
     assert_eq!(
         preview.title.as_deref(),
@@ -183,59 +165,102 @@ function structuredCloneMissing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_request_is_a_get() {
+    let request = r#"
+export default {
+  async preview(request, { signal }) {
+    const copy = request.clone();
+    const again = new Request(copy);
+    let posted;
+    try { new Request(request.url, { body: "x" }); } catch (e) { posted = e instanceof TypeError; }
+    const parts = [
+      request.method, request.body, request.bodyUsed, await copy.text(), (await again.arrayBuffer()).byteLength,
+      again.headers.get("accept-language"), request.signal === signal, posted,
+    ];
+    return { title: parts.join("|") };
+  },
+};
+"#;
+    let (_site, script) = script(request);
+    let ran = run_page(&script, "https://x.example/a", vec![]).await.unwrap();
+    // A copy of the request reads only what's read of it.
+    assert_eq!(ran.vary, ["accept-language"]);
+    assert_eq!(previewed(ran).title.as_deref(), Some("GET||false||0|fr|true|true"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_handler_is_held_to_its_limits() {
-    let (_site, script_) = script(&[("preview.js", "export default { preview() { for (;;) {} } };")]);
+    let (_site, script_) = script("export default { preview() { for (;;) {} } };");
     let started = Instant::now();
     let error = run_with(&script_, page("https://x.example/a"), vec![], Duration::from_millis(300)).await.unwrap_err();
     assert!(error.contains("deadline"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(5));
 
-    let (_site, script_) = script(&[("preview.js", r#"export default { async preview() { await fetch("http://127.0.0.1/"); } };"#)]);
+    let (_site, script_) = script(r#"export default { async preview() { await fetch("http://127.0.0.1/"); } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
     assert!(error.contains("https://"), "{error}");
 
-    let (_site, script_) = script(&[("preview.js", r#"export default { async preview(r, { nostr }) { await nostr.query([{ kinds: [1] }]); } };"#)]);
+    let (_site, script_) = script(r#"export default { async preview(r, { nostr }) { await nostr.query([{ kinds: [1] }]); } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
     assert!(error.contains("something in particular"), "{error}");
 
-    let (_site, script_) = script(&[("preview.js", r#"export default { preview() { return { title: "x", image: new Uint8Array([1, 2, 3]) }; } };"#)]);
+    let (_site, script_) = script(r#"export default { preview() { return { title: "x", image: new Uint8Array([1, 2, 3]) }; } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
     assert!(error.contains("PNG, JPEG"), "{error}");
 
-    let (_site, script_) = script(&[("preview.js", r#"export default { preview() { return new OffscreenCanvas(5000, 1); } };"#)]);
+    let (_site, script_) = script(r#"export default { preview() { return new OffscreenCanvas(5000, 1); } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
     assert!(error.contains("2400"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_deploy_checks_what_it_can() {
-    let (_site, good) = script(&[("preview.js", PROFILE), ("lib/name.js", "export const name = () => 1;")]);
-    assert_eq!(check(good).await, Ok(()));
+    let (_site, good) = script(PROFILE);
+    assert_eq!(check(good.clone()).await, Ok(()));
+    // Without routes, it previews every page.
+    assert!(good.serves("/") && good.serves("/anything/at/all"));
 
-    let (_site, missing) = script(&[("preview.js", "export default {};")]);
+    let (_site, missing) = script("export default {};");
     assert!(check(missing).await.unwrap_err().contains("export default"));
 
-    let (_site, broken) = script(&[("preview.js", "export default { preview( };")]);
+    let (_site, broken) = script("export default { preview( };");
     let error = check(broken).await.unwrap_err();
     assert!(error.contains("SyntaxError"), "{error}");
 
-    let (_site, bare) = script(&[("preview.js", "import { nip19 } from 'nostr-tools'; export default { preview() {} };")]);
-    let error = check(bare).await.unwrap_err();
-    assert!(error.contains("bundle packages"), "{error}");
+    // A script imports nothing, whatever it names.
+    for import in ["import { nip19 } from 'nostr-tools';", "import x from './lib.js';", "await import('./lib.js');"] {
+        let (_site, importing) = script(&format!("{import} export default {{ preview() {{}} }};"));
+        let error = check(importing).await.unwrap_err();
+        assert!(error.contains("imports nothing"), "{import}: {error}");
+    }
 
-    let (_site, escape) = script(&[("preview.js", "import x from '../secrets.js'; export default { preview() {} };")]);
-    assert!(check(escape).await.unwrap_err().contains("outside /.npanel/"));
+    // Routes are URLPattern pathnames, regular expressions and all.
+    let (_site, routed) = script(r#"export default { routes: ["/:id(n(?:pub|event)1[02-9ac-hj-np-z]+){/}?", "/{@}?:name([\\w.+-]+@[\\w-]+(?:\\.[\\w-]+)+)", "/about"], preview() {} };"#);
+    assert_eq!(check(routed.clone()).await, Ok(()));
+    for (path, served) in [
+        ("/npub1qqqsyqcyq5rqwzqfpg9scrgwpugpzysn", true),
+        ("/nevent1qqqsyqcyq5rqwzqfpg9scrgwpugpzysn/", true),
+        ("/npub1qqqsyqcyq5rqwzqfpg9scrgwpugpzysn/replies", false),
+        ("/nsec1qqqsyqcyq5rqwzqfpg9scrgwpugpzysn", false),
+        ("/settings", false),
+        ("/@alex@example.com", true),
+        ("/alex@example.com", true),
+        ("/about", true),
+        ("/", false),
+    ] {
+        assert_eq!(routed.serves(path), served, "{path}");
+    }
 
-    let loaded = load(&site(&[("notes.txt", "x"), ("lib.js", "export {}")]).files, &BlobStore::allowing_private(tempfile::tempdir().unwrap().path()));
-    assert!(loaded.script.is_none());
-
-    // A font is the gateway's to have, not the site's.
-    let fonted = site(&[("preview.js", "export default { preview() {} };"), ("Emoji.ttf", "not really a font")]);
-    let loaded = load(&fonted.files, &fonted.blobs);
-    assert!(loaded.script.is_some());
-    assert_eq!(loaded.problems.len(), 1);
-    assert_eq!(loaded.problems[0].path, "/.npanel/Emoji.ttf");
-    assert!(loaded.problems[0].message.contains("installed on the gateway"), "{}", loaded.problems[0].message);
+    for (routes, error) in [
+        (r#""/:id""#, "list of URLPattern"),
+        (r#"[1]"#, "all be strings"),
+        (r#"["/:id(["]"#, "isn't a URLPattern"),
+    ] {
+        let (_site, bad) = script(&format!("export default {{ routes: {routes}, preview() {{}} }};"));
+        let message = check(bad.clone()).await.unwrap_err();
+        assert!(message.contains(error), "{routes}: {message}");
+        assert!(!bad.serves("/"), "{routes}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -259,7 +284,7 @@ export default {
   },
 };
 "##;
-    let (_site, script) = script(&[("preview.js", text)]);
+    let (_site, script) = script(text);
     let preview = previewed(run_page(&script, "https://x.example/a", vec![]).await.unwrap());
     assert_eq!(preview.title.as_deref(), Some("true true"));
 }
@@ -293,8 +318,7 @@ fn selects_the_newest_each_filter_asks_for() {
 }
 
 /// How long a run of a real site's script takes, a phase at a time: Ditto's,
-/// built beside this checkout, or the one in `NPANEL_BENCH_SCRIPT`'s
-/// directory. Each page runs `NPANEL_BENCH_RUNS` times (20) one after
+/// built beside this checkout, or the one `NPANEL_BENCH_SCRIPT` names. Each page runs `NPANEL_BENCH_RUNS` times (20) one after
 /// another, then as many at once as there are cores. Relays answer at once,
 /// so what's measured is npanel and the script. The fastest of each phase is
 /// shown, which other work on the machine slows least. The images go in the
@@ -306,20 +330,12 @@ fn selects_the_newest_each_filter_asks_for() {
 async fn bench_preview() {
     use crate::nostr::nip19;
 
-    let dir = std::env::var("NPANEL_BENCH_SCRIPT").unwrap_or_else(|_| "../ditto/dist/.npanel".into());
+    let file = std::env::var("NPANEL_BENCH_SCRIPT").unwrap_or_else(|_| "../ditto/dist/.well-known/npanel/preview.js".into());
     let runs: usize = std::env::var("NPANEL_BENCH_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(20);
-    let store = tempfile::tempdir().unwrap();
-    let blobs = BlobStore::allowing_private(store.path());
-    let mut files = Vec::new();
-    for entry in walkdir(std::path::Path::new(&dir)) {
-        let bytes = std::fs::read(&entry).unwrap();
-        let sha256 = BlobHash::of(&bytes);
-        blobs.put(sha256, &bytes).unwrap();
-        files.push((format!("{DIR}{}", entry.strip_prefix(&dir).unwrap().display()), sha256));
-    }
-    let loaded = load(&files, &blobs);
-    let ditto = Arc::new(loaded.script.unwrap_or_else(|| panic!("no preview.js in {dir}")));
-    let (_s, baseline) = script(&[("preview.js", "export default { preview: () => null };")]);
+    let source = std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file}: {e}"));
+    let (_s, ditto) = script(&source);
+    check(ditto.clone()).await.unwrap_or_else(|e| panic!("{file}: {e}"));
+    let (_s, baseline) = script("export default { preview: () => null };");
     let emoji = |font: &str| {
         format!(
             r##"export default {{ preview() {{
@@ -333,8 +349,8 @@ async fn bench_preview() {
 }} }};"##
         )
     };
-    let (_s, named) = script(&[("preview.js", &emoji(r#""Noto Color Emoji", serif"#))]);
-    let (_s, fallback) = script(&[("preview.js", &emoji("serif"))]);
+    let (_s, named) = script(&emoji(r#""Noto Color Emoji", serif"#));
+    let (_s, fallback) = script(&emoji("serif"));
 
     let c = |hex: &str, role: &str| vec!["c".to_string(), hex.to_string(), role.to_string()];
     let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex","about":"Building things on Nostr."}"#);
@@ -362,9 +378,10 @@ async fn bench_preview() {
 
     let fonts = Instant::now();
     let faces = canvas::fonts().len();
-    println!("\n{faces} font faces loaded in {:.1} ms; {} cores; {} KB of modules\n", ms(fonts.elapsed()), cores(), ditto.modules.values().map(|m| m.text.len()).sum::<usize>() / 1024);
+    println!("\n{faces} font faces loaded in {:.1} ms; {} cores; {} KB of script\n", ms(fonts.elapsed()), cores(), ditto.source.len() / 1024);
     println!("{:<30} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "fastest ms (median total)", "spawn", "setup", "prelude", "module", "handler", "image", "total", "heap KB");
     for (name, script, path) in &cases {
+        assert!(!Arc::ptr_eq(script, &ditto) || ditto.serves(&format!("/{path}")), "{name}: /{path} isn't in the script's routes");
         let mut samples: Vec<Sample> = Vec::new();
         for i in 0..runs {
             let sample = bench_run(script, &format!("https://ditto.example/{path}"), events.clone()).await;
@@ -436,19 +453,6 @@ async fn bench_run(script: &Arc<Script>, url: &str, events: Vec<Event>) -> Sampl
         _ => None,
     };
     Sample { ran: ran.timings, image, total: started.elapsed() }
-}
-
-fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            found.extend(walkdir(&path));
-        } else {
-            found.push(path);
-        }
-    }
-    found
 }
 
 fn ms(d: Duration) -> f64 {

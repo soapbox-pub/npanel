@@ -609,25 +609,18 @@ impl HostBuilder {
 impl HostBuilder {
     /// The site's own link-preview script, loaded and checked as a run would
     /// load it, and what's wrong with it said in its deploy log. A script that
-    /// fails leaves the site with npanel's previews, and nothing else: the
-    /// build goes on.
+    /// fails leaves the site without previews, and nothing else: the build
+    /// goes on.
     async fn check_script(&self, target: &BuildTarget, files: &IndexMap<String, BuildFile>) {
         let deps = &self.inner.deps;
-        let ours: Vec<(String, BlobHash)> = files.iter().filter(|(path, _)| path.starts_with(script::DIR)).map(|(path, file)| (path.clone(), file.sha256)).collect();
-        if ours.is_empty() {
-            return;
-        }
+        let Some(sha256) = files.get(script::PATH).map(|file| file.sha256) else { return };
         let blobs = deps.blobs.clone();
-        let Ok(loaded) = tokio::task::spawn_blocking(move || script::load(&ours, &blobs)).await else { return };
+        let Ok(loaded) = tokio::task::spawn_blocking(move || script::load(sha256, &blobs)).await else { return };
 
         let hostname = target.origin.hostname.as_str();
-        let mut entries: Vec<(&'static str, &'static str, crate::log::Fields)> = loaded
-            .problems
-            .iter()
-            .map(|problem| ("warn", "preview_script_problem", fields! { "hostname" => hostname, "path" => problem.path.as_str(), "err_msg" => problem.message.as_str() }))
-            .collect();
-        if let Some(found) = loaded.script {
-            match script::check(Arc::new(found)).await {
+        let mut entries: Vec<(&'static str, &'static str, crate::log::Fields)> = Vec::new();
+        match loaded.map(Arc::new) {
+            Ok(found) => match script::check(found).await {
                 Ok(()) => {
                     entries.push(("info", "preview_script_found", fields! { "hostname" => hostname }));
                     if !target.host.link_previews {
@@ -636,7 +629,8 @@ impl HostBuilder {
                     }
                 }
                 Err(error) => entries.push(("warn", "preview_script_failed", fields! { "hostname" => hostname, "err_msg" => error })),
-            }
+            },
+            Err(error) => entries.push(("warn", "preview_script_failed", fields! { "hostname" => hostname, "err_msg" => error })),
         }
 
         let event_id = target.event.event_id.clone();

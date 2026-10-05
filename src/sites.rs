@@ -177,9 +177,6 @@ pub struct ResolvedFile {
 /// `/.well-known/` gets none of that: only a file the site really has. What
 /// asks for those paths is software probing for a capability, and a page of
 /// HTML — under a `200`, worse — tells it the site has one.
-///
-/// `/.npanel/` is nothing at all: the script and modules there are for npanel
-/// to draw a site's link previews with, not for anyone to fetch.
 pub fn resolve_site_path(
     conn: &Connection,
     build_id: i64,
@@ -187,9 +184,6 @@ pub fn resolve_site_path(
     spa: bool,
 ) -> rusqlite::Result<Option<ResolvedFile>> {
     let normalized = normalize_site_path(request_path);
-    if normalized == "/.npanel" || normalized.starts_with(crate::link_previews::script::DIR) {
-        return Ok(None);
-    }
     let exact = normalized == "/.well-known" || normalized.starts_with("/.well-known/");
     let extension = extname(&normalized);
     let extensionless = !exact && extension.is_empty();
@@ -472,7 +466,7 @@ mod tests {
                     ("/app.js", &sha('5')),
                     ("/.well-known/apple-app-site-association", &sha('6')),
                     ("/.well-known/matrix.html", &sha('7')),
-                    ("/.npanel/0.jinja", &sha('8')),
+                    ("/.well-known/npanel/preview.js", &sha('8')),
                 ],
             );
 
@@ -496,11 +490,9 @@ mod tests {
             assert_eq!(at("/.well-known/webfinger", true), None);
             assert_eq!(at("/.well-known/matrix", false), None);
             assert_eq!(at("/.well-known/", true), None);
-
-            // npanel's directory: nothing, however it's spelled.
-            for path in ["/.npanel/0.jinja", "/.npanel/", "/.npanel", "/%2Enpanel/0.jinja", "/x/../.npanel/0.jinja", "/.npanel/missing"] {
-                assert_eq!(at(path, true), None, "{path}");
-            }
+            // A site's preview script is one of its files like any other.
+            let script = "/.well-known/npanel/preview.js";
+            assert_eq!(at(script, true), Some((script.into(), 200)));
             Ok(())
         })
         .unwrap();

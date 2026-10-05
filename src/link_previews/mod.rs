@@ -1,13 +1,13 @@
-//! Link previews, and something for search engines to read, on the pages of
-//! a site that names Nostr events in its paths — drawn by the site itself.
+//! Link previews, and something for search engines to read, on a site's
+//! pages — drawn by the site itself.
 //!
 //! A site with `link_previews` on that publishes a preview script
-//! (`script/`) has its `/<nip19>` and `/<name@domain>` pages — the way Nostr
-//! web clients route a profile, a note or an article — answered for crawlers
-//! with whatever the script makes of them: a title, a description, an image,
-//! and an article at the top of the body. Everyone else, and any page the
-//! script has nothing for, gets the page as published. npanel has no idea of
-//! its own what a page about a Nostr event should say.
+//! (`script/`) has the HTML pages its script's routes name — a Nostr client's
+//! `/<nip19>` and `/<name@domain>` pages, say — answered for crawlers with
+//! whatever the script makes of them: a title, a description, an image, and
+//! an article at the top of the body. Everyone else, and any page the script
+//! has nothing for, gets the page as published. npanel has no idea of its own
+//! what a page should say.
 //!
 //! Serving sites comes first. Scripts run on a runtime and a thread of their
 //! own, and serving only ever waits on one briefly: a run that can't start —
@@ -43,7 +43,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use self::page::NostrPage;
+use self::page::Hints;
 use self::images::Images;
 use self::preview::{absolute, Drawn, Preview};
 use self::relays::{Batcher, EventSource};
@@ -115,11 +115,11 @@ struct Worker {
     runs: Arc<Semaphore>,
 }
 
-/// A page about something on Nostr, on a site with a preview script.
+/// A page a site's preview script previews.
 pub struct ScriptPage {
     pub script: Arc<Script>,
     pub page: Page,
-    pub nostr: NostrPage,
+    pub hints: Hints,
 }
 
 impl ScriptPage {
@@ -625,7 +625,7 @@ async fn run_script(shared: &Shared, worker: &Worker, page: &ScriptPage) -> Resu
         runtime: worker.runtime.clone(),
         source: worker.source.clone(),
         http: worker.http.clone(),
-        relays: vet_relay_hints(&page.nostr.relays).await,
+        relays: vet_relay_hints(&page.hints.relays).await,
         log: shared.log,
         have_image: Arc::new(move |version| images.has(version) || images.is_drawing(version)),
         now: crate::util::now() * 1000,

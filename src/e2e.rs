@@ -591,10 +591,12 @@ async fn a_sites_script_draws_its_previews() {
     let page = r#"<!doctype html><html><head><title>Ditto — Social</title><meta property="og:title" content="Ditto"></head><body><div id="root"></div></body></html>"#;
     let author = crate::nostr::event::public_key(AUTHOR);
     let npub = crate::nostr::nip19::npub_encode(&author);
+    let routes = r#"["/:id(n(?:pub|ote)1[02-9ac-hj-np-z]+){/}?"]"#;
     let script = format!(
-        r##"import {{ background }} from "./theme.js";
+        r##"const background = (theme) => theme?.tags.find(([n, , role]) => n === "c" && role === "background")?.[1] ?? "#14161f";
 
 export default {{
+  routes: {routes},
   async preview(request, {{ nostr }}) {{
     if (new URL(request.url).pathname !== "/{npub}") return null;
     const [profile] = await nostr.query([{{ kinds: [0], authors: ["{author}"], limit: 1 }}]);
@@ -622,13 +624,7 @@ async function draw(theme) {{
 }}
 "##
     );
-    let theme = r##"export const background = (theme) => theme?.tags.find(([n, , role]) => n === "c" && role === "background")?.[1] ?? "#14161f";"##;
-    let files = [
-        ("/index.html", page.as_bytes().to_vec()),
-        ("/.npanel/preview.js", script.into_bytes()),
-        ("/.npanel/theme.js", theme.as_bytes().to_vec()),
-        ("/.npanel/readme.txt", b"Not a module".to_vec()),
-    ];
+    let files = [("/index.html", page.as_bytes().to_vec()), ("/.well-known/npanel/preview.js", script.clone().into_bytes())];
     let server = blossom(files.iter().map(|(_, bytes)| (sha(bytes), bytes.clone())).collect()).await;
     let tags = files.iter().map(|(path, bytes)| vec!["path".into(), path.to_string(), sha(bytes)]).collect();
     let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, tags, "");
@@ -640,23 +636,17 @@ async function draw(theme) {{
     assert_eq!(body["host"]["link_previews"], true);
     eventually("the site going live", async || gw.request("GET", "social.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
 
-    // The script is npanel's to run, and nobody's to fetch.
-    for path in ["/.npanel/preview.js", "/.npanel/", "/%2Enpanel/theme.js"] {
-        let (status, _, body) = gw.request("GET", "social.example.com", path, &[], None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
-        assert!(!String::from_utf8_lossy(&body).contains("nostr.query"), "{path}");
-    }
+    // The script is a file like any other, for anyone to read.
+    let (status, _, body) = gw.request("GET", "social.example.com", "/.well-known/npanel/preview.js", &[], None).await;
+    assert_eq!((status, body), (StatusCode::OK, script.into_bytes()));
 
-    // The deploy log says the script loads, and what was ignored.
+    // The deploy log says the script loads.
     let log_path = format!("/api/hosts/social.example.com/versions/{}/log", manifest.id);
     eventually("the script being checked", async || {
         let (_, log) = gw.api("GET", &log_path, None).await;
         log["entries"].as_array().is_some_and(|entries| entries.iter().any(|e| e["msg"] == "preview_script_found"))
     })
     .await;
-    let (_, log) = gw.api("GET", &log_path, None).await;
-    let ignored = log["entries"].as_array().unwrap().iter().find(|e| e["msg"] == "preview_script_problem").unwrap();
-    assert_eq!(ignored["fields"]["path"], "/.npanel/readme.txt");
 
     let theme = Event::sign(
         AUTHOR,
@@ -714,10 +704,12 @@ async function draw(theme) {{
     let (status, headers, _) = gw.request("GET", "social.example.com", &format!("/_npanel/preview/{npub}"), &[bot], None).await;
     assert_eq!((status, headers["cache-control"].to_str().unwrap()), (StatusCode::OK, "public, max-age=300"));
 
-    // A path that names nothing on Nostr is the page as published, for anyone.
+    // A page the script's routes don't name is the page as published, for
+    // anyone, and has no image.
     let (_, headers, body) = gw.request("GET", "social.example.com", "/about", &[bot], None).await;
     assert_eq!(body, page.as_bytes());
     assert!(!varies(&headers));
+    assert_eq!(gw.request("GET", "social.example.com", "/_npanel/preview/about", &[], None).await.0, StatusCode::NOT_FOUND);
 
     // So is a page the script has nothing for, and it has no image.
     let note = format!("/{}", crate::nostr::nip19::note_encode(&"c".repeat(64)));
@@ -746,7 +738,7 @@ async function draw(theme) {{
     assert_eq!((status, refreshed["preview"].is_null()), (StatusCode::OK, true), "{refreshed}");
     for (url, error) in [
         ("nonsense", "Paste the URL"),
-        ("https://social.example.com/about", "npub"),
+        ("https://social.example.com/about", "routes"),
         (&format!("https://elsewhere.example.com{path}"), "No site"),
     ] {
         let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(refresh(url))).await;
@@ -807,6 +799,7 @@ async fn a_site_without_a_script_has_no_previews() {
     let (status, headers, body) = gw.request("GET", "docs.example.com", &format!("/{npub}"), &[bot], None).await;
     assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
     assert!(!headers.get_all("vary").iter().any(|v| v == "user-agent"));
+    eventually("link previews starting", async || gw.api("GET", "/api/link-previews", None).await.0 == StatusCode::OK).await;
     let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
     assert_eq!(previews["stats"]["lookups"], 0, "{previews}");
     let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "url": format!("https://docs.example.com/{npub}") }))).await;

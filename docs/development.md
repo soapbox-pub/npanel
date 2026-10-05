@@ -158,11 +158,11 @@ instead of the script, and the dashboard's tests need Vitest's DOM environment.
 ### Timing a preview script
 
 `bench_preview` times runs of a real site's preview script, a phase at a time:
-the thread, the QuickJS runtime, the prelude, the site's modules, the handler,
-and the heap it ends with. It runs Ditto's from a checkout beside this one
-(`../ditto/dist/.npanel`, after a `npm run build` there), or the directory in
-`NPANEL_BENCH_SCRIPT`, against relays that answer at once, then as many at
-once as there are cores. It's ignored by `cargo test`, and means something only
+the thread, the QuickJS runtime, the prelude, the script, the handler, and the
+heap it ends with. It runs Ditto's from a checkout beside this one
+(`../ditto/dist/.well-known/npanel/preview.js`, after a `npm run build`
+there), or the file `NPANEL_BENCH_SCRIPT` names, against relays that answer at
+once, then as many at once as there are cores. It's ignored by `cargo test`, and means something only
 in a release build:
 
 ```sh

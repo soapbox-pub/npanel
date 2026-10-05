@@ -32,9 +32,9 @@ use crate::dns::DnsTargets;
 use crate::fields;
 use crate::hostname::{is_onion_address, normalize_hostname, parse_hostname};
 use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse_relay_url};
-use crate::link_previews::page::NostrPage;
+use crate::link_previews::page::Hints;
 use crate::link_previews::preview::Preview;
-use crate::link_previews::script::{Page, Scripts};
+use crate::link_previews::script::{self, Page, Scripts};
 use crate::link_previews::{LinkPreviews, PreviewError, ScriptPage};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
@@ -1604,14 +1604,13 @@ async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Exte
         url: String,
     }
     let Refresh { url } = body.json("Expected a JSON body with a url.")?;
-    let example = "Paste the URL of a page on one of this gateway's sites, like https://example.com/npub1….";
+    let example = "Paste the URL of a page on one of this gateway's sites, like https://example.com/about.";
     let parsed = url::Url::parse(url.trim()).map_err(|_| bad(example))?;
     let hostname = match (parsed.scheme(), parsed.host_str()) {
         ("https" | "http", Some(host)) => normalize_hostname(host),
         _ => return Err(bad(example)),
     };
-    let nostr = NostrPage::from_path(parsed.path())
-        .ok_or_else(|| bad("Only a page whose path is an npub, a note, an nevent, an naddr or a NIP-05 name has a link preview."))?;
+    let hints = Hints::of(parsed.path()).ok_or_else(|| bad("A page whose path holds a secret key has no link preview, and its URL shouldn't be shared."))?;
 
     let name = hostname.clone();
     let found = deps
@@ -1629,12 +1628,15 @@ async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Exte
     }
     let Some(build) = build else { return Err(bad(format!("{hostname} hasn't finished deploying yet."))) };
     let Some(script) = deps.scripts.for_build(build.id).await? else {
-        return Err(bad(format!("{hostname} publishes no /.npanel/preview.js, so its pages have no link previews.")));
+        return Err(bad(format!("{hostname} publishes no {}, or one that doesn't load, so its pages have no link previews. Its deploy log says which.", script::PATH)));
     };
+    if !script.serves(parsed.path()) {
+        return Err(bad(format!("{} isn't one of the pages {hostname}'s preview script lists in its routes.", parsed.path())));
+    }
 
     let page_url = crate::serve::page_url(&format!("{}://{hostname}", parsed.scheme()), parsed.path());
     let page = Page { url: page_url.clone(), method: "GET".into(), headers: Vec::new() };
-    let preview = deps.link_previews.refresh(Arc::new(ScriptPage { script, page, nostr })).await?;
+    let preview = deps.link_previews.refresh(Arc::new(ScriptPage { script, page, hints })).await?;
 
     let (actor, target) = (user.pubkey.clone(), page_url.clone());
     let after = json!({ "found": preview.is_some() });

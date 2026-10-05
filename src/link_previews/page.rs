@@ -1,55 +1,39 @@
-//! Which pages are about something on Nostr: those whose path is one segment
-//! naming a profile, an event or an address — the way Nostr web clients
-//! route them — or a NIP-05 name. Only those run a site's preview script.
+//! What npanel reads from a page's path itself, whatever the site's script
+//! makes of it: the relays its NIP-19 segments say to look on, and whether it
+//! holds a secret key, which no script is run for.
 
-use crate::hostname::{is_hostname, normalize_hostname};
-use crate::identifiers::parse_nip05_name;
 use crate::nostr::nip19::{self, Decoded};
 
 /// The longest path segment worth decoding. An nevent with a few relay hints
 /// is a few hundred characters; NIP-19 itself allows 5000.
 const MAX_SEGMENT: usize = 2000;
 
-/// A page about something on Nostr.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NostrPage {
-    /// The relays its NIP-19 form says to look on.
+/// What a page's path says, for its script's run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Hints {
+    /// The relays its NIP-19 segments say to look on.
     pub relays: Vec<String>,
 }
 
-impl NostrPage {
-    /// The page a path names: `/<nip19>` or `/<name@domain>`, either with an
-    /// `@` in front, and nothing after but a trailing slash. Anything else
-    /// names nothing, so the page is served as published. An nsec names
-    /// nothing either: it isn't anything to preview, and decoding one would
-    /// put a key in a cache.
-    pub fn from_path(path: &str) -> Option<NostrPage> {
-        let segment = path.strip_prefix('/')?;
-        let segment = segment.strip_suffix('/').unwrap_or(segment);
-        if segment.is_empty() || segment.len() > MAX_SEGMENT * 3 || segment.contains('/') {
-            return None;
+impl Hints {
+    /// What `path` says, or `None` for a path with an nsec in it: that isn't
+    /// anything to preview, and running a script for it would put a key in a
+    /// cache.
+    pub fn of(path: &str) -> Option<Hints> {
+        let mut relays = Vec::new();
+        for segment in path.split('/').filter(|s| !s.is_empty()) {
+            let Some(segment) = crate::util::decode_uri_component(segment) else { continue };
+            let segment = segment.strip_prefix('@').unwrap_or(&segment);
+            if segment.len() > MAX_SEGMENT || !segment.get(..segment.find('1').unwrap_or(0)).is_some_and(|prefix| prefix.starts_with('n')) {
+                continue;
+            }
+            match nip19::decode(segment) {
+                Ok(Decoded::Nsec(_)) => return None,
+                Ok(Decoded::Nprofile { relays: found, .. } | Decoded::Nevent { relays: found, .. } | Decoded::Naddr { relays: found, .. }) => relays.extend(found),
+                _ => {}
+            }
         }
-        let segment = crate::util::decode_uri_component(segment)?;
-        let segment = segment.strip_prefix('@').unwrap_or(&segment);
-        if segment.len() > MAX_SEGMENT {
-            return None;
-        }
-
-        if let Some((name, domain)) = segment.rsplit_once('@') {
-            parse_nip05_name(name).ok()?;
-            return is_hostname(&normalize_hostname(domain)).then_some(NostrPage { relays: Vec::new() });
-        }
-
-        let prefix = segment.get(..segment.find('1').unwrap_or(0)).unwrap_or("").to_ascii_lowercase();
-        if !matches!(prefix.as_str(), "npub" | "nprofile" | "note" | "nevent" | "naddr") {
-            return None;
-        }
-        let relays = match nip19::decode(segment).ok()? {
-            Decoded::Nprofile { relays, .. } | Decoded::Nevent { relays, .. } | Decoded::Naddr { relays, .. } => relays,
-            Decoded::Npub(_) | Decoded::Note(_) => Vec::new(),
-            Decoded::Nsec(_) => return None,
-        };
-        Some(NostrPage { relays })
+        Some(Hints { relays })
     }
 }
 
@@ -61,24 +45,20 @@ mod tests {
 
     #[test]
     fn reads_paths() {
-        let npub = nip19::npub_encode(PUBKEY);
-        let none = Some(NostrPage { relays: vec![] });
-        assert_eq!(NostrPage::from_path(&format!("/{npub}")), none);
-        assert_eq!(NostrPage::from_path(&format!("/@{npub}/")), none);
-        assert_eq!(NostrPage::from_path(&format!("/%40{npub}")), none);
-        assert_eq!(NostrPage::from_path(&format!("/{npub}/replies")), None);
-        assert_eq!(NostrPage::from_path("/"), None);
-        assert_eq!(NostrPage::from_path("/about"), None);
-        assert_eq!(NostrPage::from_path(&format!("/{}", nip19::nsec_encode(PUBKEY))), None);
+        let none = Some(Hints::default());
+        assert_eq!(Hints::of(&format!("/{}", nip19::npub_encode(PUBKEY))), none);
+        assert_eq!(Hints::of("/"), none);
+        assert_eq!(Hints::of("/about/%ZZ"), none);
+        assert_eq!(Hints::of("/@alex@example.com"), none);
 
         let id = "b".repeat(64);
-        let nevent = nip19::nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY), Some(31337));
-        assert_eq!(NostrPage::from_path(&format!("/{nevent}")), Some(NostrPage { relays: vec!["wss://r.example.com".into()] }));
-        assert_eq!(NostrPage::from_path(&format!("/{}", nip19::note_encode(&id))), none);
-        assert_eq!(NostrPage::from_path(&format!("/{}", nip19::naddr_encode(PUBKEY, 30023, "my-post", &[]))), none);
+        let relay = vec!["wss://r.example.com".to_string()];
+        let nevent = nip19::nevent_encode(&id, &relay, Some(PUBKEY), Some(31337));
+        assert_eq!(Hints::of(&format!("/{nevent}")), Some(Hints { relays: relay.clone() }));
+        assert_eq!(Hints::of(&format!("/e/%40{nevent}/")), Some(Hints { relays: relay }));
 
-        assert_eq!(NostrPage::from_path("/@Alex@Example.com"), none);
-        assert_eq!(NostrPage::from_path("/alex@localhost"), None);
-        assert_eq!(NostrPage::from_path("/al ex@example.com"), None);
+        // A secret key anywhere in the path is never previewed.
+        assert_eq!(Hints::of(&format!("/{}", nip19::nsec_encode(PUBKEY))), None);
+        assert_eq!(Hints::of(&format!("/login/{}", nip19::nsec_encode(PUBKEY))), None);
     }
 }

@@ -24,7 +24,7 @@ its own, it keeps local storage in sync with Nostr.
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
-   a crawler on /<nip19> ──► previews thread ──► the site's script ──► relays
+   a crawler on a page ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
    with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
@@ -914,15 +914,15 @@ pages answered for crawlers with whatever its script makes of them
 (`src/link_previews/`). npanel has no idea of its own what a page about a Nostr
 event should say: the site does, and a site without a script gets nothing.
 
-**What qualifies.** A `GET` for a path of one segment that is a NIP-19 entity —
-npub, nprofile, note, nevent, naddr — or a NIP-05 name, with or without an `@`
-in front, where the site's answer is an HTML page under a `200`, from a
-User-Agent matching `link_preview_crawler_pattern`, on a site with
+**What qualifies.** A `GET` for a page the script's `routes` name — every page,
+if it names none — where the site's answer is an HTML page under a `200`, from
+a User-Agent matching `link_preview_crawler_pattern`, on a site with
 `link_previews` on and a script. With the `spa` flag that is the shell; without
-it, a site that publishes a page at that path. Everything else is served
-exactly as it would be, and every response on such a path carries
-`Vary: User-Agent` — with whatever request headers the script reads — so a
-shared cache doesn't hand one audience's page to the other.
+it, a site that publishes a page at that path. A path with an `nsec` in any
+segment never qualifies: running a script for it would put a key in a cache.
+Everything else is served exactly as it would be, and every response on such a
+page carries `Vary: User-Agent` — with whatever request headers the script
+reads — so a shared cache doesn't hand one audience's page to the other.
 
 **What a crawler gets.** The site's own page, with what its head says about the
 page — its title, description, Open Graph and Twitter tags, canonical link —
@@ -939,18 +939,20 @@ app renders into, so a crawler that runs scripts sees both.
 
 ### The script
 
-A site publishes `/.npanel/preview.js`, and the modules that imports by
-relative path, in `/.npanel/` (`src/link_previews/script/`). Nothing else
-belongs there, and npanel never serves anything under `/.npanel/` — a request
-for it is a `404`. A
-deploy loads the script as a run would and says in the version's deploy log
-that it found it, or why it doesn't load, and what in the directory it ignored;
-a script that fails leaves the site without previews, and the build goes on.
-nsyte skips dotfiles unless told otherwise, so a site published with it needs
-`!dist/.npanel/**` (for its own output directory) in `.nsyte-ignore`.
+A site publishes one self-contained module at
+`/.well-known/npanel/preview.js` (`src/link_previews/script/`), served like any
+other file there: it's public on Blossom anyway. It imports nothing — a static
+`import` or `import()` alike fails — so what it uses is bundled into it, and
+npanel knows nothing of any other file. A deploy loads the script as a run
+would and says in the version's deploy log that it found it, or why it doesn't
+load; a script that fails leaves the site without previews, and the build goes
+on. Serving loads it the same way, once per build per process, to read its
+routes; its top level has two seconds.
 
 ```js
 export default {
+  // URLPattern pathnames; a group may carry its own regular expression.
+  routes: ["/:id(n(?:pub|profile|ote|event|addr)1[02-9ac-hj-np-z]+){/}?"],
   async preview(request, { nostr, signal }) {
     const pubkey = pubkeyOf(new URL(request.url).pathname);
     const [profile] = await nostr.query([{ kinds: [0], authors: [pubkey], limit: 1 }], { signal });
@@ -960,13 +962,27 @@ export default {
 };
 ```
 
-**What it's given.** The crawler's request — its method, its headers, and the
-page's URL without the query a crawler adds — and an object shaped like
-Nostrify's `NRelay`: `query(filters)`, `req(filters)` (the stored events, then
-`EOSE`), and an `event()` that refuses, since a preview publishes nothing. It
-runs for every qualifying page, whatever it names: the script decodes the path
-itself, NIP-05 names included. Credentials and what the proxy says about the
-visitor (`Cookie`, `Authorization`, `X-Forwarded-*`, …) aren't passed on.
+**Which pages it previews.** `routes`, when there is one, is a list of up to
+32 [URLPattern](https://urlpattern.spec.whatwg.org/) pathnames. A named group
+may carry a regular expression, as `:id(n…)` above, so a route can name what
+it is about and not every path of its shape. The expressions are Rust's
+`regex`, which matches in linear time, held to the crawler pattern's size
+limit; they're the same as JavaScript's for anything a path needs, but have no
+lookaround or backreferences. They're matched against the path as the crawler
+sent it, percent-encoding and all. Routes that don't compile fail the deploy check, and
+the site has no previews: a mistake there doesn't become every page.
+
+**What it's given.** The crawler's request, a `GET` without a body, as a
+browser's is — its method, its headers, the page's URL without the query a
+crawler adds (one page, one cached preview), and as its `signal` the run's
+deadline — and an object shaped like Nostrify's `NRelay`: `query(filters)`,
+`req(filters)` (the stored events, then `EOSE`), and an `event()` that
+refuses, since a preview publishes nothing. The script decodes the path
+itself, NIP-05 names included; npanel reads only the relay hints in its NIP-19
+segments, to ask besides the configured relays. Credentials and what the proxy
+says about the visitor (`Cookie`, `Authorization`, `X-Forwarded-*`, …) aren't
+passed on. Copying the request — `clone()`, `new Request(request)` — doesn't
+count as reading its headers.
 
 **What it returns.** Any of:
 
@@ -1012,15 +1028,16 @@ at when the run started, and `Math.random` is seeded by the URL, so one input
 gives one image.
 
 **Text is drawn in the gateway's fonts**, the ones installed on its system,
-read once when the previews runtime starts. A site ships none: a font in
-`/.npanel/` is ignored, and its deploy log says so. `serif`, `sans-serif` and
-`monospace` are what fontconfig says they are, or else DejaVu, Noto or
-Liberation, whichever is installed. A character the font asked for lacks — an
-emoji, usually — is drawn in one that has it, as a browser does. The Docker
-image installs DejaVu and Noto Color Emoji, and the deployment guide has a
-systemd install do the same. Fonts installed later are read on the next
-restart, and since an image's version doesn't name the fonts, images already
-drawn stay as they were until they expire or the cache is cleared.
+read once when the previews runtime starts; a site ships none. `serif`,
+`sans-serif` and `monospace` are what fontconfig says they are, or else DejaVu,
+Noto or Liberation, whichever is installed. A character the font asked for
+lacks — an emoji, usually — is drawn in one that has it, as a browser does. A
+script names a font by its family, and can't reach a file. The Docker image
+installs DejaVu and Noto Color Emoji, and the deployment guide has a systemd
+install do the same, and says how to add others. Fonts installed later are
+read on the next restart, and since an image's version doesn't name the fonts,
+images already drawn stay as they were until they expire or the cache is
+cleared.
 
 ### Limits
 
@@ -1041,14 +1058,13 @@ relay sends. It may fetch sixteen `https://` URLs, through the
 public-addresses-only resolver blob downloads use, following redirects only to
 `https://`, 8 MB each and 32 MB in all; it reads no file. Its canvases and
 decoded images may hold 16 million pixels between them, none over 2400 pixels a
-side for a canvas or 4096 for a picture. A module may be 4 MB and all of them
-8 MB.
+side for a canvas or 4096 for a picture. The script may be 4 MB.
 
 **A run starts in a few milliseconds.** A fresh runtime costs well under one;
-what costs is the code. The prelude and a script's modules are compiled once —
-the prelude by the process's first run, a build's modules by its own — and
-later runs load their QuickJS bytecode, which takes a tenth of the time
-parsing does. What a module does at its top level still runs every time, so a
+what costs is the code. The prelude and a script are compiled once — the
+prelude by the process's first run, a build's script when it's first loaded —
+and later runs load their QuickJS bytecode, which takes a tenth of the time
+parsing does. What a script does at its top level still runs every time, so a
 script should bundle only what it uses: Ditto's bundle once spent a tenth of a
 second building AES tables for ciphers its previews never call.
 `convertToBlob` encodes after the handler has had the chance to return, so a

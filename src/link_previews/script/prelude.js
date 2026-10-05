@@ -383,8 +383,11 @@ export default function (native, seed, now) {
   define("Headers", Headers);
 
   // The handler's request headers: whichever it reads, the preview is cached
-  // by. Reading them all is reading every one.
+  // by. Reading them all is reading every one. A request copied from it —
+  // `clone()`, `new Request(request)` — copies them without reading them,
+  // and what the copy reads counts the same.
   const sealed = new WeakSet();
+  const COPY = Symbol("copy");
   class ReadHeaders extends Headers {
     #read;
     constructor(init, read) {
@@ -413,6 +416,9 @@ export default function (native, seed, now) {
     }
     delete() {
       unsupported("Changing the request's headers");
+    }
+    [COPY]() {
+      return new ReadHeaders([...super.entries()], this.#read);
     }
   }
 
@@ -459,13 +465,40 @@ export default function (native, seed, now) {
   }
   define("Response", Response);
 
+  // A request as a preview has them: a GET, so without a body, as a
+  // browser's GET is.
   class Request {
     constructor(input, init = {}) {
       const from = input instanceof Request ? input : null;
       this.url = from ? from.url : new URL(String(input)).href;
       this.method = String(init.method ?? from?.method ?? "GET").toUpperCase();
-      this.headers = init.headers instanceof Headers ? init.headers : new Headers(init.headers ?? from?.headers);
+      if (init.body != null && (this.method === "GET" || this.method === "HEAD")) throw new TypeError("A GET or HEAD request can't have a body.");
+      if (init.body != null) unsupported("A request body");
+      if (init.headers instanceof Headers) this.headers = init.headers;
+      else if (init.headers === undefined && sealed.has(from?.headers)) this.headers = from.headers[COPY]();
+      else this.headers = new Headers(init.headers ?? from?.headers);
       this.signal = init.signal ?? from?.signal ?? new AbortController().signal;
+    }
+    get body() {
+      return null;
+    }
+    get bodyUsed() {
+      return false;
+    }
+    async bytes() {
+      return new Uint8Array(0);
+    }
+    async arrayBuffer() {
+      return new ArrayBuffer(0);
+    }
+    async text() {
+      return "";
+    }
+    async json() {
+      return JSON.parse("");
+    }
+    async blob() {
+      return new Blob([]);
     }
     clone() {
       return new Request(this);
@@ -1222,11 +1255,14 @@ export default function (native, seed, now) {
   return Object.freeze({
     async call(handler, url, method, headers, deadline) {
       if (!handler || typeof handler.preview !== "function") {
-        throw new TypeError("/.npanel/preview.js must export default { preview(request, ctx) }.");
+        throw new TypeError("/.well-known/npanel/preview.js must export default { routes, preview(request, ctx) }.");
       }
       const read = new Set();
-      const request = new Request(url, { method, headers: new ReadHeaders(headers, read) });
-      const result = await handler.preview(request, Object.freeze({ nostr, signal: AbortSignal.timeout(deadline) }));
+      // The request's signal is the run's deadline, as a server's is the
+      // client going away.
+      const signal = AbortSignal.timeout(deadline);
+      const request = new Request(url, { method, headers: new ReadHeaders(headers, read), signal });
+      const result = await handler.preview(request, Object.freeze({ nostr, signal }));
       if (result == null) return { none: true, headers: [...read] };
       if (typeof result !== "object") throw new TypeError("preview() must return an object, or null to leave the page as published.");
       const image = result.image;

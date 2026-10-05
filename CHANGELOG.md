@@ -6,25 +6,27 @@ it is tagged.
 
 ## [Unreleased]
 
-- Link previews for Nostr pages, drawn by the site. A site that shows Nostr
-  content at the paths Nostr web clients use — `/npub1…`, `/nevent1…`,
-  `/naddr1…`, `/name@domain` — publishes a script at `/.npanel/preview.js` and
-  turns on **Link previews for Nostr pages**. Crawlers then get whatever the
-  script makes of the page: its title, description and image as Open Graph,
-  Twitter and schema.org tags, and an article a search engine can index.
-  Everyone else gets the page as published. This replaces routing crawlers to
-  a separate server from the proxy.
+- Link previews drawn by the site. A site whose pages a crawler can't read by
+  itself — a Nostr client showing `/npub1…` or `/nevent1…` from relays in the
+  browser, say — publishes one self-contained script at
+  `/.well-known/npanel/preview.js` and turns on **Link previews from the site's
+  script**. The script lists the pages it previews as URLPattern `routes`, or
+  previews every page. Crawlers then get whatever it makes of a page: its
+  title, description and image as Open Graph, Twitter and schema.org tags, and
+  an article a search engine can index. Everyone else gets the page as
+  published. This replaces routing crawlers to a separate server from the
+  proxy.
 - The script is handed the crawler's request and a read-only Nostr relay,
   shaped like Nostrify's, and can draw its image on an `OffscreenCanvas`, which
   npanel serves at `/_npanel/preview/…`. The page never waits for its image.
   Each run is sandboxed, metered and given a deadline, and runs on a thread of
   its own: a preview that can't be had within a couple of seconds sends the
   page as published, never an error. A deploy's log says whether the script
-  loads, and nothing under `/.npanel/` is ever served. See "Link previews" in
-  `docs/architecture.md`.
+  loads. See "Link previews" in `docs/architecture.md`.
 - Previews draw text in the fonts installed on the system, emoji included. The
   Docker image comes with DejaVu and Noto Color Emoji; a systemd install
   should `apt install fonts-dejavu-core fonts-noto-color-emoji`.
+  `docs/deployment.md` says how to add others.
 - Previews and their images are cached in `DATA_DIR/previews.sqlite3` and
   `DATA_DIR/preview-images/`, scripts' queries are batched into one
   subscription per relay, and runs are capped per minute.

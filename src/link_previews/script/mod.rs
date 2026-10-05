@@ -1,19 +1,21 @@
 //! Link previews a site draws for itself, with a script.
 //!
-//! A site publishes `/.npanel/preview.js`, which exports
-//! `default { preview(request, ctx) }`: given the crawler's request and a
-//! read-only Nostr relay, it returns the page's title, description and
-//! article, and its image — a URL, or bytes it drew on an `OffscreenCanvas`,
-//! or a promise of them — or `null`, which leaves the page as published. Modules it
-//! imports sit beside it in `/.npanel/`; it draws text in the fonts installed
-//! on the system.
+//! A site publishes one self-contained module at
+//! `/.well-known/npanel/preview.js`, served like any other file, which exports
+//! `default { routes, preview(request, ctx) }`. `routes`, URLPattern
+//! pathnames, says which pages it previews: every HTML page, without it.
+//! Given the crawler's request and a read-only Nostr relay, `preview` returns
+//! the page's title, description and article, and its image — a URL, or bytes
+//! it drew on an `OffscreenCanvas`, or a promise of them — or `null`, which
+//! leaves the page as published. It draws text in the fonts installed on the
+//! system, and imports nothing: what it needs is bundled into it.
 //!
 //! Each run gets a QuickJS runtime of its own, on a thread of its own, with a
 //! memory limit, a deadline, and the web a preview needs (`prelude.js`) and
 //! nothing else: no file, and no network but `nostr` and an `https://`-only
 //! `fetch` through the public-addresses-only resolver, both metered. The
-//! prelude and the site's modules are parsed once, and their bytecode loaded
-//! after, since parsing a bundle costs more than all the rest of a run.
+//! prelude and the script are parsed once, and their bytecode loaded after,
+//! since parsing a bundle costs more than all the rest of a run.
 //!
 //! The image is the slow part, so a run hands back the page's fields as soon
 //! as the handler returns them, and goes on drawing behind them. What names
@@ -25,7 +27,7 @@
 pub mod canvas;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +41,7 @@ use rquickjs::loader::{ImportAttributes, Loader, Resolver};
 use rquickjs::module::{Declared, WriteOptions};
 use rquickjs::prelude::Promised;
 use rquickjs::{AsyncContext, AsyncRuntime, Ctx, Exception, Function, Module, Object, Promise, TypedArray, Value};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, OwnedSemaphorePermit};
 
@@ -55,15 +57,17 @@ use crate::nostr::pool::Filter;
 use crate::nostr::service::dedupe;
 use crate::nostr::{is_hex64, Event};
 
-/// Where a site keeps its script and the modules it imports.
-pub const DIR: &str = "/.npanel/";
-/// The module npanel runs, under [`DIR`].
-pub const ENTRY: &str = "preview.js";
+/// Where a site publishes its script.
+pub const PATH: &str = "/.well-known/npanel/preview.js";
 
 const PRELUDE: &str = include_str!("prelude.js");
 
 const MAX_SCRIPT_BYTES: u64 = 4 << 20;
-const MAX_SCRIPTS_BYTES: u64 = 8 << 20;
+/// How long a script's top level has to run when it's loaded to read its
+/// routes: a page waits on it, the first time its build is served.
+const LOAD_DEADLINE: Duration = Duration::from_secs(2);
+/// Routes a script may declare.
+const MAX_ROUTES: usize = 32;
 
 /// What one run's JavaScript may hold, and how deep it may call.
 const MEMORY: usize = 64 << 20;
@@ -90,98 +94,109 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOG_LINES: usize = 50;
 const MAX_LOG_LINE: usize = 1024;
 
-/// A build's script: its modules, by their path under [`DIR`].
+/// A build's script.
 pub struct Script {
-    /// Names what the script is: every module. Two builds with the same
-    /// script share previews.
+    /// Names what the script is. Two builds with the same script share
+    /// previews.
     pub digest: String,
-    modules: HashMap<String, Source>,
-}
-
-/// One of a script's modules.
-struct Source {
-    text: String,
-    /// The module compiled, by the first run that loads it, for the rest to
+    source: String,
+    /// The script compiled, by the first run that loads it, for the rest to
     /// load instead of parsing it again: a bundle takes a tenth of the time.
     bytecode: OnceLock<Vec<u8>>,
+    /// The pages it previews, once a load has read them: `None` for every
+    /// page.
+    routes: OnceLock<Option<Routes>>,
 }
 
-/// Something wrong with a site's `/.npanel/`, for its deploy log.
-#[derive(Debug, PartialEq, Eq)]
-pub struct Problem {
-    pub path: String,
-    pub message: String,
-}
-
-/// What a build's `/.npanel/` comes to, and what was wrong with it.
-pub struct Loaded {
-    pub script: Option<Script>,
-    pub problems: Vec<Problem>,
-}
-
-/// Read a build's files under [`DIR`]. A build with no `preview.js` has no
-/// script, whatever else it has there. Blocking.
-pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
-    let mut problems = Vec::new();
-    let mut problem = |path: &str, message: &str| problems.push(Problem { path: path.to_string(), message: message.to_string() });
-    let mut modules = HashMap::new();
-    let mut total = 0;
-    let mut digest = Sha256::new();
-
-    for (path, sha256) in files {
-        let Some(name) = path.strip_prefix(DIR) else { continue };
-        let lower = name.to_ascii_lowercase();
-        let size = blobs.size(*sha256);
-        if lower.ends_with(".js") || lower.ends_with(".mjs") {
-            let Some(size) = size.filter(|size| *size <= MAX_SCRIPT_BYTES) else {
-                problem(path, "This module is larger than 4 MB, or missing, so it isn't loaded.");
-                continue;
-            };
-            total += size;
-            if total > MAX_SCRIPTS_BYTES {
-                problem(path, "A site's modules may come to 8 MB at most, so this one isn't loaded.");
-                continue;
-            }
-            match String::from_utf8(blobs.read_bytes(*sha256, MAX_SCRIPT_BYTES)) {
-                Ok(source) => {
-                    modules.insert(name.to_string(), Source { text: source, bytecode: OnceLock::new() });
-                    digest.update(format!("{name}\0{sha256}\0").as_bytes());
-                }
-                Err(_) => problem(path, "This module isn't UTF-8 text, so it isn't loaded."),
-            }
-        } else if lower.ends_with(".ttf") || lower.ends_with(".otf") {
-            problem(path, "Previews draw text in the fonts installed on the gateway, not a site's own, so this font is ignored. Ask the gateway's admin for any it lacks.");
-        } else {
-            problem(path, "Only JavaScript modules belong in /.npanel/, so this file is ignored.");
+impl Script {
+    /// Whether the script previews the page at `path`, as far as its routes
+    /// are known.
+    pub fn serves(&self, path: &str) -> bool {
+        match self.routes.get() {
+            Some(Some(routes)) => routes.matches(path),
+            Some(None) => true,
+            None => false,
         }
     }
+}
 
-    if !modules.contains_key(ENTRY) {
-        if !modules.is_empty() {
-            problem(&format!("{DIR}{ENTRY}"), "There are modules in /.npanel/ but no preview.js, so none of them run.");
-        }
-        return Loaded { script: None, problems };
+/// Read a build's script. Blocking.
+pub fn load(sha256: BlobHash, blobs: &BlobStore) -> Result<Script, String> {
+    let size = blobs.size(sha256).ok_or("The preview script is missing from local storage.")?;
+    if size > MAX_SCRIPT_BYTES {
+        return Err("The preview script is larger than 4 MB, so it isn't loaded.".into());
     }
-    let script = Script { digest: hex::encode(&digest.finalize()[..16]), modules };
-    Loaded { script: Some(script), problems }
+    let source = String::from_utf8(blobs.read_bytes(sha256, MAX_SCRIPT_BYTES)).map_err(|_| "The preview script isn't UTF-8 text, so it isn't loaded.")?;
+    Ok(Script { digest: sha256.to_string()[..32].to_string(), source, bytecode: OnceLock::new(), routes: OnceLock::new() })
 }
 
-/// The files under [`DIR`] in a build.
-pub fn build_files(conn: &Connection, build_id: i64) -> rusqlite::Result<Vec<(String, BlobHash)>> {
-    // Every path under the directory sorts between it and the next string
-    // after its `/`, so this is a range of the primary key.
-    conn.prepare_cached("SELECT path, sha256 FROM host_build_files WHERE build_id = ? AND path >= ? AND path < ? ORDER BY path")?
-        .query_map(rusqlite::params![build_id, DIR, "/.npanel0"], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect()
+/// The script in a build, if it has one.
+pub fn build_script(conn: &Connection, build_id: i64) -> rusqlite::Result<Option<BlobHash>> {
+    conn.prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = ?")?
+        .query_row(rusqlite::params![build_id, PATH], |row| row.get(0))
+        .optional()
 }
 
-/// Builds' scripts, read once each. A build's files never change, so neither
-/// does its script.
+/// The pages a script previews: URLPattern pathnames.
+pub struct Routes(Vec<urlpattern::UrlPattern<Bounded>>);
+
+impl Routes {
+    /// A script's `routes`, compiled, or what's wrong with them.
+    pub fn compile(patterns: &[String]) -> Result<Routes, String> {
+        if patterns.len() > MAX_ROUTES {
+            return Err(format!("A preview script may declare {MAX_ROUTES} routes at most."));
+        }
+        patterns
+            .iter()
+            .map(|pattern| {
+                let init = urlpattern::UrlPatternInit { pathname: Some(pattern.clone()), ..Default::default() };
+                urlpattern::UrlPattern::parse(init, Default::default()).map_err(|e| format!("The route {pattern} isn't a URLPattern pathname npanel can use: {e}."))
+            })
+            .collect::<Result<_, _>>()
+            .map(Routes)
+    }
+
+    pub fn matches(&self, path: &str) -> bool {
+        let input = || urlpattern::UrlPatternMatchInput::Init(urlpattern::UrlPatternInit { pathname: Some(path.to_string()), ..Default::default() });
+        self.0.iter().any(|pattern| pattern.test(input()).unwrap_or(false))
+    }
+}
+
+/// A route's regular expressions, bounded in size like the crawler pattern,
+/// so a site's routes can't cost much to match. Rust's `regex` matches in
+/// linear time.
+pub struct Bounded(regex::Regex);
+
+impl urlpattern::regexp::RegExp for Bounded {
+    fn syntax() -> urlpattern::RegexSyntax {
+        urlpattern::RegexSyntax::Rust
+    }
+
+    fn parse(pattern: &str, flags: &str, _: bool) -> Result<Self, ()> {
+        regex::RegexBuilder::new(pattern).case_insensitive(flags.contains('i')).size_limit(1 << 20).build().map(Bounded).map_err(|_| ())
+    }
+
+    fn matches<'a>(&self, text: &'a str) -> Option<Vec<Option<&'a str>>> {
+        let captures = self.0.captures(text)?;
+        Some(captures.iter().skip(1).map(|c| c.map(|m| m.as_str())).collect())
+    }
+
+    fn pattern_string(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+/// Builds' scripts, read once each, and loaded to read their routes. A
+/// build's files never change, so neither does its script.
 pub struct Scripts {
     db: Db,
     blobs: BlobStore,
-    cache: Mutex<lru::LruCache<i64, Option<Arc<Script>>>>,
+    cache: Mutex<lru::LruCache<i64, Arc<Loading>>>,
 }
+
+/// A build's script, once it has loaded: every request for it waits on one
+/// load.
+type Loading = tokio::sync::OnceCell<Option<Arc<Script>>>;
 
 /// Builds whose scripts are kept.
 const MAX_CACHED_BUILDS: usize = 64;
@@ -191,21 +206,25 @@ impl Scripts {
         Scripts { db, blobs, cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_BUILDS).unwrap())) }
     }
 
-    /// A build's script, or `None` for a build without one.
+    /// A build's script, or `None` for a build without one, or with one that
+    /// doesn't load: its deploy log says why.
     pub async fn for_build(&self, build_id: i64) -> anyhow::Result<Option<Arc<Script>>> {
-        if let Some(cached) = self.cache.lock().get(&build_id) {
-            return Ok(cached.clone());
-        }
-        let blobs = self.blobs.clone();
-        let script = self
-            .db
-            .call(move |conn| {
-                let files = build_files(conn, build_id)?;
-                Ok(if files.is_empty() { None } else { load(&files, &blobs).script.map(Arc::new) })
+        let cell = self.cache.lock().get_or_insert(build_id, Default::default).clone();
+        let script = cell
+            .get_or_try_init(|| async {
+                let blobs = self.blobs.clone();
+                let loaded = self
+                    .db
+                    .call(move |conn| {
+                        let Some(sha256) = build_script(conn, build_id)? else { return Ok(None) };
+                        Ok(load(sha256, &blobs).ok())
+                    })
+                    .await?;
+                let Some(script) = loaded.map(Arc::new) else { return anyhow::Ok(None) };
+                Ok(check(script.clone()).await.ok().map(|_| script))
             })
             .await?;
-        self.cache.lock().put(build_id, script.clone());
-        Ok(script)
+        Ok(script.clone())
     }
 }
 
@@ -247,6 +266,9 @@ pub struct Ran {
     /// What names this preview's image.
     pub version: String,
     pub timings: Timings,
+    /// What the script's `routes` lists, when it was loaded only to check
+    /// it: `None` for no `routes`.
+    pub routes: Option<Vec<String>>,
 }
 
 /// How long a run took getting to its answer, a phase at a time.
@@ -258,8 +280,8 @@ pub struct Timings {
     pub setup: Duration,
     /// Running the prelude: the web the script runs in.
     pub prelude: Duration,
-    /// Loading the site's modules — parsing them, for the first run, and
-    /// their bytecode after — and running their top level.
+    /// Loading the site's script — its bytecode, once a first load has
+    /// parsed it — and running its top level.
     pub module: Duration,
     /// The handler, from its call to its return, its queries and fetches
     /// included.
@@ -295,12 +317,15 @@ pub async fn run(script: Arc<Script>, page: Page, env: Env, permit: OwnedSemapho
     ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into()))
 }
 
-/// Load a site's script as a run would and check it exports a handler,
-/// without calling it, for its deploy log.
+/// Load a site's script as a run would, check it exports a handler, without
+/// calling it, and read its routes. What's wrong is for its deploy log.
 pub async fn check(script: Arc<Script>) -> Result<(), String> {
     let (done, ran) = oneshot::channel();
-    spawn(script, None, done, None, Instant::now())?;
-    ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into())).map(|_| ())
+    spawn(script.clone(), None, done, None, Instant::now())?;
+    let ran = ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into()))?;
+    let routes = ran.routes.as_deref().map(Routes::compile).transpose()?;
+    let _ = script.routes.set(routes);
+    Ok(())
 }
 
 /// A thread for one run, with a runtime of its own to drive it. The thread
@@ -339,7 +364,7 @@ struct Spent {
 async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::Sender<Result<Ran, String>>, asked: Instant) {
     let started = Instant::now();
     let mut timings = Timings { spawn: started - asked, ..Timings::default() };
-    let deadline = job.as_ref().map_or(DEADLINE, |(_, env)| env.deadline);
+    let deadline = job.as_ref().map_or(LOAD_DEADLINE, |(_, env)| env.deadline);
     let limit = Arc::new(AtomicU64::new(deadline.as_millis() as u64));
     let runtime = match AsyncRuntime::new() {
         Ok(runtime) => runtime,
@@ -354,7 +379,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
         let limit = limit.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || started.elapsed().as_millis() as u64 > limit.load(Ordering::Relaxed)))).await;
     }
-    runtime.set_loader(Modules(script.clone()), Modules(script.clone())).await;
+    runtime.set_loader(Only(script.clone()), Only(script.clone())).await;
     let context = match AsyncContext::full(&runtime).await {
         Ok(context) => context,
         Err(error) => {
@@ -391,7 +416,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 let hooks: Object = prelude.call((natives, seed, now as f64))?;
                 timings.prelude = at.elapsed();
                 let at = Instant::now();
-                let module: Object = Module::import(&ctx, ENTRY)?.into_future().await?;
+                let module: Object = Module::import(&ctx, PATH)?.into_future().await?;
                 let handler: Value = module.get("default")?;
                 timings.module = at.elapsed();
                 rquickjs::Result::Ok((hooks, handler))
@@ -404,12 +429,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 }
             };
             let (Some(page), Some(env)) = (page, env) else {
-                let exported = handler.as_object().and_then(|h| h.get::<_, Value>("preview").ok()).is_some_and(|f| f.is_function());
-                let _ = done.send(if exported {
-                    Ok(Ran { preview: None, vary: Vec::new(), version: String::new(), timings })
-                } else {
-                    Err("/.npanel/preview.js must export default { preview(request, ctx) }.".into())
-                });
+                let _ = done.send(exports(&handler).map(|routes| Ran { preview: None, vary: Vec::new(), version: String::new(), timings, routes }));
                 return;
             };
 
@@ -441,7 +461,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 vary.dedup();
                 let version = version(&script, &page, &vary, &spent.inputs.borrow());
                 if out.get::<_, bool>("none")? {
-                    return rquickjs::Result::Ok((Ran { preview: None, vary, version, timings }, None));
+                    return rquickjs::Result::Ok((Ran { preview: None, vary, version, timings, routes: None }, None));
                 }
                 let mut pending = None;
                 let image = if let Some(url) = out.get::<_, Option<String>>("url")? {
@@ -462,7 +482,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                     return Err(Exception::throw_type(&ctx, "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read."));
                 };
                 let preview = Returned { title: out.get("title")?, description: out.get("description")?, body: out.get("body")?, image, extras };
-                Ok((Ran { preview: Some(preview), vary, version, timings }, pending))
+                Ok((Ran { preview: Some(preview), vary, version, timings, routes: None }, pending))
             };
             let (mut ran, pending) = match read.await {
                 Ok(read) => read,
@@ -510,6 +530,25 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
             let _ = drawn.send(bytes);
         })
         .await;
+}
+
+/// What a script's default export lists as its routes, having checked it
+/// has a handler.
+fn exports(handler: &Value<'_>) -> Result<Option<Vec<String>>, String> {
+    let shape = || format!("{PATH} must export default {{ routes, preview(request, ctx) }}.");
+    let handler = handler.as_object().ok_or_else(shape)?;
+    if !handler.get::<_, Value>("preview").is_ok_and(|f| f.is_function()) {
+        return Err(shape());
+    }
+    let routes: Value = handler.get("routes").map_err(|_| shape())?;
+    if routes.is_undefined() || routes.is_null() {
+        return Ok(None);
+    }
+    let list = routes.as_array().ok_or("A preview script's routes must be a list of URLPattern pathnames, like \"/:id\".")?;
+    list.iter::<Value>()
+        .map(|route| route.ok().and_then(|r| r.as_string().and_then(|s| s.to_string().ok())).ok_or_else(|| "A preview script's routes must all be strings.".to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// The prelude's function, from its bytecode once it has been compiled.
@@ -596,50 +635,31 @@ fn bytes_of(array: &TypedArray<'_, u8>) -> Vec<u8> {
     unsafe { array.as_bytes() }.map(<[u8]>::to_vec).unwrap_or_default()
 }
 
-/// The modules under [`DIR`], and nothing else, importable by relative path.
-struct Modules(Arc<Script>);
+/// The script, and nothing else: a preview script imports nothing.
+struct Only(Arc<Script>);
 
-impl Resolver for Modules {
+impl Resolver for Only {
     fn resolve<'js>(&mut self, _: &Ctx<'js>, base: &str, name: &str, _: Option<ImportAttributes<'js>>) -> rquickjs::Result<String> {
-        if base.is_empty() && name == ENTRY {
-            return Ok(ENTRY.into());
+        if base.is_empty() && name == PATH {
+            return Ok(PATH.into());
         }
-        if !name.starts_with("./") && !name.starts_with("../") {
-            return Err(rquickjs::Error::new_resolving_message(base, name, "only modules in /.npanel/ can be imported, by a relative path; bundle packages into them"));
-        }
-        let mut segments: Vec<&str> = base.split('/').collect();
-        segments.pop();
-        for segment in name.split('/') {
-            match segment {
-                "." | "" => {}
-                ".." => {
-                    if segments.pop().is_none() {
-                        return Err(rquickjs::Error::new_resolving_message(base, name, "that's outside /.npanel/"));
-                    }
-                }
-                other => segments.push(other),
-            }
-        }
-        let resolved = segments.join("/");
-        if self.0.modules.contains_key(&resolved) {
-            Ok(resolved)
-        } else {
-            Err(rquickjs::Error::new_resolving_message(base, name, "there's no such module in /.npanel/"))
-        }
+        Err(rquickjs::Error::new_resolving_message(base, name, "a preview script imports nothing; bundle what it needs into it"))
     }
 }
 
-impl Loader for Modules {
+impl Loader for Only {
     fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str, _: Option<ImportAttributes<'js>>) -> rquickjs::Result<Module<'js, Declared>> {
-        let source = self.0.modules.get(name).ok_or_else(|| rquickjs::Error::new_loading(name))?;
-        if let Some(bytecode) = source.bytecode.get() {
-            // SAFETY: the bytecode is what this QuickJS wrote of this module,
+        if name != PATH {
+            return Err(rquickjs::Error::new_loading(name));
+        }
+        if let Some(bytecode) = self.0.bytecode.get() {
+            // SAFETY: the bytecode is what this QuickJS wrote of this script,
             // below.
             return unsafe { Module::load(ctx.clone(), bytecode) };
         }
-        let module = Module::declare(ctx.clone(), name, source.text.as_bytes())?;
+        let module = Module::declare(ctx.clone(), name, self.0.source.as_bytes())?;
         if let Ok(bytecode) = module.write(WriteOptions::default()) {
-            let _ = source.bytecode.set(bytecode);
+            let _ = self.0.bytecode.set(bytecode);
         }
         Ok(module)
     }

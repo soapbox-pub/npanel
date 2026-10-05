@@ -417,19 +417,19 @@ directives govern loading a script and `fetch`ing — and the header follows
 the page. A site that publishes files under `/_npanel/` has
 `/_npanel/script.js` shadowed while this is on.
 
-`link_previews` runs the site's preview script, `/.npanel/preview.js`, for
-crawlers, and defaults to `false`. It is for sites that show Nostr content under
-the paths Nostr web clients use — `/<npub>`, `/<nprofile>`, `/<note>`,
-`/<nevent>`, `/<naddr>`, and `/<name@domain>`, each with or without an `@` in
-front. A `GET` from a User-Agent matching
+`link_previews` runs the site's preview script,
+`/.well-known/npanel/preview.js`, for crawlers, and defaults to `false`. It is
+for sites whose pages a crawler can't read by itself, like a Nostr client that
+shows `/<npub>` or `/<nevent>` from relays in the browser. A `GET` from a
+User-Agent matching
 [`link_preview_crawler_pattern`](configuration.md#link_preview_crawler_pattern),
-for one of those paths, where the site's answer is an HTML page with a `200`,
-gets that page with what the script made of it: its title, description, image
-and the rest in its head — as Open Graph, Twitter and schema.org JSON-LD — and
-its article at the top of its body. Everyone else, and a page the script has
-nothing for, gets the page as published; on a site with a script, responses on
-those paths carry `Vary: User-Agent`. A site with no script gets nothing from
-it. It is off by default because it changes what a page says depending on who
+for a page the script's `routes` name (every page, if it names none), where the
+site's answer is an HTML page with a `200`, gets that page with what the script
+made of it: its title, description, image and the rest in its head — as Open
+Graph, Twitter and schema.org JSON-LD — and its article at the top of its body.
+Everyone else, and a page the script has nothing for, gets the page as
+published; responses on those pages carry `Vary: User-Agent`. A site with no
+script gets nothing from it. It is off by default because it changes what a page says depending on who
 asks, and runs code the site wrote. See
 [link previews](architecture.md#link-previews).
 
@@ -887,8 +887,8 @@ which are for crawlers.
 ```
 
 `preview` is `null` when the script had nothing for the page. `400` for a URL
-that isn't a page about something on Nostr on one of the gateway's sites, for a
-site with link previews off or no script, and for a script that throws, saying
+that isn't one of the pages its site's script lists in its routes, for a site
+with link previews off or no script, and for a script that throws, saying
 what it threw; `503` if it takes longer than thirty seconds.
 
 ### `DELETE /api/link-previews`

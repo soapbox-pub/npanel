@@ -78,6 +78,8 @@ tor-proto = "=0.47.0"
 tor-rtcompat = "=0.47.0"
 tower = { version = "0.5", features = ["util"] }
 url = "2"
+# The routes a site's preview script declares, as the web standard has them.
+urlpattern = "0.6"
 x509-parser = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }

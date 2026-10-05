@@ -541,7 +541,7 @@ function LinkPreviewCache() {
   return (
     <Section
       title="Cache"
-      footer="A site has link previews when they're on in its settings and it publishes a preview script, /.npanel/preview.js. Counts are since the server started."
+      footer="A site has link previews when they're on in its settings and it publishes a preview script, /.well-known/npanel/preview.js. Counts are since the server started."
       action={
         <AlertDialog>
           <AlertDialogTrigger asChild>
