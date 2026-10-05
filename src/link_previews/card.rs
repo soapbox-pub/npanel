@@ -9,7 +9,6 @@ use serde_json::Value;
 
 use super::kinds::{truncate, Content, Parts, MAX_CONTENT};
 use super::render::{escape, render_markdown, render_text, safe_url};
-use super::templates::Fields;
 use crate::nostr::nip19;
 use crate::nostr::Event;
 use crate::site_preview::clamp;
@@ -17,6 +16,8 @@ use crate::site_preview::clamp;
 const MAX_TITLE: usize = 200;
 const MAX_DESCRIPTION: usize = 200;
 const MAX_NAME: usize = 100;
+/// The longest article a site's script may write.
+const MAX_BODY: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -57,11 +58,15 @@ pub struct Audio {
     pub mime: String,
 }
 
+/// An image a site's script drew, which npanel serves.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct ImageMeta {
-    pub mime: String,
-    pub width: u32,
-    pub height: u32,
+pub struct Drawn {
+    /// What names it: see `script.rs`.
+    pub version: String,
+    /// Its type and size, where it was drawn by the time the card was made.
+    pub mime: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -77,11 +82,11 @@ pub struct Card {
     pub image: Option<String>,
     pub video: Option<Video>,
     pub audio: Option<Audio>,
-    /// The size and type of `image`, where npanel drew it and so knows them.
+    /// The image a site's script drew, which `image` is the URL of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_meta: Option<ImageMeta>,
-    /// Whoever it is attributed to: `None` for a card a site's template
-    /// made, which knows only what its queries found.
+    pub drawn: Option<Drawn>,
+    /// Whoever it is attributed to: `None` for a card a site's script made,
+    /// which names nobody.
     pub author: Option<Author>,
     pub published: Option<i64>,
     /// The `<article>` a crawler finds at the top of the page's body.
@@ -149,7 +154,7 @@ pub fn profile_card(event: &Event) -> Card {
         image: None,
         video: None,
         audio: None,
-        image_meta: None,
+        drawn: None,
         author: Some(author),
         published: None,
         body,
@@ -228,28 +233,31 @@ pub fn card(event_kind: i64, parts: Parts, author: Option<&Event>) -> Card {
         image: parts.image,
         video: parts.video,
         audio: parts.audio,
-        image_meta: None,
+        drawn: None,
         author: Some(author),
         published: Some(parts.published),
         body,
     }
 }
 
-/// A card from what a site's template set. Its body is the template's own
-/// markup; everything else is held to what npanel's cards are.
-pub fn template_card(event_kind: i64, fields: Fields, image: Option<String>, image_meta: Option<ImageMeta>) -> Card {
+/// A card from what a site's script returned. Its body is the script's own
+/// markup, cleaned; everything else is held to what npanel's cards are.
+pub fn script_card(event_kind: i64, title: Option<String>, description: Option<String>, body: Option<String>, image: Option<String>, drawn: Option<Drawn>) -> Card {
+    let body = body.map(|body| {
+        ammonia::Builder::default().link_rel(Some("nofollow ugc noopener")).clean(truncate(&body, MAX_BODY)).to_string()
+    });
     Card {
         kind: if event_kind == 0 { CardKind::Profile } else { CardKind::Post },
         event_kind,
-        title: fields.title.flatten().map(|t| clamp(&t, MAX_TITLE)).filter(|t| !t.is_empty()),
-        description: fields.description.flatten().map(|d| describe(&d)).filter(|d| !d.is_empty()),
+        title: title.map(|t| clamp(&t, MAX_TITLE)).filter(|t| !t.is_empty()),
+        description: description.map(|d| describe(&d)).filter(|d| !d.is_empty()),
         image,
         video: None,
         audio: None,
-        image_meta,
+        drawn,
         author: None,
         published: None,
-        body: fields.body.flatten().unwrap_or_default(),
+        body: body.map(|body| format!("{body}\n")).unwrap_or_default(),
     }
 }
 

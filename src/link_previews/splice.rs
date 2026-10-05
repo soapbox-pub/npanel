@@ -160,10 +160,14 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
     }
     if let Some(image) = image {
         meta("property", "og:image", image);
-        if let Some(drawn) = card.image_meta.as_ref().filter(|_| card.image.is_some()) {
-            meta("property", "og:image:type", &drawn.mime);
-            meta("property", "og:image:width", &drawn.width.to_string());
-            meta("property", "og:image:height", &drawn.height.to_string());
+        if let Some(drawn) = card.drawn.as_ref().filter(|_| card.image.is_some()) {
+            if let Some(mime) = &drawn.mime {
+                meta("property", "og:image:type", mime);
+            }
+            if let (Some(width), Some(height)) = (drawn.width, drawn.height) {
+                meta("property", "og:image:width", &width.to_string());
+                meta("property", "og:image:height", &height.to_string());
+            }
         }
         meta("name", "twitter:image", image);
     }

@@ -31,12 +31,10 @@ use crate::fields;
 use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
-use crate::link_previews::card::{template_card, Card, ImageMeta};
 use crate::link_previews::entity::Entity;
-use crate::link_previews::image::{Painted, Painter, HEIGHT, WIDTH};
+use crate::link_previews::script::{self, Script, Scripts};
 use crate::link_previews::splice::{splice, Page};
-use crate::link_previews::templates::{Context, EntityContext, SiteTemplates, Templates};
-use crate::link_previews::{kinds, Found, LinkPreviews, Outcome, IMAGE_WAIT, WAIT};
+use crate::link_previews::{kinds, LinkPreviews, ScriptPage, IMAGE_WAIT, PREVIEW_PATH, WAIT};
 use crate::log::{with_err, Logger};
 use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
@@ -79,17 +77,15 @@ const ENV_CACHE_CONTROL: &str = "public, max-age=0, stale-while-revalidate=31536
 /// kilobytes; anything near this is a page with no room left for a preview.
 const MAX_PREVIEW_PAGE: u64 = 512 * 1024;
 
-/// Where a site's preview images are, on every site: npanel's, like the
-/// event endpoint, and never a file of the site's.
-pub const PREVIEW_PATH: &str = "/_npanel/preview/";
-
 /// A preview image at the version a page named never changes; one asked for
 /// at any other is the current one, which may not last.
 const IMAGE_CACHE_CONTROL: &str = "public, max-age=604800, immutable";
 const STALE_IMAGE_CACHE_CONTROL: &str = "public, max-age=300";
 
-/// The largest file of a site's an image template may draw.
-const MAX_SITE_IMAGE: u64 = 8 << 20;
+/// Request headers a site's preview script isn't shown: credentials, and
+/// what the proxy says about who's asking.
+const PRIVATE_HEADERS: &[&str] =
+    &["cookie", "authorization", "proxy-authorization", "forwarded", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip"];
 
 /// How long a browser may reuse a preflight result, in seconds.
 const PREFLIGHT_MAX_AGE: &str = "86400";
@@ -195,8 +191,7 @@ pub struct SiteServerDeps {
     pub serve_cache: Arc<ServeCache>,
     pub analytics: Arc<Analytics>,
     pub link_previews: Arc<LinkPreviews>,
-    pub templates: Arc<Templates>,
-    pub painter: Arc<Painter>,
+    pub scripts: Arc<Scripts>,
     pub log: Logger,
 }
 
@@ -207,19 +202,13 @@ pub struct SiteServer {
     /// a build id is never reused. A row still missing its blob sizes is left
     /// uncached, since `compress-blobs` may yet record them.
     paths: Mutex<lru::LruCache<(i64, bool, String), Option<ResolvedFile>>>,
-    /// Preview images drawn already.
-    painted: Mutex<Painted>,
 }
 
 type Reply = Response<Body>;
 
 impl SiteServer {
     pub fn new(deps: SiteServerDeps) -> SiteServer {
-        SiteServer {
-            deps,
-            paths: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_PATHS).unwrap())),
-            painted: Mutex::new(Painted::default()),
-        }
+        SiteServer { deps, paths: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_PATHS).unwrap())) }
     }
 
     /// Serve one request for a site, as it reached the listener `origin`
@@ -338,8 +327,10 @@ impl SiteServer {
                 .expect("response"));
         };
 
-        if let Some(name) = path.strip_prefix(PREVIEW_PATH) {
-            return self.preview_image(request, origin, site, version.build_id, name).await;
+        // npanel's, on every site, like the event endpoint, and never a file
+        // of the site's.
+        if let Some(page) = path.strip_prefix(PREVIEW_PATH).filter(|page| page.starts_with('/')) {
+            return self.preview_image(request, origin, site, version.build_id, page).await;
         }
 
         let Some(file) = self.resolve(version.build_id, path, site.host.host.spa).await? else {
@@ -367,17 +358,18 @@ impl SiteServer {
         // between has to keep the two apart.
         let previewed = site.host.host.link_previews && file.status == 200 && content_type(&file.path).starts_with("text/html");
         let entity = if previewed { Entity::from_path(path) } else { None };
-        let templates = match &entity {
-            Some(_) => self.deps.templates.for_build(version.build_id).await?,
+        let script = match &entity {
+            Some(_) => self.deps.scripts.for_build(version.build_id).await?,
             None => None,
         };
-        // A path naming a kind nothing previews is no different from any
-        // other, and costs no lookup.
-        let entity = entity.filter(|entity| entity.kind().is_none_or(|kind| kinds::supported(kind) || templates.as_ref().is_some_and(|t| t.has(kind))));
+        // A path naming a kind npanel has no preview of, on a site with no
+        // script of its own, is no different from any other, and costs no
+        // lookup.
+        let entity = entity.filter(|entity| script.is_some() || entity.kind().is_none_or(kinds::supported));
         if let Some(entity) = &entity {
             let crawler = request.method == Method::GET && self.deps.link_previews.is_crawler(header_str(&request.headers, header::USER_AGENT));
             if crawler && variants.identity <= MAX_PREVIEW_PAGE {
-                if let Some(reply) = self.link_preview(request, origin, site, version.build_id, &file, entity, templates).await {
+                if let Some(reply) = self.link_preview(request, origin, site, &file, entity, script).await {
                     return Ok(reply);
                 }
             }
@@ -500,32 +492,27 @@ impl SiteServer {
     /// site's own document, with the event's preview in its head and the
     /// event itself at the top of its body. `None` sends the page as
     /// published, whatever the reason — this is never worth an error.
-    #[allow(clippy::too_many_arguments)]
     async fn link_preview(
         &self,
         request: &Parts,
         origin: &RequestOrigin,
         site: &CachedSite,
-        build_id: i64,
         file: &ResolvedFile,
         entity: &Entity,
-        templates: Option<Arc<SiteTemplates>>,
+        script: Option<Arc<Script>>,
     ) -> Option<Reply> {
         let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
         let path = request.uri.path();
-        let url = format!("{site_origin}{}", path.strip_suffix('/').filter(|p| !p.is_empty()).unwrap_or(path));
+        let url = page_url(&site_origin, path);
 
-        // The site's own templates, where it has one for this kind or the
-        // kind is yet to be learned; npanel's card otherwise.
-        let card = match templates.filter(|t| entity.kind().is_none_or(|kind| t.has(kind))) {
-            Some(templates) => match self.deps.link_previews.templated(entity, templates.queries.clone(), WAIT).await? {
-                (Outcome::Card(card), _) => card,
-                (Outcome::Results(found), fetched_at) => {
-                    Arc::new(self.template_card(origin, build_id, templates, found, fetched_at, url.clone(), site_origin.clone()).await?)
-                }
-                _ => return None,
-            },
-            None => self.deps.link_previews.card(entity).await?,
+        // The site's own script, where it has one; npanel's card otherwise.
+        let (card, vary) = match script {
+            Some(script) => {
+                let page = Arc::new(ScriptPage { script, page: script_page(request, &url), entity: entity.clone() });
+                let card = self.deps.link_previews.scripted(page.clone(), WAIT).await?;
+                (card, self.deps.link_previews.vary(&page))
+            }
+            None => (self.deps.link_previews.card(entity).await?, Vec::new()),
         };
         let document = self.open(file.sha256, None).await.ok()?;
         let body = splice(&document, &card, &Page { url: &url, origin: &site_origin })?;
@@ -539,6 +526,8 @@ impl SiteServer {
             .header(header::ETAG, &etag)
             .header(header::VARY, "user-agent")
             .header("x-nsite-addr", site.naddr.clone());
+        // The preview depends on whatever the script read, too.
+        let builder = vary.iter().filter(|name| *name != "user-agent").fold(builder, |builder, name| builder.header(header::VARY, name.as_str()));
 
         self.deps.log.debug("site_link_preview", fields! { "hostname" => origin.hostname.as_str(), "path" => path, "key" => entity.key() });
 
@@ -548,155 +537,48 @@ impl SiteServer {
         Some(builder.status(StatusCode::OK).header(header::CONTENT_LENGTH, body.len()).body(Body::from(body)).expect("response"))
     }
 
-    /// The card a site's template makes of what its queries found. `None`
-    /// for a template that fails, which the log says why.
-    #[allow(clippy::too_many_arguments)]
-    async fn template_card(
-        &self,
-        origin: &RequestOrigin,
-        build_id: i64,
-        templates: Arc<SiteTemplates>,
-        found: Arc<Found>,
-        fetched_at: i64,
-        url: String,
-        site_origin: String,
-    ) -> Option<Card> {
-        let kind = found.subject.kind;
-        let generated = match (templates.has_image(kind), found.subject.nip19(), templates.sha256(kind)) {
-            (true, Some(nip19), Some(template)) => {
-                let version = image_version(build_id, template, fetched_at, &nip19);
-                Some(format!("{site_origin}{PREVIEW_PATH}{nip19}.jpg?v={}", &version[..16]))
-            }
-            _ => None,
-        };
-
-        let render = {
-            let (templates, found, url, site_origin) = (templates.clone(), found.clone(), url.clone(), site_origin.clone());
-            move || {
-                let context = Context { entity: EntityContext::of(&found.subject), results: &found.results, url: &url, origin: &site_origin };
-                templates.render_data(kind, &context)
-            }
-        };
-        let fields = match tokio::task::spawn_blocking(render).await.ok()? {
-            Ok(fields) => fields,
-            Err(error) => {
-                self.deps.log.warn(
-                    "link_preview_template_failed",
-                    fields! { "hostname" => origin.hostname.as_str(), "kind" => kind, "err_msg" => format!("{error:#}") },
-                );
-                return None;
-            }
-        };
-
-        // An image the template names is taken relative to the page; one it
-        // sets to `none` is no image of its own; one it leaves alone is drawn.
-        let drawn = || Some(ImageMeta { mime: "image/jpeg".into(), width: WIDTH, height: HEIGHT });
-        let (image, meta) = match &fields.image {
-            None => (generated.clone(), generated.as_ref().and_then(|_| drawn())),
-            Some(None) => (None, None),
-            Some(Some(named)) => {
-                let resolved = url::Url::parse(&url).ok().and_then(|base| base.join(named).ok()).filter(|u| matches!(u.scheme(), "https" | "http"));
-                (resolved.map(String::from), None)
-            }
-        };
-        Some(template_card(kind, fields, image, meta))
-    }
-
-    /// The image a site's template draws for an entity, at
-    /// `/_npanel/preview/<nip19>.jpg`. Any client may fetch it, since the
-    /// services that fetch a preview's image seldom say they are the crawler
-    /// that read its page.
-    async fn preview_image(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, build_id: i64, name: &str) -> anyhow::Result<Reply> {
+    /// The image a site's script drew for a page, at `/_npanel/preview/<page>`.
+    /// Any client may fetch it, since the services that fetch a preview's
+    /// image seldom say they are the crawler that read its page.
+    ///
+    /// The version the page named is served as it is, for as long as anyone
+    /// likes. Any other version, or none, is whatever the page's preview is
+    /// now — drawn again, if it was let go since — for a few minutes.
+    async fn preview_image(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, build_id: i64, page: &str) -> anyhow::Result<Reply> {
         let not_found = || Ok(text(StatusCode::NOT_FOUND, "Not found."));
+        let busy = || {
+            let mut busy = text(StatusCode::SERVICE_UNAVAILABLE, "This preview isn't ready yet. Try again in a moment.");
+            busy.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+            Ok(busy)
+        };
         if !site.host.host.link_previews {
             return not_found();
         }
-        let Some(entity) = name.strip_suffix(".jpg").and_then(|nip19| Entity::from_path(&format!("/{nip19}"))) else { return not_found() };
-        let Some(templates) = self.deps.templates.for_build(build_id).await? else { return not_found() };
-        if entity.kind().is_some_and(|kind| !templates.has_image(kind)) {
-            return not_found();
-        }
+        let Some(entity) = Entity::from_path(page) else { return not_found() };
+        let Some(script) = self.deps.scripts.for_build(build_id).await? else { return not_found() };
+        let previews = &self.deps.link_previews;
 
-        let Some((outcome, fetched_at)) = self.deps.link_previews.templated(&entity, templates.queries.clone(), IMAGE_WAIT).await else {
-            let mut busy = text(StatusCode::SERVICE_UNAVAILABLE, "This preview isn't ready yet. Try again in a moment.");
-            busy.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
-            return Ok(busy);
-        };
-        let Outcome::Results(found) = outcome else { return not_found() };
-        let kind = found.subject.kind;
-        let (Some(nip19), Some(template)) = (found.subject.nip19(), templates.sha256(kind)) else { return not_found() };
-        if !templates.has_image(kind) {
-            return not_found();
-        }
-
-        let version = image_version(build_id, template, fetched_at, &nip19);
-        let etag = format!("\"{}\"", &version[..32]);
         let named = request.uri.query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "v").map(|(_, v)| v.into_owned()));
-        let current = named.is_some_and(|v| v == version[..16]);
-        let builder = Response::builder()
-            .header(header::CONTENT_TYPE, "image/jpeg")
-            .header(header::CACHE_CONTROL, if current { IMAGE_CACHE_CONTROL } else { STALE_IMAGE_CACHE_CONTROL })
-            .header(header::ETAG, &etag)
-            .header("x-nsite-addr", site.naddr.clone());
-        if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
-            return Ok(builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response"));
+        if let Some(version) = &named {
+            if let Some(image) = previews.image(version, IMAGE_WAIT).await {
+                return Ok(image_reply(request, site, version, image, true));
+            }
         }
 
-        let cached = self.painted.lock().get(&version);
-        let image = match cached {
-            Some(image) => image,
-            None => {
-                let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
-                match self.paint(templates, found, build_id, format!("{site_origin}/{nip19}"), site_origin).await {
-                    Ok(image) => {
-                        self.painted.lock().put(version, image.clone());
-                        image
-                    }
-                    Err(error) => {
-                        self.deps.log.warn(
-                            "link_preview_image_failed",
-                            fields! { "hostname" => origin.hostname.as_str(), "kind" => kind, "err_msg" => format!("{error:#}") },
-                        );
-                        return not_found();
-                    }
-                }
-            }
-        };
-
-        let builder = builder.status(StatusCode::OK).header(header::CONTENT_LENGTH, image.len());
-        Ok(if request.method == Method::HEAD { builder.body(Body::empty()) } else { builder.body(Body::from(image)) }.expect("response"))
-    }
-
-    /// Draw a template's image: the SVG it writes, off the runtime threads,
-    /// then the JPEG made of it.
-    async fn paint(&self, templates: Arc<SiteTemplates>, found: Arc<Found>, build_id: i64, url: String, site_origin: String) -> anyhow::Result<Bytes> {
-        let fonts = templates.fonts.clone();
-        let svg = tokio::task::spawn_blocking(move || {
-            let context = Context { entity: EntityContext::of(&found.subject), results: &found.results, url: &url, origin: &site_origin };
-            templates.render_image(found.subject.kind, &context)
-        })
-        .await??;
-        let jpeg = self.deps.painter.paint(svg, fonts, |path| self.site_file(build_id, path)).await?;
-        Ok(Bytes::from(jpeg))
-    }
-
-    /// A file of the site's own, by the exact path an image names.
-    async fn site_file(&self, build_id: i64, path: String) -> Option<Vec<u8>> {
-        let path = crate::util::decode_uri_component(path.split(['?', '#']).next().unwrap_or_default())?;
-        let blobs = self.deps.blobs.clone();
-        self.deps
-            .db
-            .call(move |conn| {
-                use rusqlite::OptionalExtension;
-                let sha256: Option<BlobHash> = conn
-                    .prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = ?")?
-                    .query_row(rusqlite::params![build_id, path], |row| row.get(0))
-                    .optional()?;
-                Ok(sha256.filter(|sha| blobs.size(*sha).is_some_and(|size| size <= MAX_SITE_IMAGE)).map(|sha| blobs.read_bytes(sha, MAX_SITE_IMAGE)))
-            })
-            .await
-            .ok()
-            .flatten()
+        let url = page_url(&format!("{}://{}", origin.scheme, origin.hostname), page);
+        let page = Arc::new(ScriptPage { script, page: script_page(request, &url), entity });
+        let Some(card) = previews.scripted(page.clone(), IMAGE_WAIT).await else { return busy() };
+        let Some(version) = card.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
+        if let Some(image) = previews.image(&version, IMAGE_WAIT).await {
+            return Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version)));
+        }
+        // Drawn once and let go since, or never finished: draw it again.
+        let Some(card) = previews.redraw(page, IMAGE_WAIT).await else { return busy() };
+        let Some(version) = card.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
+        match previews.image(&version, IMAGE_WAIT).await {
+            Some(image) => Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version))),
+            None => not_found(),
+        }
     }
 
     /// A blob's bytes for a response body. A kept mapping answers right
@@ -816,9 +698,41 @@ impl SiteServer {
     }
 }
 
-/// What names one drawing of a preview image: everything it is drawn from.
-fn image_version(build_id: i64, template: BlobHash, fetched_at: i64, nip19: &str) -> String {
-    hex::encode(Sha256::digest(format!("{build_id}:{template}:{fetched_at}:{nip19}").as_bytes()))
+/// A page's URL, as its preview names it: no query, no trailing slash.
+fn page_url(origin: &str, path: &str) -> String {
+    format!("{origin}{}", path.strip_suffix('/').filter(|p| !p.is_empty()).unwrap_or(path))
+}
+
+/// The request a site's preview script is handed: the crawler's own, but
+/// for its query and the headers it has no business with.
+fn script_page(request: &Parts, url: &str) -> script::Page {
+    let headers = request
+        .headers
+        .iter()
+        .filter(|(name, _)| !PRIVATE_HEADERS.contains(&name.as_str()))
+        .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
+        .collect();
+    script::Page { url: url.to_string(), method: request.method.as_str().to_string(), headers }
+}
+
+fn image_reply(request: &Parts, site: &CachedSite, version: &str, image: Bytes, current: bool) -> Reply {
+    let mime = match imagesize::image_type(&image) {
+        Ok(imagesize::ImageType::Png) => "image/png",
+        Ok(imagesize::ImageType::Gif) => "image/gif",
+        Ok(imagesize::ImageType::Webp) => "image/webp",
+        _ => "image/jpeg",
+    };
+    let etag = format!("\"{version}\"");
+    let builder = Response::builder()
+        .header(header::CONTENT_TYPE, mime)
+        .header(header::CACHE_CONTROL, if current { IMAGE_CACHE_CONTROL } else { STALE_IMAGE_CACHE_CONTROL })
+        .header(header::ETAG, &etag)
+        .header("x-nsite-addr", site.naddr.clone());
+    if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
+        return builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response");
+    }
+    let builder = builder.status(StatusCode::OK).header(header::CONTENT_LENGTH, image.len());
+    if request.method == Method::HEAD { builder.body(Body::empty()) } else { builder.body(Body::from(image)) }.expect("response")
 }
 
 /// Build the NIP-05 document for a set of entries. Two names may point at one

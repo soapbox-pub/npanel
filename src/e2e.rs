@@ -197,8 +197,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
         link_previews: link_previews.clone(),
-        templates: Arc::new(crate::link_previews::templates::Templates::new(db.clone(), blobs.clone())),
-        painter: Arc::new(crate::link_previews::image::Painter::new()),
+        scripts: Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone())),
         log,
     }));
     let deployments: Arc<dyn Deployments> = Arc::new(deployer.clone());
@@ -733,64 +732,69 @@ async fn crawlers_get_a_preview_of_the_event_a_path_names() {
     gw.deployer.stop().await;
 }
 
-/// A site that publishes its own templates gets previews of its own design,
-/// with images npanel draws, from exactly the events its queries ask for.
+/// A site that publishes its own preview script gets previews of its own
+/// design, with images it draws, from exactly the events it asks for.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_sites_templates_draw_its_previews() {
+async fn a_sites_script_draws_its_previews() {
     let page = r#"<!doctype html><html><head><title>Ditto — Social</title></head><body><div id="root"></div></body></html>"#;
-    let profile_template = r##"---
-{
-  "profile": { "kinds": [0], "authors": ["$pubkey"], "limit": 1 },
-  "theme": { "kinds": [16767], "authors": ["$pubkey"], "limit": 1 }
-}
----
-{%- set p = (results.profile | first).content | fromjson -%}
-{%- set t = results.theme | first -%}
-{%- set title = (p.name or "Someone") ~ " on Ditto" -%}
-{%- set description = "Theme: " ~ (tag(t, "title")[1] or "none") -%}
-{% block image -%}
-{%- set background = namespace(color="#14161f") -%}
-{%- for c in tags(t, "c") %}{% if c[2] == "background" %}{% set background.color = c[1] %}{% endif %}{% endfor -%}
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
-  <rect width="1200" height="630" fill="{{ background.color }}"/>
-  <image href="/avatar.png" x="400" y="115" width="400" height="400"/>
-</svg>
-{%- endblock %}"##;
-    let avatar = {
-        let mut pixmap = resvg::tiny_skia::Pixmap::new(4, 4).unwrap();
-        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(0, 0, 255, 255));
-        pixmap.encode_png().unwrap()
-    };
+    let author = crate::nostr::event::public_key(AUTHOR);
+    let npub = crate::nostr::nip19::npub_encode(&author);
+    let script = format!(
+        r##"import {{ background }} from "./theme.js";
+
+export default {{
+  async preview(request, {{ nostr }}) {{
+    if (new URL(request.url).pathname !== "/{npub}") return null;
+    const [profile] = await nostr.query([{{ kinds: [0], authors: ["{author}"], limit: 1 }}]);
+    const [theme] = await nostr.query([{{ kinds: [16767], authors: ["{author}"], limit: 1 }}]);
+    const name = JSON.parse(profile.content).name;
+    const title = theme?.tags.find(([n]) => n === "title")?.[1] ?? "none";
+    return {{ title: `${{name}} on Ditto`, description: `Theme: ${{title}}`, body: `<p onclick="steal()">${{name}}</p>`, image: draw(theme) }};
+  }},
+}};
+
+async function draw(theme) {{
+  const canvas = new OffscreenCanvas(1200, 630);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = background(theme);
+  ctx.fillRect(0, 0, 1200, 630);
+  return canvas.convertToBlob({{ type: "image/jpeg" }});
+}}
+"##
+    );
+    let theme = r##"export const background = (theme) => theme?.tags.find(([n, , role]) => n === "c" && role === "background")?.[1] ?? "#14161f";"##;
     let files = [
         ("/index.html", page.as_bytes().to_vec()),
-        ("/.npanel/0.jinja", profile_template.as_bytes().to_vec()),
-        ("/.npanel/readme.txt", b"Not a template".to_vec()),
-        ("/avatar.png", avatar),
+        ("/.npanel/preview.js", script.into_bytes()),
+        ("/.npanel/theme.js", theme.as_bytes().to_vec()),
+        ("/.npanel/readme.txt", b"Not a module".to_vec()),
     ];
     let server = blossom(files.iter().map(|(_, bytes)| (sha(bytes), bytes.clone())).collect()).await;
     let tags = files.iter().map(|(path, bytes)| vec!["path".into(), path.to_string(), sha(bytes)]).collect();
     let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, tags, "");
     let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
     let gw = gateway(nostr).await;
-    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
     let host = serde_json::json!({ "hostname": "social.example.com", "address": npub, "spa": true, "link_previews": true });
     let (status, body) = gw.api("POST", "/api/hosts", Some(host)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     eventually("the site going live", async || gw.request("GET", "social.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
 
-    // The templates are npanel's to read, and nobody's to fetch.
-    for path in ["/.npanel/0.jinja", "/.npanel/", "/%2Enpanel/0.jinja"] {
+    // The script is npanel's to run, and nobody's to fetch.
+    for path in ["/.npanel/preview.js", "/.npanel/", "/%2Enpanel/theme.js"] {
         let (status, _, body) = gw.request("GET", "social.example.com", path, &[], None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
-        assert!(!String::from_utf8_lossy(&body).contains("fromjson"), "{path}");
+        assert!(!String::from_utf8_lossy(&body).contains("nostr.query"), "{path}");
     }
 
-    // The deploy log says what was found, and what was ignored.
-    let (_, log) = gw.api("GET", &format!("/api/hosts/social.example.com/versions/{}/log", manifest.id), None).await;
-    let entries = log["entries"].as_array().unwrap();
-    let found = entries.iter().find(|e| e["msg"] == "preview_templates_found").unwrap();
-    assert_eq!(found["fields"]["kinds"], serde_json::json!([0]));
-    let ignored = entries.iter().find(|e| e["msg"] == "preview_template_problem").unwrap();
+    // The deploy log says the script loads, and what was ignored.
+    let log_path = format!("/api/hosts/social.example.com/versions/{}/log", manifest.id);
+    eventually("the script being checked", async || {
+        let (_, log) = gw.api("GET", &log_path, None).await;
+        log["entries"].as_array().is_some_and(|entries| entries.iter().any(|e| e["msg"] == "preview_script_found"))
+    })
+    .await;
+    let (_, log) = gw.api("GET", &log_path, None).await;
+    let ignored = log["entries"].as_array().unwrap().iter().find(|e| e["msg"] == "preview_script_problem").unwrap();
     assert_eq!(ignored["fields"]["path"], "/.npanel/readme.txt");
 
     let theme = Event::sign(
@@ -800,51 +804,47 @@ async fn a_sites_templates_draw_its_previews() {
         vec![vec!["title".into(), "Midnight".into()], vec!["c".into(), "#000000".into(), "background".into()]],
         "",
     );
-    let older_theme = Event::sign(AUTHOR, crate::util::now() - 90, 16767, vec![vec!["title".into(), "Old".into()]], "");
     let profile = Event::sign(AUTHOR, crate::util::now() - 30, 0, vec![], r#"{"name":"Author"}"#);
     let note = Event::sign(AUTHOR, crate::util::now() - 30, 1, vec![], "Just a note");
-    gw.events.events.lock().extend([theme, older_theme, profile, note.clone()]);
+    gw.events.events.lock().extend([theme, profile, note.clone()]);
     let bot = ("user-agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
 
     let (status, _, body) = gw.request("GET", "social.example.com", &format!("/{npub}"), &[bot], None).await;
     let body = String::from_utf8(body).unwrap();
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("<title>Author on Ditto</title>"), "{body}");
-    // The newest theme, though the relays answered with every one.
     assert!(body.contains(r#"<meta property="og:description" content="Theme: Midnight">"#), "{body}");
-    assert!(body.contains(r#"<meta property="og:image:width" content="1200">"#), "{body}");
     assert!(body.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "{body}");
+    // What the script writes is cleaned of anything that runs.
+    assert!(body.contains("<p>Author</p>") && !body.contains("steal()"), "{body}");
     let image = body.split(r#"<meta property="og:image" content=""#).nth(1).unwrap().split('"').next().unwrap();
-    let image = image.replace("&amp;", "&");
-    let image_path = image.strip_prefix("https://social.example.com").unwrap();
-    assert!(image_path.starts_with(&format!("/_npanel/preview/{npub}.jpg?v=")), "{image}");
+    let image_path = image.strip_prefix("https://social.example.com").unwrap().to_string();
+    assert!(image_path.starts_with(&format!("/_npanel/preview/{npub}?v=")), "{image}");
 
     // The image is for anyone, and lasts as long as its version does.
-    let (status, headers, jpeg) = gw.request("GET", "social.example.com", image_path, &[], None).await;
+    let (status, headers, jpeg) = gw.request("GET", "social.example.com", &image_path, &[], None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["content-type"], "image/jpeg");
     assert_eq!(headers["cache-control"], "public, max-age=604800, immutable");
     assert_eq!(imagesize::blob_size(&jpeg).unwrap(), imagesize::ImageSize { width: 1200, height: 630 });
-    let (_, headers, _) = gw.request("GET", "social.example.com", &format!("/_npanel/preview/{npub}.jpg"), &[], None).await;
-    assert_eq!(headers["cache-control"], "public, max-age=300");
     let etag = headers["etag"].to_str().unwrap().to_string();
-    let (status, ..) = gw.request("GET", "social.example.com", image_path, &[("if-none-match", &etag)], None).await;
+    let (status, ..) = gw.request("GET", "social.example.com", &image_path, &[("if-none-match", &etag)], None).await;
     assert_eq!(status, StatusCode::NOT_MODIFIED);
+    // Asked for at no version, it's the current one, for now.
+    let (status, headers, _) = gw.request("GET", "social.example.com", &format!("/_npanel/preview/{npub}"), &[bot], None).await;
+    assert_eq!((status, headers["cache-control"].to_str().unwrap()), (StatusCode::OK, "public, max-age=300"));
 
-    // A kind the site has no image for, or no template for, has none.
-    let note_image = format!("/_npanel/preview/{}.jpg", crate::nostr::nip19::note_encode(&note.id));
-    assert_eq!(gw.request("GET", "social.example.com", &note_image, &[], None).await.0, StatusCode::NOT_FOUND);
-    // A note's kind is learned from the note, which has no template here,
-    // so it gets npanel's own card.
-    let (_, _, body) = gw.request("GET", "social.example.com", &format!("/{}", crate::nostr::nip19::note_encode(&note.id)), &[bot], None).await;
+    // A page the script has nothing for gets npanel's own card.
+    let note_path = format!("/{}", crate::nostr::nip19::note_encode(&note.id));
+    let (_, _, body) = gw.request("GET", "social.example.com", &note_path, &[bot], None).await;
     let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("<title>Author on Ditto</title>"), "{body}");
     assert!(body.contains(r#"<meta property="og:description" content="Just a note">"#), "{body}");
+    assert_eq!(gw.request("GET", "social.example.com", &format!("/_npanel/preview{note_path}"), &[], None).await.0, StatusCode::NOT_FOUND);
 
     // With previews off, there is no image either.
     let (status, _) = gw.api("PATCH", "/api/hosts/social.example.com", Some(serde_json::json!({ "link_previews": false }))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(gw.request("GET", "social.example.com", image_path, &[], None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(gw.request("GET", "social.example.com", &image_path, &[], None).await.0, StatusCode::NOT_FOUND);
 
     gw.deployer.stop().await;
 }

@@ -191,7 +191,7 @@ export function SeoSettings({ host }: { host: Host }) {
         <ToggleRow
           id="link-previews"
           label="Link previews for Nostr pages"
-          description="Crawlers opening a page like /npub… or /note… get that post's title, image and text, or whatever the site's own templates in /.npanel/ make of it. For sites that show Nostr content."
+          description="Crawlers opening a page like /npub… or /note… get that post's title, image and text, or whatever the site's own script in /.npanel/ makes of it. For sites that show Nostr content."
           checked={host.link_previews}
           onCheckedChange={(link_previews) =>
             patch({ link_previews }, link_previews ? 'Link previews on' : 'Link previews off')

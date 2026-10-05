@@ -34,6 +34,14 @@ impl Entity {
         }
     }
 
+    /// The relays its NIP-19 form says to look on.
+    pub fn relays(&self) -> &[String] {
+        match self {
+            Entity::Profile { relays, .. } | Entity::Event { relays, .. } | Entity::Address { relays, .. } => relays,
+            Entity::Nip05 { .. } => &[],
+        }
+    }
+
     /// The kind of event it is of, where that is known without a lookup.
     pub fn kind(&self) -> Option<i64> {
         match self {

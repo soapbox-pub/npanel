@@ -148,8 +148,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
         link_previews: link_previews.clone(),
-        templates: Arc::new(crate::link_previews::templates::Templates::new(db.clone(), blobs.clone())),
-        painter: Arc::new(crate::link_previews::image::Painter::new()),
+        scripts: Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone())),
         log,
     }));
 

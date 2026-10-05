@@ -1606,9 +1606,7 @@ async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Exte
     let (card, unsupported) = match &refreshed.outcome {
         Outcome::Card(card) => (Some(card_json(card)), None),
         Outcome::Unsupported(kind) => (None, Some(*kind)),
-        // Only a site's templates are given results, and a refresh is of
-        // npanel's own card.
-        Outcome::NotFound | Outcome::Results(_) => (None, None),
+        Outcome::NotFound => (None, None),
     };
     let (actor, target) = (user.pubkey.clone(), refreshed.entity.clone());
     let after = json!({ "found": card.is_some(), "unsupported": unsupported });

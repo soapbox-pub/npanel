@@ -26,15 +26,15 @@ it is tagged.
   that can't be had within a couple of seconds sends the page as published,
   never an error. Lookups are cached in `DATA_DIR/previews.sqlite3`, batched
   into one query per relay, and capped per minute.
-- A site can design its own previews. Templates published as
-  `/.npanel/<kind>.jinja` name the events they need as Nostr filters, set the
-  page's title, description and article, and can draw an image as SVG, which
-  npanel serves as a 1200×630 JPEG at `/_npanel/preview/<nip19>.jpg` and names
-  as the page's `og:image`. Fonts in `/.npanel/` draw their text and emoji,
-  cutting an avatar to the shape of an emoji included. A deploy's log says
-  which templates it found and what was wrong with any. Nothing under
-  `/.npanel/` is ever served. See "A site's own previews" in
-  `docs/architecture.md`.
+- A site can draw its own previews. A script published at
+  `/.npanel/preview.js` is handed the crawler's request and a read-only Nostr
+  relay, shaped like Nostrify's, and returns the page's title, description and
+  article, and its image: a URL, or one it draws on an `OffscreenCanvas` in the
+  site's own fonts, which npanel serves at `/_npanel/preview/…` and names as
+  the page's `og:image`. Each run is sandboxed, metered and given a deadline,
+  and the page never waits for its image. A deploy's log says whether the
+  script loads. Nothing under `/.npanel/` is ever served. See "A site's own
+  previews" in `docs/architecture.md`.
 - **Settings → Link Previews** shows what is cached and how lookups have gone,
   refreshes one preview from a pasted npub, nevent, NIP-05 name or URL, clears
   the cache, and sets which User-Agents count as crawlers.

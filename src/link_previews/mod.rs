@@ -21,36 +21,40 @@
 pub mod card;
 pub mod entity;
 pub mod fetch;
-mod helpers;
-pub mod image;
+mod images;
 pub mod kinds;
 mod render;
+pub mod script;
 pub mod splice;
 mod store;
-pub mod templates;
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use parking_lot::{Mutex, RwLock};
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
-use tokio::sync::oneshot;
+use sha2::{Digest, Sha256};
+use tokio::sync::{oneshot, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use self::card::Card;
+use self::card::{script_card, Card, Drawn};
 use self::entity::Entity;
 use self::fetch::{Batcher, EventSource, Names};
+use self::images::Images;
+use self::script::{Env, Image, Page, Preview, Script};
 use self::store::Cached;
-pub use self::store::{Found, Outcome};
-use self::templates::SiteQueries;
+pub use self::store::Outcome;
 use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::nostr::pool::Pool;
+use crate::nostr::service::vet_relay_hints;
 use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::settings::{Settings, SettingsValues};
 
@@ -75,6 +79,14 @@ pub const IMAGE_WAIT: Duration = Duration::from_secs(8);
 /// How long a refresh an admin asked for may take.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Where a preview image a site's script drew is, on every site: under this,
+/// at the path of the page it's for.
+pub const PREVIEW_PATH: &str = "/_npanel/preview";
+
+/// Pages whose scripts' request headers are remembered in memory. The
+/// database remembers the rest.
+const MAX_VARIES: usize = 10_000;
+
 /// What cards in memory may take up. Past it, the least recently used go;
 /// the database still has them.
 const MEMORY_BYTES: usize = 32 << 20;
@@ -98,6 +110,37 @@ struct Worker {
     path: PathBuf,
     source: Arc<dyn EventSource>,
     names: Names,
+    /// What sites' scripts fetch through.
+    http: reqwest::Client,
+    images: Arc<Images>,
+    /// Scripts that may run at once: one a core, since drawing is work.
+    runs: Arc<Semaphore>,
+}
+
+/// A page of a site with a preview script of its own.
+pub struct ScriptPage {
+    pub script: Arc<Script>,
+    pub page: Page,
+    /// What the page's path names, which npanel's own preview is of when the
+    /// script has none.
+    pub entity: Entity,
+}
+
+impl ScriptPage {
+    /// What its previews are cached under, before the headers it reads.
+    fn base(&self) -> String {
+        format!("s:{}:{}", self.script.digest, self.page.url)
+    }
+
+    /// What its preview is cached under, given the headers its script reads.
+    fn key(&self, vary: &[String]) -> String {
+        let mut hash = Sha256::new();
+        for name in vary {
+            let value = self.page.headers.iter().filter(|(k, _)| k == name).map(|(_, v)| v.as_str()).collect::<Vec<_>>().join(", ");
+            hash.update(format!("{name}={value}\0").as_bytes());
+        }
+        format!("{}|{}", self.base(), &hex::encode(hash.finalize())[..16])
+    }
 }
 
 /// Counts since startup, for the dashboard.
@@ -192,6 +235,8 @@ struct Shared {
     crawlers: RwLock<Option<Crawlers>>,
     stats: Stats,
     writes: AtomicU64,
+    /// The request headers each page's script read, by the page.
+    varies: Mutex<lru::LruCache<String, Vec<String>>>,
 }
 
 pub struct LinkPreviews {
@@ -217,6 +262,7 @@ impl LinkPreviews {
             crawlers: RwLock::new(None),
             stats: Stats::default(),
             writes: AtomicU64::new(0),
+            varies: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_VARIES).unwrap())),
         });
         let shutdown = CancellationToken::new();
 
@@ -278,18 +324,34 @@ impl LinkPreviews {
         })
     }
 
-    /// What a site's queries find for an entity, if it can be had within
-    /// `wait`, and when it was fetched — or npanel's own card, for an event
-    /// of a kind the site has no template for.
-    pub async fn templated(&self, entity: &Entity, queries: Arc<SiteQueries>, wait: Duration) -> Option<(Outcome, i64)> {
-        self.find(Job::Templated(entity.clone(), queries), wait).await
+    /// The card a site's script makes of a page, if it can be had within
+    /// `wait` — or npanel's own, where the script has none.
+    pub async fn scripted(&self, page: Arc<ScriptPage>, wait: Duration) -> Option<Arc<Card>> {
+        card_of(self.find(Job::Script { page, again: false }, wait).await)
+    }
+
+    /// Run a page's script again, whatever is cached: for an image that has
+    /// been let go since it was drawn.
+    pub async fn redraw(&self, page: Arc<ScriptPage>, wait: Duration) -> Option<Arc<Card>> {
+        card_of(self.find(Job::Script { page, again: true }, wait).await)
+    }
+
+    /// The request headers a page's script read, as far as is known.
+    pub fn vary(&self, page: &ScriptPage) -> Vec<String> {
+        self.shared.varies.lock().get(&page.base()).cloned().unwrap_or_default()
+    }
+
+    /// An image a site's script drew, waiting up to `wait` for one still
+    /// being drawn.
+    pub async fn image(&self, version: &str, wait: Duration) -> Option<Bytes> {
+        self.worker()?.images.wait(version, wait).await
     }
 
     async fn find(&self, job: Job, wait: Duration) -> Option<(Outcome, i64)> {
-        let key = job.key();
+        let key = job.key(&self.shared);
         let ttl = self.shared.settings.get().link_preview_ttl;
 
-        let remembered = self.shared.memory.lock().get(&key);
+        let remembered = if job.again() { None } else { self.shared.memory.lock().get(&key) };
         if let Some(cached) = remembered {
             self.shared.stats.hits.fetch_add(1, Ordering::Relaxed);
             if !cached.fresh(ttl, crate::util::now()) {
@@ -407,6 +469,9 @@ impl LinkPreviews {
         });
         let cleared = task.await.map_err(|e| PreviewError::Failed(e.into()))?.map_err(PreviewError::Failed)?;
         self.shared.memory.lock().clear();
+        self.shared.varies.lock().clear();
+        let images = worker.images.clone();
+        tokio::task::spawn_blocking(move || images.clear()).await.map_err(|e| PreviewError::Failed(e.into()))?;
         self.shared.log.info("link_previews_cleared", fields! { "entries" => cleared });
         Ok(cleared)
     }
@@ -439,7 +504,21 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
         }
     };
 
-    let worker = Arc::new(Worker { runtime: tokio::runtime::Handle::current(), store, path, source, names: Names::new(shared.db.clone()) });
+    let images = {
+        let dir = shared.config.data_dir.join("preview-images");
+        Arc::new(tokio::task::spawn_blocking(move || Images::open(dir)).await??)
+    };
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    let worker = Arc::new(Worker {
+        runtime: tokio::runtime::Handle::current(),
+        store,
+        path,
+        source,
+        names: Names::new(shared.db.clone()),
+        http: script::http_client(),
+        images,
+        runs: Arc::new(Semaphore::new(cores)),
+    });
     *shared.worker.write() = Some(worker);
     shared.log.info("link_previews_started", fields! {});
 
@@ -447,36 +526,132 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     Ok(())
 }
 
-/// What a lookup is for: npanel's own card, or what a site's queries find.
+fn card_of(found: Option<(Outcome, i64)>) -> Option<Arc<Card>> {
+    match found {
+        Some((Outcome::Card(card), _)) => Some(card),
+        _ => None,
+    }
+}
+
+/// What a lookup is for: npanel's own card, or the one a site's script makes.
 #[derive(Clone)]
 enum Job {
     Card(Entity),
-    Templated(Entity, Arc<SiteQueries>),
+    /// `again` runs the script whatever is cached.
+    Script { page: Arc<ScriptPage>, again: bool },
 }
 
 impl Job {
-    /// What it is cached under. A site's lookups are kept apart by what its
-    /// queries ask, and shared with any other site asking the same.
-    fn key(&self) -> String {
+    /// What it is cached under. A script's page is cached by the request
+    /// headers its script read, which until it has run aren't known.
+    fn key(&self, shared: &Shared) -> String {
         match self {
             Job::Card(entity) => entity.key(),
-            Job::Templated(entity, queries) => format!("t:{}:{}", queries.digest, entity.key()),
+            Job::Script { page, .. } => match shared.varies.lock().get(&page.base()) {
+                Some(vary) => page.key(vary),
+                None => format!("{}|?", page.base()),
+            },
         }
     }
 
-    async fn fetch(&self, worker: &Worker) -> Outcome {
+    fn again(&self) -> bool {
+        matches!(self, Job::Script { again: true, .. })
+    }
+
+    /// What it comes to, and the headers a script read, if it ran.
+    async fn fetch(&self, shared: &Shared, worker: &Worker) -> (Outcome, Option<Vec<String>>) {
         match self {
-            Job::Card(entity) => fetch::fetch(worker.source.as_ref(), &worker.names, entity).await,
-            Job::Templated(entity, queries) => fetch::templated(worker.source.as_ref(), &worker.names, entity, queries).await,
+            Job::Card(entity) => (fetch::fetch(worker.source.as_ref(), &worker.names, entity).await, None),
+            Job::Script { page, .. } => run_script(shared, worker, page).await,
         }
     }
+}
+
+/// Run a page's script. One that returns nothing, or fails, gets npanel's
+/// own card instead.
+async fn run_script(shared: &Shared, worker: &Worker, page: &ScriptPage) -> (Outcome, Option<Vec<String>>) {
+    let own = || fetch::fetch(worker.source.as_ref(), &worker.names, &page.entity);
+    let Ok(permit) = worker.runs.clone().acquire_owned().await else { return (own().await, None) };
+    let images = worker.images.clone();
+    let env = Env {
+        runtime: worker.runtime.clone(),
+        source: worker.source.clone(),
+        http: worker.http.clone(),
+        relays: vet_relay_hints(page.entity.relays()).await,
+        log: shared.log,
+        have_image: Arc::new(move |version| images.has(version) || images.is_drawing(version)),
+        now: crate::util::now() * 1000,
+        deadline: script::DEADLINE,
+    };
+    match script::run(page.script.clone(), page.page.clone(), env, permit).await {
+        Ok(ran) => {
+            let outcome = match ran.preview {
+                Some(preview) => Outcome::Card(Arc::new(drawn_card(worker, page, preview, ran.version).await)),
+                None => own().await,
+            };
+            (outcome, Some(ran.vary))
+        }
+        Err(error) => {
+            shared.log.warn("link_preview_script_failed", fields! { "url" => page.page.url.as_str(), "err_msg" => error });
+            (own().await, None)
+        }
+    }
+}
+
+/// The card a script's preview makes, its image kept to be served, if it
+/// drew one.
+async fn drawn_card(worker: &Worker, page: &ScriptPage, preview: Preview, version: String) -> Card {
+    let url = url::Url::parse(&page.page.url).ok();
+    let served = || url.as_ref().map(|url| format!("{}{PREVIEW_PATH}{}?v={version}", url.origin().ascii_serialization(), url.path()));
+    let (image, drawn) = match preview.image {
+        Image::None => (None, None),
+        Image::Url(named) => {
+            let resolved = url.as_ref().and_then(|base| base.join(&named).ok()).filter(|u| matches!(u.scheme(), "https" | "http"));
+            (resolved.map(String::from), None)
+        }
+        Image::Bytes(bytes) => {
+            let size = imagesize::blob_size(&bytes).ok();
+            let mime = imagesize::image_type(&bytes).ok().map(|kind| match kind {
+                imagesize::ImageType::Png => "image/png",
+                imagesize::ImageType::Gif => "image/gif",
+                imagesize::ImageType::Webp => "image/webp",
+                _ => "image/jpeg",
+            });
+            worker.images.put(&version, bytes).await;
+            let drawn = Drawn {
+                version: version.clone(),
+                mime: mime.map(String::from),
+                width: size.map(|s| s.width as u32),
+                height: size.map(|s| s.height as u32),
+            };
+            (served(), Some(drawn))
+        }
+        Image::Pending(image) => {
+            worker.images.drawing(version.clone(), image);
+            (served(), Some(Drawn { version: version.clone(), mime: None, width: None, height: None }))
+        }
+    };
+    let kind = page.entity.kind().unwrap_or(1);
+    script_card(kind, preview.title, preview.description, preview.body, image.clone(), drawn.filter(|_| image.is_some()))
 }
 
 /// Find a card: in the database, then on relays. Whoever is waiting is
 /// answered as soon as there is anything to answer with.
 async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, job: Job, flight: Flight, _permit: Permit) {
-    let key = flight.key.clone();
+    let mut key = flight.key.clone();
     let settings = shared.settings.get();
+
+    // A script's page whose headers aren't remembered in memory may be in
+    // the database, and its preview with them.
+    if let Job::Script { page, .. } = &job {
+        if key.ends_with("|?") {
+            let base = page.base();
+            if let Ok(Some(vary)) = worker.store.call(move |conn| store::get_vary(conn, &base)).await {
+                key = page.key(&vary);
+                shared.varies.lock().put(page.base(), vary);
+            }
+        }
+    }
 
     let stored = {
         let k = key.clone();
@@ -488,7 +663,7 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, job: Job, flight: Flig
             }
         }
     };
-    if let Some(cached) = &stored {
+    if let Some(cached) = stored.as_ref().filter(|_| !job.again()) {
         shared.memory.lock().put(key.clone(), cached.clone());
         flight.answer(Some(cached.clone()));
         if cached.fresh(settings.link_preview_ttl, crate::util::now()) {
@@ -505,16 +680,24 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, job: Job, flight: Flig
 
     shared.stats.fetches.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
-    let outcome = job.fetch(&worker).await;
+    let (outcome, vary) = job.fetch(&shared, &worker).await;
     let now = crate::util::now();
+    if let (Job::Script { page, .. }, Some(vary)) = (&job, vary) {
+        key = page.key(&vary);
+        shared.varies.lock().put(page.base(), vary.clone());
+        let base = page.base();
+        if let Err(error) = worker.store.call(move |conn| store::put_vary(conn, &base, &vary)).await {
+            shared.log.error("link_preview_write_failed", with_err(fields! { "key" => key.as_str() }, error));
+        }
+    }
     shared.log.debug("link_preview_fetched", fields! { "key" => key.as_str(), "outcome" => describe(&outcome), "ms" => started.elapsed().as_millis() as u64 });
 
     let cached = match (outcome, stored) {
         // Finding nothing where a card was found before more likely means the
         // relays were slow than that the event is gone. The card stays, and
         // is tried again as soon as a page that found nothing would be.
-        (Outcome::NotFound, Some(Cached { outcome: found @ (Outcome::Card(_) | Outcome::Results(_)), .. })) => {
-            Cached { outcome: found, fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
+        (Outcome::NotFound, Some(Cached { outcome: Outcome::Card(card), .. })) => {
+            Cached { outcome: Outcome::Card(card), fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
         }
         (outcome, _) => Cached { outcome, fetched_at: now },
     };
@@ -528,7 +711,6 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, job: Job, flight: Flig
 fn describe(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::Card(_) => "card",
-        Outcome::Results(_) => "results",
         Outcome::Unsupported(_) => "unsupported",
         Outcome::NotFound => "not_found",
     }

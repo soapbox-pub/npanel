@@ -932,7 +932,7 @@ the author's avatar (drawn as a small card), else the site's own `og:image`.
 Wording that names the site — "Alex on Ditto" — comes from the page's
 `og:site_name`, or its title up to the first separator, so one cached preview
 serves every site. A site with its own idea of how a preview should look
-publishes templates for it, below.
+publishes a script for it, below.
 
 **Which events.** Only the kinds Ditto renders, each read the way its NIP or
 its app writes it (`kinds.rs`): which tag is a music track's title and which
@@ -1005,90 +1005,93 @@ name, or the URL of a page — and clears the lot.
 
 ### A site's own previews
 
-A site can draw its previews itself, images included
-(`src/link_previews/templates.rs`). It publishes them in `/.npanel/`:
-`<kind>.jinja`, one template per kind of event, and the fonts its images use,
-as `.ttf` or `.otf` files. Nothing else belongs there, and npanel never serves
-anything under `/.npanel/` — a request for it is a `404`. A deploy compiles the
-templates and says in the version's deploy log which kinds it found and what
-was wrong with any file; a template that doesn't compile is left out, and the
-build goes on. nsyte skips dotfiles unless told otherwise, so a site published
-with it needs `!dist/.npanel/**` (for its own output directory) in
-`.nsyte-ignore`.
+A site can draw its previews itself, images included, with a script
+(`src/link_previews/script/`). It publishes `/.npanel/preview.js`, the modules
+that imports by relative path, and the fonts its drawing uses, as `.ttf` or
+`.otf` files, all in `/.npanel/`. Nothing else belongs there, and npanel never
+serves anything under `/.npanel/` — a request for it is a `404`. A deploy loads
+the script as a run would and says in the version's deploy log that it found
+it, or why it doesn't load, and what in the directory it ignored; a script that
+fails leaves the site with npanel's own previews, and the build goes on. nsyte
+skips dotfiles unless told otherwise, so a site published with it needs
+`!dist/.npanel/**` (for its own output directory) in `.nsyte-ignore`.
 
-A template is [MiniJinja](https://docs.rs/minijinja) with up to three parts:
-
-```jinja
----
-{
-  "profile": { "kinds": [0], "authors": ["$pubkey"], "limit": 1 },
-  "theme": { "kinds": [16767], "authors": ["$pubkey"], "limit": 1 }
-}
----
-{%- set p = (results.profile | first).content | fromjson -%}
-{%- set title = (p.name or "Someone") ~ " on Ditto" -%}
-{%- set description = p.about[:200] -%}
-{% block image -%}
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">…</svg>
-{%- endblock %}
+```js
+export default {
+  async preview(request, { nostr, signal }) {
+    const pubkey = pubkeyOf(new URL(request.url).pathname);
+    const [profile] = await nostr.query([{ kinds: [0], authors: [pubkey], limit: 1 }], { signal });
+    if (!profile) return null;
+    return { title: "…", description: "…", body: "<article>…</article>", image: draw(profile) };
+  },
+};
 ```
 
-- **Front matter: what to fetch.** A JSON object of named NIP-01 filters —
-  `ids`, `authors`, `kinds`, `#<letter>`, `since`, `until`, `limit` — four at
-  most, each naming `ids`, `authors` or a tag. A value that is exactly
-  `$pubkey`, `$id`, `$d` or `$a` is the page's event's. The template is given
-  what these find and nothing more: npanel fetches the event itself only when
-  it must, to learn the kind of a `note1` or to fill in a variable the path
-  doesn't say, and a query for it by `$id` is then answered with no second
-  round trip. All of a template's queries get ten events between them, in the
-  order they're written; `limit` is a request, cut to that. Each query's
-  events are newest first, and a replaceable or addressable event is only its
-  newest version, however many a relay sends. Queries go to the configured
-  relays and the path's hints, batched with every other lookup.
-- **The top level: what the page says.** `title`, `description`, `image` and
-  `body`, as `{% set %}`s. Whatever isn't set is empty — a template's preview
-  has no fallback to npanel's — except that a missing title is the site's name,
-  and `image` is the template's own drawing unless it is set: to a URL, taken
-  relative to the page, or to `none`, for the site's own `og:image`. `body` is
-  the `<article>` a crawler reads, as markup when it is set with
-  `{% set body %}…{% endset %}`, as text otherwise.
-- **`{% block image %}`: the picture.** An SVG, drawn at 1200×630 and served
-  as a JPEG at `/_npanel/preview/<nip19>.jpg?v=…`, which the page names as its
-  `og:image`. The version is a hash of the build, the template and when the
-  results were fetched, so a platform that caches images by URL sees a new one
-  when any of them changes, and one at its version is cached for a week. Any
-  client may fetch it: the services that fetch a preview's image seldom say
-  they're the crawler that read the page.
+**What it's given.** The crawler's request — its method, its headers, and the
+page's URL without the query a crawler adds — and an object shaped like
+Nostrify's `NRelay`: `query(filters)`, `req(filters)` (the stored events, then
+`EOSE`), and an `event()` that refuses, since a preview publishes nothing. It
+runs for exactly the pages a crawler gets npanel's preview on — one segment
+naming a NIP-19 entity or NIP-05 name — but whatever kind that names: the
+script decodes the path itself. Credentials and what the proxy says about the
+visitor (`Cookie`, `Authorization`, `X-Forwarded-*`, …) aren't passed on.
 
-A template is given `entity` (the event's `nip19`, `kind`, `pubkey`, `id` and
-`d`, as far as they're known), `results`, a list per query, `url` and
-`origin`. Beyond Jinja's own, it has `tags(event, name)`, `tag(event, name)`,
-`imeta(tag)`, `| fromjson`, colours (`| lighten(n)`, `| darken(n)`,
-`| is_dark`, `| hsl`, `hsl_color(h, s, l)`, in `#rrggbb`), `sin`, `cos` and
-`pi`, and `glyph_mask(text, size)`: the text drawn in the site's fonts, cropped
-to a square around it and made a luminance mask, as a `data:` PNG for an SVG
-`<mask>` — how Ditto cuts an avatar to the shape of an emoji. None of these
-fail on something missing; undefined reads as undefined however deep it goes,
-so a template copes with whatever came back.
+**What it returns.** `title`, `description`, `body` — the article a crawler
+reads, as markup, cleaned by an HTML sanitizer of anything that runs — and
+`image`: a URL, taken relative to the page; a PNG, JPEG, GIF or WebP as a
+`Uint8Array`, `ArrayBuffer` or `Blob`; or a promise of one. Or `null`, for
+npanel's own preview, which is also what a page gets when the script throws.
+Whatever isn't returned is empty: a script's preview has no fallback to
+npanel's, except that a missing title is the site's name and a missing image is
+the site's own `og:image`.
 
-Templates are the site's, but what they're given is anyone's, so the limits
-are npanel's. Every `{{ }}` is escaped for HTML, which is also what an SVG
-attribute needs. A render has a fixed budget of MiniJinja fuel, a body 256 KB
-and an SVG 4 MB at most. Drawing reads no file and opens no connection: the
-images an SVG names are fetched first — `https://` URLs through the
-public-addresses-only resolver, sixteen at most, 8 MB each, five seconds in
-all, and paths of the site's own from its build — and anything else is left
-out. Only PNG, JPEG, GIF and WebP are drawn, and none over 4096 pixels a side.
-Text is set only in the site's fonts. Rendering runs on the blocking pool, as
-many at once as there are cores, and drawn images are kept in memory, 64 MB
-of them, by everything they're drawn from.
+**The image is drawn behind the page.** A promise isn't waited for: the page
+goes out as soon as the handler returns, naming its image as
+`/_npanel/preview/<the page's path>?v=…`, and the drawing finishes on its own.
+The version is a hash of everything the handler was given until it returned:
+the script, the URL, the request headers it read, and the filters and URLs it
+asked for with what they found. So an image never changes under its name, one
+at its version is cached for a week, and a platform that caches images by URL
+fetches a new one when anything it's drawn from changes. Anything fetched only
+after the handler returns doesn't count, so what the image depends on should
+be fetched before. Any client may fetch the image: the services that fetch a
+preview's image seldom say they're the crawler that read the page. One asked
+for at another version, or none, is the page's current one, for five minutes,
+drawn again if it was let go since.
 
-A site's lookups are cached like npanel's cards, keyed by a hash of every
-template's front matter, so two sites asking the same share them. A page whose
-path names a kind neither npanel nor the site previews is served as published
-without a lookup; one whose kind only the event can say is looked up through
-the site's templates, and gets npanel's card when it turns out to be a kind the
-site has none for.
+**The web it runs in** is a browser's, as far as a preview needs (`prelude.js`):
+`OffscreenCanvas` and its 2D context — paths, `clip`, `drawImage`,
+`getImageData` and `putImageData`, gradients, composite operations, `fillText`
+and `measureText` in the site's own fonts (`sans-serif` and the other generic
+families are the first of them) — `createImageBitmap` of a PNG, JPEG, GIF, WebP
+or SVG, `convertToBlob` to PNG or JPEG, `fetch`, `Blob`, `Headers`, `Request`,
+`Response`, `URL`, `TextEncoder`, `atob`, `AbortSignal`, `setTimeout` and
+`console`, whose lines go to npanel's log at `debug`. Shadows, filters,
+patterns and conic gradients throw rather than draw something wrong, as does
+anything else that isn't there. An SVG drawn as an image draws nothing it names
+elsewhere, as in a browser: a script fetches what it draws. `Date` stands still
+at when the run started, and `Math.random` is seeded by the URL, so one input
+gives one image.
+
+**Limits are npanel's.** Each run gets a QuickJS runtime of its own on a thread
+of its own, as many at once as there are cores: 64 MB of memory, ten seconds to
+return and ten more to draw, past which it is interrupted wherever it is. It
+may query relays eight times, for fifty events in all — each filter naming
+ids, authors or a tag, and its `limit` honoured however many a relay sends —
+on the configured relays, the path's hints, and, when they have nothing, the
+outboxes of the authors it names, batched with every other lookup. It may
+fetch sixteen `https://` URLs, through the public-addresses-only resolver,
+following redirects only to `https://`, 8 MB each and 32 MB in all; it reads no
+file. Its canvases and decoded images may hold 16 million pixels between them,
+none over 2400 pixels a side for a canvas or 4096 for a picture. A module may
+be 4 MB and all of them 8 MB; a site may have eight fonts of up to 32 MB.
+
+**Caching.** A script's previews are cached as npanel's cards are, in memory
+and `previews.sqlite3`, keyed by the script, the URL, and the values of the
+request headers it read — which are remembered, and named in the page's
+`Vary`. Two builds with the same script share them. Drawn images are kept by
+version, 64 MB of them in memory and 512 MB in `DATA_DIR/preview-images/`.
+Clearing link previews clears both.
 
 ## Authentication
 

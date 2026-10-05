@@ -178,7 +178,7 @@ pub struct ResolvedFile {
 /// asks for those paths is software probing for a capability, and a page of
 /// HTML — under a `200`, worse — tells it the site has one.
 ///
-/// `/.npanel/` is nothing at all: the templates and fonts there are for
+/// `/.npanel/` is nothing at all: the script, modules and fonts there are for
 /// npanel to draw a site's link previews with, not for anyone to fetch.
 pub fn resolve_site_path(
     conn: &Connection,
@@ -187,7 +187,7 @@ pub fn resolve_site_path(
     spa: bool,
 ) -> rusqlite::Result<Option<ResolvedFile>> {
     let normalized = normalize_site_path(request_path);
-    if normalized == "/.npanel" || normalized.starts_with(crate::link_previews::templates::DIR) {
+    if normalized == "/.npanel" || normalized.starts_with(crate::link_previews::script::DIR) {
         return Ok(None);
     }
     let exact = normalized == "/.well-known" || normalized.starts_with("/.well-known/");
