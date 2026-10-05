@@ -155,6 +155,24 @@ a served site and the API — the place for a test that crosses subsystems.
 Note the `run` in `bun run test`: a bare `bun test` starts Bun's own test runner
 instead of the script, and the dashboard's tests need Vitest's DOM environment.
 
+### Timing a preview script
+
+`bench_preview` times runs of a real site's preview script, a phase at a time:
+the thread, the QuickJS runtime, the prelude, the site's modules, the handler,
+and the heap it ends with. It runs Ditto's from a checkout beside this one
+(`../ditto/dist/.npanel`, after a `npm run build` there), or the directory in
+`NPANEL_BENCH_SCRIPT`, against relays that answer at once, then as many at
+once as there are cores. It's ignored by `cargo test`, and means something only
+in a release build:
+
+```sh
+cargo test --release bench_preview -- --ignored --nocapture
+```
+
+It leaves each page's image in the system's temporary directory, as
+`npanel-bench-*.jpg`, to be looked at. In production the same phases are in
+the `link_preview_script_ran` log line, at `debug`.
+
 ## The dashboard on another origin
 
 The dashboard published as an nsite has no API on its own origin, and asks

@@ -5,7 +5,8 @@
 //! read-only Nostr relay, it returns the page's title, description and
 //! article, and its image — a URL, or bytes it drew on an `OffscreenCanvas`,
 //! or a promise of them — or `null`, which leaves the page as published. Modules it
-//! imports, and the fonts it draws text in, sit beside it in `/.npanel/`.
+//! imports sit beside it in `/.npanel/`; it draws text in the fonts installed
+//! on the system.
 //!
 //! Each run gets a QuickJS runtime of its own, on a thread of its own, with a
 //! memory limit, a deadline, and the web a preview needs (`prelude.js`) and
@@ -40,7 +41,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, OwnedSemaphorePermit};
 
-use self::canvas::{Font, Fonts, Line, State, Style, Surfaces, Text};
+use self::canvas::{Font, Line, State, Style, Surfaces, Text};
 use super::preview::Extras;
 use super::relays::{outbox, EventSource};
 use crate::blobs::BlobStore;
@@ -52,7 +53,7 @@ use crate::nostr::pool::Filter;
 use crate::nostr::service::dedupe;
 use crate::nostr::{is_hex64, Event};
 
-/// Where a site keeps its script, the modules it imports, and its fonts.
+/// Where a site keeps its script and the modules it imports.
 pub const DIR: &str = "/.npanel/";
 /// The module npanel runs, under [`DIR`].
 pub const ENTRY: &str = "preview.js";
@@ -61,8 +62,6 @@ const PRELUDE: &str = include_str!("prelude.js");
 
 const MAX_SCRIPT_BYTES: u64 = 4 << 20;
 const MAX_SCRIPTS_BYTES: u64 = 8 << 20;
-const MAX_FONT_BYTES: u64 = 32 << 20;
-const MAX_FONTS: usize = 8;
 
 /// What one run's JavaScript may hold, and how deep it may call.
 const MEMORY: usize = 64 << 20;
@@ -89,13 +88,12 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOG_LINES: usize = 50;
 const MAX_LOG_LINE: usize = 1024;
 
-/// A build's script: its modules, by their path under [`DIR`], and its fonts.
+/// A build's script: its modules, by their path under [`DIR`].
 pub struct Script {
-    /// Names what the script is: every module and font. Two builds with the
-    /// same script share previews.
+    /// Names what the script is: every module. Two builds with the same
+    /// script share previews.
     pub digest: String,
     modules: HashMap<String, Arc<str>>,
-    fonts: Arc<Fonts>,
 }
 
 /// Something wrong with a site's `/.npanel/`, for its deploy log.
@@ -117,7 +115,6 @@ pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
     let mut problems = Vec::new();
     let mut problem = |path: &str, message: &str| problems.push(Problem { path: path.to_string(), message: message.to_string() });
     let mut modules = HashMap::new();
-    let mut fonts = Vec::new();
     let mut total = 0;
     let mut digest = Sha256::new();
 
@@ -125,17 +122,7 @@ pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
         let Some(name) = path.strip_prefix(DIR) else { continue };
         let lower = name.to_ascii_lowercase();
         let size = blobs.size(*sha256);
-        if lower.ends_with(".ttf") || lower.ends_with(".otf") {
-            match size {
-                Some(size) if size > MAX_FONT_BYTES => problem(path, "This font is larger than 32 MB, so it isn't loaded."),
-                Some(_) if fonts.len() >= MAX_FONTS => problem(path, "A site may have 8 fonts at most, so this one isn't loaded."),
-                Some(_) => {
-                    fonts.push(*sha256);
-                    digest.update(format!("{name}\0{sha256}\0").as_bytes());
-                }
-                None => problem(path, "This font is missing from local storage."),
-            }
-        } else if lower.ends_with(".js") || lower.ends_with(".mjs") {
+        if lower.ends_with(".js") || lower.ends_with(".mjs") {
             let Some(size) = size.filter(|size| *size <= MAX_SCRIPT_BYTES) else {
                 problem(path, "This module is larger than 4 MB, or missing, so it isn't loaded.");
                 continue;
@@ -152,8 +139,10 @@ pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
                 }
                 Err(_) => problem(path, "This module isn't UTF-8 text, so it isn't loaded."),
             }
+        } else if lower.ends_with(".ttf") || lower.ends_with(".otf") {
+            problem(path, "Previews draw text in the fonts installed on the gateway, not a site's own, so this font is ignored. Ask the gateway's admin for any it lacks.");
         } else {
-            problem(path, "Only JavaScript modules and .ttf or .otf fonts belong in /.npanel/, so this file is ignored.");
+            problem(path, "Only JavaScript modules belong in /.npanel/, so this file is ignored.");
         }
     }
 
@@ -163,7 +152,7 @@ pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
         }
         return Loaded { script: None, problems };
     }
-    let script = Script { digest: hex::encode(&digest.finalize()[..16]), modules, fonts: Arc::new(Fonts::new(blobs.clone(), fonts)) };
+    let script = Script { digest: hex::encode(&digest.finalize()[..16]), modules };
     Loaded { script: Some(script), problems }
 }
 
@@ -247,6 +236,25 @@ pub struct Ran {
     pub vary: Vec<String>,
     /// What names this preview's image.
     pub version: String,
+    pub timings: Timings,
+}
+
+/// How long a run took getting to its answer, a phase at a time.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timings {
+    /// From being asked for to its thread starting.
+    pub spawn: Duration,
+    /// Making a QuickJS runtime and context.
+    pub setup: Duration,
+    /// Running the prelude: the web the script runs in.
+    pub prelude: Duration,
+    /// Parsing the site's modules and running their top level.
+    pub module: Duration,
+    /// The handler, from its call to its return, its queries and fetches
+    /// included.
+    pub handler: Duration,
+    /// What the JavaScript heap held when the handler returned, in bytes.
+    pub heap: u64,
 }
 
 /// What a handler returned, as it wrote it: not yet held to anything.
@@ -272,7 +280,7 @@ pub enum Image {
 /// that may go at once — until it's done drawing.
 pub async fn run(script: Arc<Script>, page: Page, env: Env, permit: OwnedSemaphorePermit) -> Result<Ran, String> {
     let (done, ran) = oneshot::channel();
-    spawn(script, Some((page, env)), done, Some(permit))?;
+    spawn(script, Some((page, env)), done, Some(permit), Instant::now())?;
     ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into()))
 }
 
@@ -280,20 +288,26 @@ pub async fn run(script: Arc<Script>, page: Page, env: Env, permit: OwnedSemapho
 /// without calling it, for its deploy log.
 pub async fn check(script: Arc<Script>) -> Result<(), String> {
     let (done, ran) = oneshot::channel();
-    spawn(script, None, done, None)?;
+    spawn(script, None, done, None, Instant::now())?;
     ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into())).map(|_| ())
 }
 
 /// A thread for one run, with a runtime of its own to drive it. The thread
 /// is a plain one, not the blocking pool's, because a runtime can't be
 /// started on a thread that's already in one.
-fn spawn(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::Sender<Result<Ran, String>>, permit: Option<OwnedSemaphorePermit>) -> Result<(), String> {
+fn spawn(
+    script: Arc<Script>,
+    job: Option<(Page, Env)>,
+    done: oneshot::Sender<Result<Ran, String>>,
+    permit: Option<OwnedSemaphorePermit>,
+    asked: Instant,
+) -> Result<(), String> {
     std::thread::Builder::new()
         .name("npanel-preview".into())
         .spawn(move || {
             let _permit = permit;
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
-            runtime.block_on(execute(script, job, done));
+            runtime.block_on(execute(script, job, done, asked));
         })
         .map(|_| ())
         .map_err(|e| format!("No thread for the preview script: {e}"))
@@ -311,8 +325,9 @@ struct Spent {
     inputs: RefCell<Vec<String>>,
 }
 
-async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::Sender<Result<Ran, String>>) {
+async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::Sender<Result<Ran, String>>, asked: Instant) {
     let started = Instant::now();
+    let mut timings = Timings { spawn: started - asked, ..Timings::default() };
     let deadline = job.as_ref().map_or(DEADLINE, |(_, env)| env.deadline);
     let limit = Arc::new(AtomicU64::new(deadline.as_millis() as u64));
     let runtime = match AsyncRuntime::new() {
@@ -355,14 +370,19 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 }
             };
 
+            timings.setup = started.elapsed();
             let start = async {
-                let natives = natives(&ctx, &script, env.clone(), page.as_ref().map(|p| p.url.clone()).unwrap_or_default(), spent.clone())?;
+                let at = Instant::now();
+                let natives = natives(&ctx, env.clone(), page.as_ref().map(|p| p.url.clone()).unwrap_or_default(), spent.clone())?;
                 let prelude: Function = ctx.eval(PRELUDE)?;
                 let seed = page.as_ref().map_or(0, |page| u32::from_le_bytes(Sha256::digest(page.url.as_bytes())[..4].try_into().unwrap()));
                 let now = env.as_ref().map_or(0, |env| env.now);
                 let hooks: Object = prelude.call((natives, seed, now as f64))?;
+                timings.prelude = at.elapsed();
+                let at = Instant::now();
                 let module: Object = Module::import(&ctx, ENTRY)?.into_future().await?;
                 let handler: Value = module.get("default")?;
+                timings.module = at.elapsed();
                 rquickjs::Result::Ok((hooks, handler))
             };
             let (hooks, handler) = match start.await {
@@ -375,13 +395,14 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
             let (Some(page), Some(env)) = (page, env) else {
                 let exported = handler.as_object().and_then(|h| h.get::<_, Value>("preview").ok()).is_some_and(|f| f.is_function());
                 let _ = done.send(if exported {
-                    Ok(Ran { preview: None, vary: Vec::new(), version: String::new() })
+                    Ok(Ran { preview: None, vary: Vec::new(), version: String::new(), timings })
                 } else {
                     Err("/.npanel/preview.js must export default { preview(request, ctx) }.".into())
                 });
                 return;
             };
 
+            let called = Instant::now();
             let call = async {
                 let call: Function = hooks.get("call")?;
                 let headers = ctx.json_parse(serde_json::to_string(&page.headers).expect("headers serialize"))?;
@@ -400,6 +421,8 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                     return;
                 }
             };
+            timings.handler = called.elapsed();
+            timings.heap = heap(&ctx);
 
             let read = async {
                 let mut vary: Vec<String> = out.get("headers")?;
@@ -407,7 +430,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 vary.dedup();
                 let version = version(&script, &page, &vary, &spent.inputs.borrow());
                 if out.get::<_, bool>("none")? {
-                    return rquickjs::Result::Ok((Ran { preview: None, vary, version }, None));
+                    return rquickjs::Result::Ok((Ran { preview: None, vary, version, timings }, None));
                 }
                 let mut pending = None;
                 let image = if let Some(url) = out.get::<_, Option<String>>("url")? {
@@ -428,7 +451,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                     return Err(Exception::throw_type(&ctx, "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read."));
                 };
                 let preview = Returned { title: out.get("title")?, description: out.get("description")?, body: out.get("body")?, image, extras };
-                Ok((Ran { preview: Some(preview), vary, version }, pending))
+                Ok((Ran { preview: Some(preview), vary, version, timings }, pending))
             };
             let (mut ran, pending) = match read.await {
                 Ok(read) => read,
@@ -453,6 +476,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 return;
             }
             extend(deadline * 2);
+            let drawing = Instant::now();
             let bytes = match tokio::time::timeout((deadline * 2).saturating_sub(started.elapsed()), pending.into_future::<Option<TypedArray<u8>>>()).await {
                 Ok(Ok(Some(bytes))) => {
                     let bytes = picture(bytes_of(&bytes));
@@ -471,9 +495,22 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                     None
                 }
             };
+            env.log.debug("link_preview_drawn", fields! { "url" => page.url.as_str(), "drawn" => bytes.is_some(), "ms" => drawing.elapsed().as_millis() as u64, "heap" => heap(&ctx) });
             let _ = drawn.send(bytes);
         })
         .await;
+}
+
+/// What a run's JavaScript heap holds now, in bytes.
+fn heap(ctx: &Ctx<'_>) -> u64 {
+    // SAFETY: `ctx` holds its runtime's lock, and the runtime lives as long
+    // as it does.
+    let usage = unsafe {
+        let mut usage = std::mem::MaybeUninit::uninit();
+        rquickjs::qjs::JS_ComputeMemoryUsage(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), usage.as_mut_ptr());
+        usage.assume_init()
+    };
+    usage.memory_used_size.max(0) as u64
 }
 
 /// What a script threw, for a log or a deploy log.
@@ -573,9 +610,9 @@ fn thrown(ctx: &Ctx<'_>, message: impl std::fmt::Display) -> rquickjs::Error {
 }
 
 /// What `prelude.js` is built on.
-fn natives<'js>(ctx: &Ctx<'js>, script: &Script, env: Option<Rc<Env>>, url: String, spent: Rc<Spent>) -> rquickjs::Result<Object<'js>> {
+fn natives<'js>(ctx: &Ctx<'js>, env: Option<Rc<Env>>, url: String, spent: Rc<Spent>) -> rquickjs::Result<Object<'js>> {
     let natives = Object::new(ctx.clone())?;
-    let surfaces = Rc::new(RefCell::new(Surfaces::new(script.fonts.clone())));
+    let surfaces = Rc::new(RefCell::new(Surfaces::default()));
     natives.set("utf8Encode", Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String| TypedArray::<u8>::new(ctx, text.into_bytes())))?;
     natives.set("utf8Decode", Function::new(ctx.clone(), |bytes: TypedArray<'js, u8>| String::from_utf8_lossy(&bytes_of(&bytes)).into_owned()))?;
     natives.set(

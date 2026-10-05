@@ -228,6 +228,40 @@ async fn a_deploy_checks_what_it_can() {
 
     let loaded = load(&site(&[("notes.txt", "x"), ("lib.js", "export {}")]).files, &BlobStore::allowing_private(tempfile::tempdir().unwrap().path()));
     assert!(loaded.script.is_none());
+
+    // A font is the gateway's to have, not the site's.
+    let fonted = site(&[("preview.js", "export default { preview() {} };"), ("Emoji.ttf", "not really a font")]);
+    let loaded = load(&fonted.files, &fonted.blobs);
+    assert!(loaded.script.is_some());
+    assert_eq!(loaded.problems.len(), 1);
+    assert_eq!(loaded.problems[0].path, "/.npanel/Emoji.ttf");
+    assert!(loaded.problems[0].message.contains("installed on the gateway"), "{}", loaded.problems[0].message);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn text_is_drawn_in_the_systems_fonts() {
+    if canvas::fonts().is_empty() {
+        eprintln!("No fonts are installed, so there's no text to draw.");
+        return;
+    }
+    let text = r##"
+export default {
+  async preview() {
+    const canvas = new OffscreenCanvas(200, 100);
+    const ctx = canvas.getContext("2d");
+    ctx.font = "48px sans-serif";
+    ctx.fillStyle = "#000000";
+    ctx.textBaseline = "middle";
+    ctx.fillText("HHHH", 0, 50);
+    const width = ctx.measureText("HHHH").width;
+    const inked = ctx.getImageData(0, 0, 200, 100).data.some((v, i) => i % 4 === 3 && v > 0);
+    return { title: `${width > 0} ${inked}` };
+  },
+};
+"##;
+    let (_site, script) = script(&[("preview.js", text)]);
+    let preview = previewed(run_page(&script, "https://x.example/a", vec![]).await.unwrap());
+    assert_eq!(preview.title.as_deref(), Some("true true"));
 }
 
 #[test]
@@ -256,4 +290,175 @@ fn selects_the_newest_each_filter_asks_for() {
     assert_eq!(picked.iter().map(|e| e.content.as_str()).collect::<Vec<_>>(), ["4", "3"]);
     let unlimited = vec![Filter { kinds: vec![1], authors: vec![author], ..Default::default() }];
     assert_eq!(select(&unlimited, notes).len(), 5);
+}
+
+/// How long a run of a real site's script takes, a phase at a time: Ditto's,
+/// built beside this checkout, or the one in `NPANEL_BENCH_SCRIPT`'s
+/// directory. Each page runs `NPANEL_BENCH_RUNS` times (20) one after
+/// another, then as many at once as there are cores. Relays answer at once,
+/// so what's measured is npanel and the script. The images go in the
+/// system's temporary directory, to be looked at.
+///
+/// `cargo test --release bench_preview -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_preview() {
+    use crate::nostr::nip19;
+
+    let dir = std::env::var("NPANEL_BENCH_SCRIPT").unwrap_or_else(|_| "../ditto/dist/.npanel".into());
+    let runs: usize = std::env::var("NPANEL_BENCH_RUNS").ok().and_then(|n| n.parse().ok()).unwrap_or(20);
+    let store = tempfile::tempdir().unwrap();
+    let blobs = BlobStore::allowing_private(store.path());
+    let mut files = Vec::new();
+    for entry in walkdir(std::path::Path::new(&dir)) {
+        let bytes = std::fs::read(&entry).unwrap();
+        let sha256 = BlobHash::of(&bytes);
+        blobs.put(sha256, &bytes).unwrap();
+        files.push((format!("{DIR}{}", entry.strip_prefix(&dir).unwrap().display()), sha256));
+    }
+    let loaded = load(&files, &blobs);
+    let ditto = Arc::new(loaded.script.unwrap_or_else(|| panic!("no preview.js in {dir}")));
+    let (_s, baseline) = script(&[("preview.js", "export default { preview: () => null };")]);
+    let emoji = |font: &str| {
+        format!(
+            r##"export default {{ preview() {{
+  const canvas = new OffscreenCanvas(1200, 630);
+  const ctx = canvas.getContext("2d");
+  ctx.font = '120px {font}';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("🌈", 600, 315);
+  return {{ title: "emoji", image: canvas.convertToBlob({{ type: "image/jpeg", quality: 0.85 }}) }};
+}} }};"##
+        )
+    };
+    let (_s, named) = script(&[("preview.js", &emoji(r#""Noto Color Emoji", serif"#))]);
+    let (_s, fallback) = script(&[("preview.js", &emoji("serif"))]);
+
+    let c = |hex: &str, role: &str| vec!["c".to_string(), hex.to_string(), role.to_string()];
+    let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex","about":"Building things on Nostr."}"#);
+    let pubkey = profile.pubkey.clone();
+    let colors = vec![c("#14161f", "background"), c("#f8fafc", "text"), c("#7c3aed", "primary")];
+    let active = Event::sign(SECRET, 2, 16767, colors.clone(), "");
+    let mut theme_tags = vec![vec!["d".to_string(), "midnight".to_string()], vec!["title".to_string(), "Midnight".to_string()]];
+    theme_tags.extend(colors);
+    let theme = Event::sign(SECRET, 3, 36767, theme_tags, "");
+    let note = Event::sign(SECRET, 4, 1, vec![], "Hello, Nostr! This is a note with a few words in it, for a preview to describe.");
+    let moment_tags = ["#ff595e", "#ffca3a", "#8ac926", "#1982c4", "#6a4c93"].iter().map(|hex| vec!["c".to_string(), hex.to_string()]).collect();
+    let moment = Event::sign(SECRET, 5, 3367, moment_tags, "🌈");
+    let events = vec![profile, active, theme.clone(), note.clone(), moment.clone()];
+    let nevent = |e: &Event| nip19::nevent_encode(&e.id, &[], Some(&e.pubkey), Some(e.kind as u32));
+
+    let cases: Vec<(&str, &Arc<Script>, String)> = vec![
+        ("baseline: preview() => null", &baseline, "x".into()),
+        ("text: \"Noto Color Emoji\"", &named, "x".into()),
+        ("text: serif, falling back", &fallback, "x".into()),
+        ("ditto: profile, themed", &ditto, nip19::npub_encode(&pubkey)),
+        ("ditto: note", &ditto, nevent(&note)),
+        ("ditto: theme", &ditto, nip19::naddr_encode(&pubkey, 36767, "midnight", &[])),
+        ("ditto: color moment", &ditto, nevent(&moment)),
+    ];
+
+    let fonts = Instant::now();
+    let faces = canvas::fonts().len();
+    println!("\n{faces} font faces loaded in {:.1} ms; {} cores; {} KB of modules\n", ms(fonts.elapsed()), cores(), ditto.modules.values().map(|m| m.len()).sum::<usize>() / 1024);
+    println!("{:<30} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "median ms (p95 total)", "spawn", "setup", "prelude", "module", "handler", "image", "total", "heap KB");
+    for (name, script, path) in &cases {
+        let mut samples: Vec<Sample> = Vec::new();
+        for i in 0..runs {
+            let sample = bench_run(script, &format!("https://ditto.example/{path}"), events.clone()).await;
+            if i == 0 {
+                if let Some((bytes, _)) = &sample.image {
+                    let slug: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { ' ' }).collect();
+                    let extension = if imagesize::image_type(bytes).ok() == Some(imagesize::ImageType::Png) { "png" } else { "jpg" };
+                    let file = std::env::temp_dir().join(format!("npanel-bench-{}.{extension}", slug.split_whitespace().collect::<Vec<_>>().join("-")));
+                    std::fs::write(&file, bytes).unwrap();
+                }
+            }
+            samples.push(sample);
+        }
+        let med = |f: &dyn Fn(&Sample) -> f64| percentile(samples.iter().map(f).collect(), 0.5);
+        println!(
+            "{:<30} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>4.0} ({:>3.0}) {:>8}",
+            name,
+            med(&|s| ms(s.ran.spawn)),
+            med(&|s| ms(s.ran.setup)),
+            med(&|s| ms(s.ran.prelude)),
+            med(&|s| ms(s.ran.module)),
+            med(&|s| ms(s.ran.handler)),
+            med(&|s| s.image.as_ref().map_or(0.0, |(_, t)| ms(*t))),
+            med(&|s| ms(s.total)),
+            percentile(samples.iter().map(|s| ms(s.total)).collect(), 0.95),
+            med(&|s| s.ran.heap as f64) as u64 / 1024,
+        );
+    }
+
+    // As many at once as may run, for throughput.
+    let url = format!("https://ditto.example/{}", nevent(&moment));
+    let at_once = cores() * 4;
+    let runs = Arc::new(Semaphore::new(cores()));
+    let started = Instant::now();
+    let all = futures_util::future::join_all((0..at_once).map(|_| {
+        let (ditto, url, events, runs) = (ditto.clone(), url.clone(), events.clone(), runs.clone());
+        async move {
+            let _turn = runs.acquire().await.unwrap();
+            bench_run(&ditto, &url, events).await
+        }
+    }))
+    .await;
+    let elapsed = started.elapsed();
+    let totals: Vec<f64> = all.iter().map(|s| ms(s.total)).collect();
+    println!(
+        "\n{at_once} color moments, {} at a time: {:.0} ms in all, {:.1} a second; each {:.0} ms median, {:.0} ms p95\n",
+        cores(),
+        ms(elapsed),
+        at_once as f64 / elapsed.as_secs_f64(),
+        percentile(totals.clone(), 0.5),
+        percentile(totals, 0.95),
+    );
+}
+
+struct Sample {
+    ran: Timings,
+    /// The image, and how long it took after the handler returned.
+    image: Option<(Vec<u8>, Duration)>,
+    total: Duration,
+}
+
+async fn bench_run(script: &Arc<Script>, url: &str, events: Vec<Event>) -> Sample {
+    let started = Instant::now();
+    let ran = run_page(script, url, events).await.unwrap();
+    let answered = Instant::now();
+    let image = match ran.preview.map(|p| p.image) {
+        Some(Image::Pending(image)) => image.await.unwrap().map(|bytes| (bytes, answered.elapsed())),
+        Some(Image::Bytes(bytes)) => Some((bytes, Duration::ZERO)),
+        _ => None,
+    };
+    Sample { ran: ran.timings, image, total: started.elapsed() }
+}
+
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            found.extend(walkdir(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1000.0
+}
+
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(2, |n| n.get())
+}
+
+fn percentile(mut values: Vec<f64>, at: f64) -> f64 {
+    values.sort_by(f64::total_cmp);
+    values[((values.len() - 1) as f64 * at).round() as usize]
 }

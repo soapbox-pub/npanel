@@ -35,9 +35,11 @@ RUN bun run build
 
 FROM debian:bookworm-slim
 
-# wget is for the health check. Everything npanel itself needs — TLS roots, the
-# time zone database, the device database — is compiled into the binary.
-RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
+# wget is for the health check, and the fonts are what sites' link-preview
+# scripts draw text in. Everything else npanel needs — TLS roots, the time zone
+# database, the device database — is compiled into the binary.
+RUN apt-get update && apt-get install -y --no-install-recommends wget fonts-dejavu-core fonts-noto-color-emoji \
+  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --gid 1000 npanel && useradd --uid 1000 --gid npanel --home /app --shell /usr/sbin/nologin npanel
 

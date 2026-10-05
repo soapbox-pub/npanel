@@ -51,9 +51,9 @@ rand = "0.8"
 rquickjs = { version = "0.14", features = ["futures", "loader", "array-buffer"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
 regex = "1"
-# The canvas a site's preview script draws on, with the site's own fonts and
-# none of the system's, so a drawing comes out the same on every gateway.
-resvg = { version = "0.48", default-features = false, features = ["text", "raster-images"] }
+# The canvas a site's preview script draws on, in the fonts installed on the
+# system.
+resvg = { version = "0.48", default-features = false, features = ["text", "raster-images", "system-fonts", "memmap-fonts"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

@@ -165,7 +165,15 @@ sudo install -d /etc/npanel
 
 Nothing else is needed at runtime: the dashboard, the Matomo device database,
 the Public Suffix List, the analytics tracker and the time zone data are all
-inside the binary.
+inside the binary. The exception is fonts. Sites' link-preview scripts draw text
+in the fonts installed on the system, so install a few, emoji included:
+
+```sh
+sudo apt install fonts-dejavu-core fonts-noto-color-emoji
+```
+
+Without any, previews draw no text, and npanel logs `link_preview_no_fonts`
+when it starts.
 
 Configure. npanel reads `.env` from its working directory, which the unit sets
 to `/etc/npanel`:

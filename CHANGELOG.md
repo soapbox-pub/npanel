@@ -15,13 +15,16 @@ it is tagged.
   Everyone else gets the page as published. This replaces routing crawlers to
   a separate server from the proxy.
 - The script is handed the crawler's request and a read-only Nostr relay,
-  shaped like Nostrify's, and can draw its image on an `OffscreenCanvas` in the
-  site's own fonts, which npanel serves at `/_npanel/preview/…`. The page never
-  waits for its image. Each run is sandboxed, metered and given a deadline, and
-  runs on a thread of its own: a preview that can't be had within a couple of
-  seconds sends the page as published, never an error. A deploy's log says
-  whether the script loads, and nothing under `/.npanel/` is ever served. See
-  "Link previews" in `docs/architecture.md`.
+  shaped like Nostrify's, and can draw its image on an `OffscreenCanvas`, which
+  npanel serves at `/_npanel/preview/…`. The page never waits for its image.
+  Each run is sandboxed, metered and given a deadline, and runs on a thread of
+  its own: a preview that can't be had within a couple of seconds sends the
+  page as published, never an error. A deploy's log says whether the script
+  loads, and nothing under `/.npanel/` is ever served. See "Link previews" in
+  `docs/architecture.md`.
+- Previews draw text in the fonts installed on the system, emoji included. The
+  Docker image comes with DejaVu and Noto Color Emoji; a systemd install
+  should `apt install fonts-dejavu-core fonts-noto-color-emoji`.
 - Previews and their images are cached in `DATA_DIR/previews.sqlite3` and
   `DATA_DIR/preview-images/`, scripts' queries are batched into one
   subscription per relay, and runs are capped per minute.

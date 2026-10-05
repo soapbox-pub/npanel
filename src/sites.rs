@@ -178,8 +178,8 @@ pub struct ResolvedFile {
 /// asks for those paths is software probing for a capability, and a page of
 /// HTML — under a `200`, worse — tells it the site has one.
 ///
-/// `/.npanel/` is nothing at all: the script, modules and fonts there are for
-/// npanel to draw a site's link previews with, not for anyone to fetch.
+/// `/.npanel/` is nothing at all: the script and modules there are for npanel
+/// to draw a site's link previews with, not for anyone to fetch.
 pub fn resolve_site_path(
     conn: &Connection,
     build_id: i64,

@@ -517,6 +517,17 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
         let dir = shared.config.data_dir.join("preview-images");
         Arc::new(tokio::task::spawn_blocking(move || Images::open(dir)).await??)
     };
+    // Read now, so a run seldom waits on them, and an admin learns of a
+    // gateway without fonts before a preview comes out without text. Not
+    // waited for: a page that draws no text needn't.
+    let log = shared.log;
+    tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        match script::canvas::fonts().len() {
+            0 => log.warn("link_preview_no_fonts", fields! {}),
+            faces => log.info("link_preview_fonts", fields! { "faces" => faces, "ms" => started.elapsed().as_millis() as u64 }),
+        }
+    });
     let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
     let worker = Arc::new(Worker {
         runtime: tokio::runtime::Handle::current(),
@@ -627,6 +638,20 @@ async fn run_script(shared: &Shared, worker: &Worker, page: &ScriptPage) -> Resu
             return Err(error);
         }
     };
+    let t = ran.timings;
+    let ms = |d: Duration| (d.as_secs_f64() * 10_000.0).round() / 10.0;
+    shared.log.debug(
+        "link_preview_script_ran",
+        fields! {
+            "url" => page.page.url.as_str(),
+            "spawn_ms" => ms(t.spawn),
+            "setup_ms" => ms(t.setup),
+            "prelude_ms" => ms(t.prelude),
+            "module_ms" => ms(t.module),
+            "handler_ms" => ms(t.handler),
+            "heap" => t.heap,
+        },
+    );
 
     let key = page.key(&ran.vary);
     shared.varies.lock().put(page.base(), ran.vary.clone());

@@ -22,8 +22,6 @@ use resvg::tiny_skia::{
 use resvg::usvg::{self, fontdb, ImageHrefResolver, ImageKind};
 use serde::Deserialize;
 
-use crate::blobs::BlobStore;
-use crate::hash::BlobHash;
 use crate::html::escape;
 
 /// The largest canvas a script may make, a side.
@@ -34,51 +32,58 @@ pub const MAX_PICTURE: u32 = 4096;
 /// bytes each: 64 MB.
 const MAX_PIXELS: u64 = 16 << 20;
 
-/// A site's fonts, read only when something draws text. Mapped rather than
+/// The fonts installed on the system, read once, the first time anything
+/// asks: by [`fonts`] when the previews runtime starts. Mapped rather than
 /// copied: an emoji font is ten megabytes.
-pub struct Fonts {
-    blobs: BlobStore,
-    files: Vec<BlobHash>,
-    db: OnceLock<Arc<fontdb::Database>>,
+static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
+
+/// Families a generic one stands for when fontconfig doesn't name one that's
+/// installed, the likeliest first. Then any family at all.
+const SERIF: [&str; 3] = ["DejaVu Serif", "Noto Serif", "Liberation Serif"];
+const SANS_SERIF: [&str; 3] = ["DejaVu Sans", "Noto Sans", "Liberation Sans"];
+const MONOSPACE: [&str; 3] = ["DejaVu Sans Mono", "Noto Sans Mono", "Liberation Mono"];
+
+/// The system's fonts, with every generic family — what `48px sans-serif`
+/// asks for — standing for one that's installed. Blocking, the first time.
+pub fn fonts() -> Arc<fontdb::Database> {
+    FONTS
+        .get_or_init(|| {
+            let mut db = fontdb::Database::new();
+            db.load_system_fonts();
+            type Set = fn(&mut fontdb::Database, String);
+            let generics: [(fontdb::Family<'_>, &[&str], Set); 5] = [
+                (fontdb::Family::Serif, &SERIF, fontdb::Database::set_serif_family),
+                (fontdb::Family::SansSerif, &SANS_SERIF, fontdb::Database::set_sans_serif_family),
+                (fontdb::Family::Monospace, &MONOSPACE, fontdb::Database::set_monospace_family),
+                (fontdb::Family::Cursive, &SANS_SERIF, fontdb::Database::set_cursive_family),
+                (fontdb::Family::Fantasy, &SANS_SERIF, fontdb::Database::set_fantasy_family),
+            ];
+            for (generic, likely, set) in generics {
+                if installed(&db, generic) {
+                    continue;
+                }
+                let family = likely
+                    .iter()
+                    .find(|name| installed(&db, fontdb::Family::Name(name)))
+                    .map(|name| name.to_string())
+                    .or_else(|| db.faces().next().and_then(|face| face.families.first()).map(|(family, _)| family.clone()));
+                if let Some(family) = family {
+                    set(&mut db, family);
+                }
+            }
+            Arc::new(db)
+        })
+        .clone()
 }
 
-impl Fonts {
-    pub fn new(blobs: BlobStore, files: Vec<BlobHash>) -> Fonts {
-        Fonts { blobs, files, db: OnceLock::new() }
-    }
-
-    /// Every face the site's fonts hold, with the generic families — what
-    /// `48px sans-serif` asks for — all standing for the first. Blocking,
-    /// the first time.
-    pub fn db(&self) -> Arc<fontdb::Database> {
-        self.db
-            .get_or_init(|| {
-                let mut db = fontdb::Database::new();
-                for sha256 in &self.files {
-                    if let Ok(bytes) = self.blobs.open(*sha256, None) {
-                        db.load_font_source(fontdb::Source::Binary(Arc::new(bytes)));
-                    }
-                }
-                if let Some(first) = first_family(&db) {
-                    db.set_serif_family(first.clone());
-                    db.set_sans_serif_family(first.clone());
-                    db.set_monospace_family(first.clone());
-                    db.set_cursive_family(first.clone());
-                    db.set_fantasy_family(first);
-                }
-                Arc::new(db)
-            })
-            .clone()
-    }
-
-    fn options(&self) -> usvg::Options<'static> {
-        let db = self.db();
-        usvg::Options { font_family: first_family(&db).unwrap_or_default(), fontdb: db, ..Default::default() }
-    }
+fn installed(db: &fontdb::Database, family: fontdb::Family<'_>) -> bool {
+    db.query(&fontdb::Query { families: &[family], ..Default::default() }).is_some()
 }
 
-fn first_family(db: &fontdb::Database) -> Option<String> {
-    db.faces().next().and_then(|face| face.families.first()).map(|(family, _)| family.clone())
+fn font_options() -> usvg::Options<'static> {
+    let db = fonts();
+    let serif = db.family_name(&fontdb::Family::Serif).to_string();
+    usvg::Options { font_family: serif, fontdb: db, ..Default::default() }
 }
 
 /// What every drawing operation is drawn under.
@@ -161,19 +166,15 @@ pub struct Metrics {
 }
 
 /// The surfaces of one run: canvases and bitmaps alike, by number.
+#[derive(Default)]
 pub struct Surfaces {
     entries: Vec<Option<Pixmap>>,
     pixels: u64,
-    fonts: Arc<Fonts>,
 }
 
 type Result<T> = std::result::Result<T, String>;
 
 impl Surfaces {
-    pub fn new(fonts: Arc<Fonts>) -> Surfaces {
-        Surfaces { entries: Vec::new(), pixels: 0, fonts }
-    }
-
     fn add(&mut self, pixmap: Pixmap) -> Result<usize> {
         let pixels = u64::from(pixmap.width()) * u64::from(pixmap.height());
         if self.pixels + pixels > MAX_PIXELS {
@@ -359,7 +360,7 @@ impl Surfaces {
             matrix.ty,
             escape(&text.text),
         );
-        let tree = usvg::Tree::from_str(&svg, &self.fonts.options()).map_err(|e| format!("The text couldn't be drawn: {e}"))?;
+        let tree = usvg::Tree::from_str(&svg, &font_options()).map_err(|e| format!("The text couldn't be drawn: {e}"))?;
         let mut layer = Pixmap::new(width, height).expect("a nonzero size");
         resvg::render(&tree, Transform::identity(), &mut layer.as_mut());
         self.composite(id, &layer, state)
@@ -371,7 +372,7 @@ impl Surfaces {
             font_attributes(font),
             escape(text)
         );
-        let tree = usvg::Tree::from_str(&svg, &self.fonts.options()).map_err(|e| format!("The text couldn't be measured: {e}"))?;
+        let tree = usvg::Tree::from_str(&svg, &font_options()).map_err(|e| format!("The text couldn't be measured: {e}"))?;
         let bounds = tree.root().children().iter().find_map(|node| match node {
             usvg::Node::Text(text) => Some(text.bounding_box()),
             _ => None,
@@ -411,7 +412,7 @@ impl Surfaces {
         self.add(pixmap)
     }
 
-    /// What a picture is drawn with: the site's fonts, `data:` pictures, and
+    /// What a picture is drawn with: the system's fonts, `data:` pictures, and
     /// `picture` itself under that name — never a file or anything remote.
     fn picture_options(&self, picture_bytes: Option<Arc<Vec<u8>>>) -> usvg::Options<'static> {
         usvg::Options {
@@ -422,7 +423,7 @@ impl Surfaces {
                     _ => None,
                 }),
             },
-            ..self.fonts.options()
+            ..font_options()
         }
     }
 
@@ -647,8 +648,7 @@ mod tests {
     use super::*;
 
     fn surfaces() -> Surfaces {
-        let dir = tempfile::tempdir().unwrap();
-        Surfaces::new(Arc::new(Fonts::new(BlobStore::allowing_private(dir.path()), Vec::new())))
+        Surfaces::default()
     }
 
     fn state(op: &str) -> State {

@@ -939,10 +939,10 @@ app renders into, so a crawler that runs scripts sees both.
 
 ### The script
 
-A site publishes `/.npanel/preview.js`, the modules that imports by relative
-path, and the fonts its drawing uses, as `.ttf` or `.otf` files, all in
-`/.npanel/` (`src/link_previews/script/`). Nothing else belongs there, and
-npanel never serves anything under `/.npanel/` — a request for it is a `404`. A
+A site publishes `/.npanel/preview.js`, and the modules that imports by
+relative path, in `/.npanel/` (`src/link_previews/script/`). Nothing else
+belongs there, and npanel never serves anything under `/.npanel/` — a request
+for it is a `404`. A
 deploy loads the script as a run would and says in the version's deploy log
 that it found it, or why it doesn't load, and what in the directory it ignored;
 a script that fails leaves the site without previews, and the build goes on.
@@ -1001,9 +1001,8 @@ drawn again if it was let go since.
 **The web it runs in** is a browser's, as far as a preview needs (`prelude.js`):
 `OffscreenCanvas` and its 2D context — paths, `clip`, `drawImage`,
 `getImageData` and `putImageData`, gradients, composite operations, `fillText`
-and `measureText` in the site's own fonts (`sans-serif` and the other generic
-families are the first of them) — `createImageBitmap` of a PNG, JPEG, GIF, WebP
-or SVG, `convertToBlob` to PNG or JPEG, `fetch`, `Blob`, `Headers`, `Request`,
+and `measureText` — `createImageBitmap` of a PNG, JPEG, GIF, WebP or SVG,
+`convertToBlob` to PNG or JPEG, `fetch`, `Blob`, `Headers`, `Request`,
 `Response`, `URL`, `TextEncoder`, `atob`, `AbortSignal`, `setTimeout` and
 `console`, whose lines go to npanel's log at `debug`. Shadows, filters,
 patterns and conic gradients throw rather than draw something wrong, as does
@@ -1011,6 +1010,17 @@ anything else that isn't there. An SVG drawn as an image draws nothing it names
 elsewhere, as in a browser: a script fetches what it draws. `Date` stands still
 at when the run started, and `Math.random` is seeded by the URL, so one input
 gives one image.
+
+**Text is drawn in the gateway's fonts**, the ones installed on its system,
+read once when the previews runtime starts. A site ships none: a font in
+`/.npanel/` is ignored, and its deploy log says so. `serif`, `sans-serif` and
+`monospace` are what fontconfig says they are, or else DejaVu, Noto or
+Liberation, whichever is installed. A character the font asked for lacks — an
+emoji, usually — is drawn in one that has it, as a browser does. The Docker
+image installs DejaVu and Noto Color Emoji, and the deployment guide has a
+systemd install do the same. Fonts installed later are read on the next
+restart, and since an image's version doesn't name the fonts, images already
+drawn stay as they were until they expire or the cache is cleared.
 
 ### Limits
 
@@ -1032,7 +1042,7 @@ public-addresses-only resolver blob downloads use, following redirects only to
 `https://`, 8 MB each and 32 MB in all; it reads no file. Its canvases and
 decoded images may hold 16 million pixels between them, none over 2400 pixels a
 side for a canvas or 4096 for a picture. A module may be 4 MB and all of them
-8 MB; a site may have eight fonts of up to 32 MB.
+8 MB.
 
 **Serving never waits long.** Scripts run on a runtime and a thread of their
 own, with a relay pool of their own, restarted with backoff like the analytics
