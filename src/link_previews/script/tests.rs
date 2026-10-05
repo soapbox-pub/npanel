@@ -296,7 +296,8 @@ fn selects_the_newest_each_filter_asks_for() {
 /// built beside this checkout, or the one in `NPANEL_BENCH_SCRIPT`'s
 /// directory. Each page runs `NPANEL_BENCH_RUNS` times (20) one after
 /// another, then as many at once as there are cores. Relays answer at once,
-/// so what's measured is npanel and the script. The images go in the
+/// so what's measured is npanel and the script. The fastest of each phase is
+/// shown, which other work on the machine slows least. The images go in the
 /// system's temporary directory, to be looked at.
 ///
 /// `cargo test --release bench_preview -- --ignored --nocapture`
@@ -361,8 +362,8 @@ async fn bench_preview() {
 
     let fonts = Instant::now();
     let faces = canvas::fonts().len();
-    println!("\n{faces} font faces loaded in {:.1} ms; {} cores; {} KB of modules\n", ms(fonts.elapsed()), cores(), ditto.modules.values().map(|m| m.len()).sum::<usize>() / 1024);
-    println!("{:<30} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "median ms (p95 total)", "spawn", "setup", "prelude", "module", "handler", "image", "total", "heap KB");
+    println!("\n{faces} font faces loaded in {:.1} ms; {} cores; {} KB of modules\n", ms(fonts.elapsed()), cores(), ditto.modules.values().map(|m| m.text.len()).sum::<usize>() / 1024);
+    println!("{:<30} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "fastest ms (median total)", "spawn", "setup", "prelude", "module", "handler", "image", "total", "heap KB");
     for (name, script, path) in &cases {
         let mut samples: Vec<Sample> = Vec::new();
         for i in 0..runs {
@@ -377,19 +378,19 @@ async fn bench_preview() {
             }
             samples.push(sample);
         }
-        let med = |f: &dyn Fn(&Sample) -> f64| percentile(samples.iter().map(f).collect(), 0.5);
+        let fastest = |f: &dyn Fn(&Sample) -> f64| percentile(samples.iter().map(f).collect(), 0.0);
         println!(
             "{:<30} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>4.0} ({:>3.0}) {:>8}",
             name,
-            med(&|s| ms(s.ran.spawn)),
-            med(&|s| ms(s.ran.setup)),
-            med(&|s| ms(s.ran.prelude)),
-            med(&|s| ms(s.ran.module)),
-            med(&|s| ms(s.ran.handler)),
-            med(&|s| s.image.as_ref().map_or(0.0, |(_, t)| ms(*t))),
-            med(&|s| ms(s.total)),
-            percentile(samples.iter().map(|s| ms(s.total)).collect(), 0.95),
-            med(&|s| s.ran.heap as f64) as u64 / 1024,
+            fastest(&|s| ms(s.ran.spawn)),
+            fastest(&|s| ms(s.ran.setup)),
+            fastest(&|s| ms(s.ran.prelude)),
+            fastest(&|s| ms(s.ran.module)),
+            fastest(&|s| ms(s.ran.handler)),
+            fastest(&|s| s.image.as_ref().map_or(0.0, |(_, t)| ms(*t))),
+            fastest(&|s| ms(s.total)),
+            percentile(samples.iter().map(|s| ms(s.total)).collect(), 0.5),
+            fastest(&|s| s.ran.heap as f64) as u64 / 1024,
         );
     }
 

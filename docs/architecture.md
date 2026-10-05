@@ -1044,6 +1044,18 @@ decoded images may hold 16 million pixels between them, none over 2400 pixels a
 side for a canvas or 4096 for a picture. A module may be 4 MB and all of them
 8 MB.
 
+**A run starts in a few milliseconds.** A fresh runtime costs well under one;
+what costs is the code. The prelude and a script's modules are compiled once —
+the prelude by the process's first run, a build's modules by its own — and
+later runs load their QuickJS bytecode, which takes a tenth of the time
+parsing does. What a module does at its top level still runs every time, so a
+script should bundle only what it uses: Ditto's bundle once spent a tenth of a
+second building AES tables for ciphers its previews never call.
+`convertToBlob` encodes after the handler has had the chance to return, so a
+handler that returns its image as a promise sends the page without waiting
+for the encoding, the slowest part of drawing. `bench_preview`
+(`docs/development.md`) times each part.
+
 **Serving never waits long.** Scripts run on a runtime and a thread of their
 own, with a relay pool of their own, restarted with backoff like the analytics
 runtime. A request asks memory first; a preview there is sent at once, and a

@@ -1,15 +1,14 @@
 // The web a preview script runs in: as much of what a browser gives a script
 // drawing on an OffscreenCanvas as a preview needs, and nothing more.
 //
-// Evaluated once per run, before the site's own modules, as a function of the
-// natives npanel provides, the seed `Math.random` starts from, and the time
-// `Date` stands still at. It returns the hooks npanel calls the handler with.
+// A module whose default export npanel calls once per run, before the site's
+// own modules load, with the natives npanel provides, the seed `Math.random`
+// starts from, and the time `Date` stands still at. It returns the hooks npanel
+// calls the handler with.
 //
 // Anything a script calls that isn't here throws, rather than drawing a
 // picture wrong.
-(function (native, seed, now) {
-  "use strict";
-
+export default function (native, seed, now) {
   const define = (name, value) => Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
   const unsupported = (what) => {
     throw new TypeError(`${what} isn't supported by npanel's preview runtime.`);
@@ -1167,8 +1166,17 @@
       return (this.#context ??= new OffscreenCanvasRenderingContext2D(this));
     }
     async convertToBlob(options = {}) {
-      const { bytes, type } = native.encode(this[ID], String(options.type ?? "image/png"), typeof options.quality === "number" ? options.quality : -1);
-      return new Blob([bytes], { type });
+      // The pixels as they are now, encoded once the handler has had the
+      // chance to return: encoding is the slowest part of drawing, and a
+      // handler returning the promise shouldn't keep the page waiting on it.
+      const snapshot = native.surfaceCopy(this[ID]);
+      try {
+        await native.sleep(0);
+        const { bytes, type } = native.encode(snapshot, String(options.type ?? "image/png"), typeof options.quality === "number" ? options.quality : -1);
+        return new Blob([bytes], { type });
+      } finally {
+        native.surfaceFree(snapshot);
+      }
     }
     transferToImageBitmap() {
       const bitmap = new ImageBitmap(native.surfaceCopy(this[ID]));
@@ -1239,4 +1247,4 @@
       return out;
     },
   });
-});
+}

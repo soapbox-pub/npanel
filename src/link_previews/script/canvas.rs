@@ -13,8 +13,10 @@
 //! and the layer composited onto the canvas everywhere the clip allows. So
 //! `destination-in` clears what the shape doesn't cover, as it should.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, OnceLock};
 
+use parking_lot::Mutex;
 use resvg::tiny_skia::{
     self, BlendMode, Color, FillRule, FilterQuality, GradientStop, LineCap, LineJoin, LinearGradient, Mask, Paint, Path, PathBuilder,
     Pattern, Pixmap, PixmapPaint, Point, RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
@@ -83,7 +85,36 @@ fn installed(db: &fontdb::Database, family: fontdb::Family<'_>) -> bool {
 fn font_options() -> usvg::Options<'static> {
     let db = fonts();
     let serif = db.family_name(&fontdb::Family::Serif).to_string();
-    usvg::Options { font_family: serif, fontdb: db, ..Default::default() }
+    let font_resolver = usvg::FontResolver { select_font: usvg::FontResolver::default_font_selector(), select_fallback: Box::new(fallback) };
+    usvg::Options { font_family: serif, fontdb: db, font_resolver, ..Default::default() }
+}
+
+/// The faces characters were found in, by the character and the face that
+/// lacked it. Finding one looks through every face installed, and a system
+/// can have thousands: an emoji took longer than everything else a preview
+/// draws.
+static FALLBACKS: LazyLock<Mutex<Fallbacks>> = LazyLock::new(Default::default);
+type Fallbacks = HashMap<(char, fontdb::ID), Option<fontdb::ID>>;
+const MAX_FALLBACKS: usize = 4096;
+
+/// usvg's choice of a face for a character the one asked for lacks,
+/// remembered.
+fn fallback(c: char, used: &[fontdb::ID], db: &mut Arc<fontdb::Database>) -> Option<fontdb::ID> {
+    let search = usvg::FontResolver::default_fallback_selector();
+    let Some(&lacking) = used.first() else { return search(c, used, db) };
+    if let Some(&found) = FALLBACKS.lock().get(&(c, lacking)) {
+        // One already tried for this character is no answer.
+        if found.is_none_or(|id| !used.contains(&id)) {
+            return found;
+        }
+    }
+    let found = search(c, used, db);
+    let mut fallbacks = FALLBACKS.lock();
+    if fallbacks.len() >= MAX_FALLBACKS {
+        fallbacks.clear();
+    }
+    fallbacks.insert((c, lacking), found);
+    found
 }
 
 /// What every drawing operation is drawn under.
@@ -361,6 +392,12 @@ impl Surfaces {
             escape(&text.text),
         );
         let tree = usvg::Tree::from_str(&svg, &font_options()).map_err(|e| format!("The text couldn't be drawn: {e}"))?;
+        // Text drawn as most is, opaque over what's there and unclipped, goes
+        // straight onto the canvas, sparing a layer the size of it.
+        if state.op == "source-over" && state.alpha == 1.0 && state.clips.is_empty() {
+            resvg::render(&tree, Transform::identity(), &mut self.get_mut(id)?.as_mut());
+            return Ok(());
+        }
         let mut layer = Pixmap::new(width, height).expect("a nonzero size");
         resvg::render(&tree, Transform::identity(), &mut layer.as_mut());
         self.composite(id, &layer, state)

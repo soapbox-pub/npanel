@@ -40,7 +40,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful"
 # ACME, for HTTPS_PORT. Its own HTTP client is left out: requests go through
 # reqwest, so the CA is trusted by the same compiled-in roots as everything else.
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen"] }
-jpeg-encoder = "0.7"
+jpeg-encoder = { version = "0.7", features = ["simd"] }
 lru = "0.12"
 maxminddb = { version = "0.26", features = ["mmap"] }
 memmap2 = "0.9"

@@ -11,7 +11,9 @@
 //! Each run gets a QuickJS runtime of its own, on a thread of its own, with a
 //! memory limit, a deadline, and the web a preview needs (`prelude.js`) and
 //! nothing else: no file, and no network but `nostr` and an `https://`-only
-//! `fetch` through the public-addresses-only resolver, both metered.
+//! `fetch` through the public-addresses-only resolver, both metered. The
+//! prelude and the site's modules are parsed once, and their bytecode loaded
+//! after, since parsing a bundle costs more than all the rest of a run.
 //!
 //! The image is the slow part, so a run hands back the page's fields as soon
 //! as the handler returns them, and goes on drawing behind them. What names
@@ -27,14 +29,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use parking_lot::Mutex;
 use rquickjs::function::Opt;
 use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::module::Declared;
+use rquickjs::module::{Declared, WriteOptions};
 use rquickjs::prelude::Promised;
 use rquickjs::{AsyncContext, AsyncRuntime, Ctx, Exception, Function, Module, Object, Promise, TypedArray, Value};
 use rusqlite::Connection;
@@ -93,7 +95,15 @@ pub struct Script {
     /// Names what the script is: every module. Two builds with the same
     /// script share previews.
     pub digest: String,
-    modules: HashMap<String, Arc<str>>,
+    modules: HashMap<String, Source>,
+}
+
+/// One of a script's modules.
+struct Source {
+    text: String,
+    /// The module compiled, by the first run that loads it, for the rest to
+    /// load instead of parsing it again: a bundle takes a tenth of the time.
+    bytecode: OnceLock<Vec<u8>>,
 }
 
 /// Something wrong with a site's `/.npanel/`, for its deploy log.
@@ -134,7 +144,7 @@ pub fn load(files: &[(String, BlobHash)], blobs: &BlobStore) -> Loaded {
             }
             match String::from_utf8(blobs.read_bytes(*sha256, MAX_SCRIPT_BYTES)) {
                 Ok(source) => {
-                    modules.insert(name.to_string(), Arc::from(source));
+                    modules.insert(name.to_string(), Source { text: source, bytecode: OnceLock::new() });
                     digest.update(format!("{name}\0{sha256}\0").as_bytes());
                 }
                 Err(_) => problem(path, "This module isn't UTF-8 text, so it isn't loaded."),
@@ -248,7 +258,8 @@ pub struct Timings {
     pub setup: Duration,
     /// Running the prelude: the web the script runs in.
     pub prelude: Duration,
-    /// Parsing the site's modules and running their top level.
+    /// Loading the site's modules — parsing them, for the first run, and
+    /// their bytecode after — and running their top level.
     pub module: Duration,
     /// The handler, from its call to its return, its queries and fetches
     /// included.
@@ -374,7 +385,7 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
             let start = async {
                 let at = Instant::now();
                 let natives = natives(&ctx, env.clone(), page.as_ref().map(|p| p.url.clone()).unwrap_or_default(), spent.clone())?;
-                let prelude: Function = ctx.eval(PRELUDE)?;
+                let prelude = prelude(&ctx).await?;
                 let seed = page.as_ref().map_or(0, |page| u32::from_le_bytes(Sha256::digest(page.url.as_bytes())[..4].try_into().unwrap()));
                 let now = env.as_ref().map_or(0, |env| env.now);
                 let hooks: Object = prelude.call((natives, seed, now as f64))?;
@@ -495,10 +506,30 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                     None
                 }
             };
-            env.log.debug("link_preview_drawn", fields! { "url" => page.url.as_str(), "drawn" => bytes.is_some(), "ms" => drawing.elapsed().as_millis() as u64, "heap" => heap(&ctx) });
+            env.log.debug("link_preview_drawn", fields! { "url" => page.url.as_str(), "drawn" => bytes.is_some(), "ms" => drawing.elapsed().as_millis() as u64 });
             let _ = drawn.send(bytes);
         })
         .await;
+}
+
+/// The prelude's function, from its bytecode once it has been compiled.
+async fn prelude<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
+    /// The prelude, compiled by the first run.
+    static BYTECODE: OnceLock<Vec<u8>> = OnceLock::new();
+    let module = match BYTECODE.get() {
+        // SAFETY: the bytecode is what this QuickJS wrote of the prelude, below.
+        Some(bytecode) => unsafe { Module::load(ctx.clone(), bytecode)? },
+        None => {
+            let module = Module::declare(ctx.clone(), "npanel:prelude", PRELUDE)?;
+            if let Ok(bytecode) = module.write(WriteOptions::default()) {
+                let _ = BYTECODE.set(bytecode);
+            }
+            module
+        }
+    };
+    let (module, evaluated) = module.eval()?;
+    evaluated.into_future::<()>().await?;
+    module.get("default")
 }
 
 /// What a run's JavaScript heap holds now, in bytes.
@@ -601,7 +632,16 @@ impl Resolver for Modules {
 impl Loader for Modules {
     fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str, _: Option<ImportAttributes<'js>>) -> rquickjs::Result<Module<'js, Declared>> {
         let source = self.0.modules.get(name).ok_or_else(|| rquickjs::Error::new_loading(name))?;
-        Module::declare(ctx.clone(), name, source.as_bytes())
+        if let Some(bytecode) = source.bytecode.get() {
+            // SAFETY: the bytecode is what this QuickJS wrote of this module,
+            // below.
+            return unsafe { Module::load(ctx.clone(), bytecode) };
+        }
+        let module = Module::declare(ctx.clone(), name, source.text.as_bytes())?;
+        if let Ok(bytecode) = module.write(WriteOptions::default()) {
+            let _ = source.bytecode.set(bytecode);
+        }
+        Ok(module)
     }
 }
 
