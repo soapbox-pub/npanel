@@ -41,6 +41,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful"
 # reqwest, so the CA is trusted by the same compiled-in roots as everything else.
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen"] }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
+libc = "0.2"
 lru = "0.12"
 maxminddb = { version = "0.26", features = ["mmap"] }
 memmap2 = "0.9"
@@ -66,7 +67,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
-tokio-util = "0.7"
+tokio-util = { version = "0.7", features = ["codec"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 tor-cell = "=0.47.0"
 tor-config = "=0.47.0"
@@ -84,6 +85,12 @@ x509-parser = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
+# The process a site's preview script runs in, confined: no files, no
+# sockets, no other processes.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
+seccompiler = "0.5"
+
 [features]
 # Compile dashboard/dist into the binary (see build.rs). Release builds use it;
 # without it the dashboard is read from disk, so it can be rebuilt live.
@@ -91,6 +98,8 @@ embedded-dashboard = []
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time, for what waits out a timeout.
+tokio = { version = "1", features = ["test-util"] }
 
 # Tests and debugging need file and line in a backtrace, not full debug info;
 # dependencies need neither. Most of what a debug build links is debug info.

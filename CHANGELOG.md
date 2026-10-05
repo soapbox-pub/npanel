@@ -19,9 +19,11 @@ it is tagged.
 - The script is handed the crawler's request and a read-only Nostr relay,
   shaped like Nostrify's, and can draw its image on an `OffscreenCanvas`, which
   npanel serves at `/_npanel/preview/…`. The page never waits for its image.
-  Each run is sandboxed, metered and given a deadline, and runs on a thread of
-  its own: a preview that can't be had within a couple of seconds sends the
-  page as published, never an error. A deploy's log says whether the script
+  Each run is metered and given a deadline, in a process of its own that on
+  Linux can't open a file, make a socket or start a program (Landlock and
+  seccomp), and that is killed if it overruns: a preview that can't be had
+  within a couple of seconds sends the page as published, never an error. A
+  script runs only on a site with link previews on, deploy checks included. A deploy's log says whether the script
   loads. See "Link previews" in `docs/architecture.md`.
 - Previews draw text in the fonts installed on the system, emoji included. The
   Docker image comes with DejaVu and Noto Color Emoji; a systemd install

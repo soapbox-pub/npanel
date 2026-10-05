@@ -175,12 +175,18 @@ sudo apt install fonts-dejavu-core fonts-noto-color-emoji
 Without any, previews draw no text, and npanel logs `link_preview_no_fonts`
 when it starts.
 
+Those processes are npanel's own binary, `npanel preview-worker`, started by
+npanel and confined with Landlock and seccomp: they can't open a file, make a
+socket or start a program. That needs nothing set up, but a container runtime
+or kernel that refuses Landlock leaves only seccomp, and npanel logs
+`link_preview_unconfined` saying so.
+
 To add a font a site's script asks for, install its package if your
 distribution has one — most popular Google Fonts do, like `fonts-roboto`,
 `fonts-inter`, `fonts-open-sans` or `fonts-noto-cjk` — or put its `.ttf` or
 `.otf` in `/usr/local/share/fonts/`. On Docker, build on the image and install
 it there, or mount a directory of fonts at `/usr/local/share/fonts`. npanel
-reads fonts once, so restart it, then clear the cache under **Settings → Link
+reads fonts as it starts the processes scripts run in, so restart it, then clear the cache under **Settings → Link
 Previews**: an image already drawn doesn't change when the fonts do. The
 distribution's emoji font trails Google's; for the newest emoji, put Google's
 `NotoColorEmoji.ttf` in `/usr/local/share/fonts/` as well.

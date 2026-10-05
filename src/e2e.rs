@@ -240,9 +240,11 @@ fn sha(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// Wait for a condition the deploy runtime will bring about.
+/// Wait for a condition the deploy runtime will bring about. Long enough for
+/// a preview script's first process, which in a debug build on a system with
+/// thousands of fonts takes seconds to read them.
 async fn eventually(what: &str, mut check: impl AsyncFnMut() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..1200 {
         if check().await {
             return;
         }
@@ -778,6 +780,33 @@ async function draw(theme) {{
     let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert!(actions.contains(&"link_preview.refresh") && actions.contains(&"link_preview.clear"), "{actions:?}");
+
+    gw.deployer.stop().await;
+}
+
+/// A site's script isn't run, not even to check it, until staff turn link
+/// previews on: it is the author's code.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_is_left_alone_with_previews_off() {
+    let page = r#"<!doctype html><html><head><title>Docs</title></head><body></body></html>"#;
+    let script = "export default { preview() { return null; } };";
+    let files = [("/index.html", page.as_bytes().to_vec()), ("/.well-known/npanel/preview.js", script.as_bytes().to_vec())];
+    let server = blossom(files.iter().map(|(_, bytes)| (sha(bytes), bytes.clone())).collect()).await;
+    let tags = files.iter().map(|(path, bytes)| vec!["path".into(), path.to_string(), sha(bytes)]).collect();
+    let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, tags, "");
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let host = serde_json::json!({ "hostname": "docs.example.com", "address": npub });
+    assert_eq!(gw.api("POST", "/api/hosts", Some(host)).await.0, StatusCode::CREATED);
+
+    let log_path = format!("/api/hosts/docs.example.com/versions/{}/log", manifest.id);
+    let said = async |msg: &str| {
+        let (_, log) = gw.api("GET", &log_path, None).await;
+        log["entries"].as_array().is_some_and(|entries| entries.iter().any(|e| e["msg"] == msg))
+    };
+    eventually("the script being noticed", async || said("preview_script_unused").await).await;
+    assert!(!said("preview_script_found").await);
 
     gw.deployer.stop().await;
 }

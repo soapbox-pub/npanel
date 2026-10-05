@@ -217,7 +217,10 @@ impl BlobStore {
             .user_agent(concat!("npanel/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10));
         if public_only {
-            http = http.dns_resolver(Arc::new(PublicResolver));
+            // A proxy from the environment would resolve and dial the name
+            // itself, after the check, which is the window the resolver is
+            // here to close.
+            http = http.dns_resolver(Arc::new(PublicResolver)).no_proxy();
         }
 
         BlobStore {

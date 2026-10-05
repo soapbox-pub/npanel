@@ -64,6 +64,11 @@ use crate::serve::{ServeCache, SiteServer, SiteServerDeps};
 use crate::settings::Settings;
 
 fn main() {
+    // A preview script's process, which reads no configuration: nothing of
+    // the gateway's is any business of a site's script.
+    if std::env::args().nth(1).as_deref() == Some(link_previews::script::WORKER_COMMAND) {
+        link_previews::script::worker_main();
+    }
     config::load_dotenv();
     // rustls needs one crypto provider chosen for the process; relays and
     // blob downloads both go through it.

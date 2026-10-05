@@ -156,7 +156,17 @@ impl Pool {
         }
         let (tx, rx) = mpsc::unbounded_channel();
         relays.insert(url.to_string(), tx.clone());
-        tokio::spawn(run_relay(url.to_string(), rx, self.inner.trusted.clone(), self.inner.log));
+        let (inner, url) = (self.inner.clone(), url.to_string());
+        tokio::spawn(async move {
+            run_relay(url.clone(), rx, inner.trusted.clone(), inner.log).await;
+            // A relay that went idle is forgotten, unless another connection
+            // to it has taken its place: the URLs asked for are often a
+            // stranger's choice, and would otherwise be kept for good.
+            let mut relays = inner.relays.lock();
+            if relays.get(&url).is_some_and(|tx| tx.is_closed()) {
+                relays.remove(&url);
+            }
+        });
         tx
     }
 
@@ -385,7 +395,10 @@ async fn run_relay(url: String, mut commands: mpsc::UnboundedReceiver<Command>, 
                 }
                 Some(Ok(_)) => {}
             },
-            _ = sleep_until_opt(retry_at.map(|_| retry)) => {}
+            // Only worth waking for with something to ask: a retry time in
+            // the past would otherwise wake this loop, and spin it, until it
+            // went idle.
+            _ = sleep_until_opt(retry_at.map(|_| retry)), if !subs.is_empty() => {}
             _ = tokio::time::sleep_until(idle_deadline), if subs.is_empty() => {
                 if let Some(mut ws) = socket.take() {
                     let _ = ws.close(None).await;
@@ -587,6 +600,15 @@ mod tests {
             .await;
         assert!(events.is_empty());
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_relay_is_forgotten() {
+        let pool = Pool::new(Arc::new(|_: &str| true), Logger::new(crate::log::LogLevel::Error));
+        pool.query(vec![Filter::default()], &["wss://127.0.0.1:1".into()], Duration::from_secs(1), &CancellationToken::new()).await;
+        assert_eq!(pool.inner.relays.lock().len(), 1);
+        tokio::time::sleep(IDLE_TIMEOUT * 2).await;
+        assert!(pool.inner.relays.lock().is_empty());
     }
 
     #[tokio::test]

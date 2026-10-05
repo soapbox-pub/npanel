@@ -9,13 +9,13 @@ use super::*;
 use crate::log::LogLevel;
 
 /// HTTPS on a port of its own, answering every request with the protocol
-/// it arrived over and the address it came from.
+/// it arrived over, the address it came from, and the host it names.
 async fn serve_tls(shared: Arc<Shared>) -> (SocketAddr, tokio_util::sync::DropGuard) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let shutdown = CancellationToken::new();
     let handler = |request: http::Request<axum::body::Body>, remote: SocketAddr| async move {
-        http::Response::new(axum::body::Body::from(format!("{:?} {}", request.version(), remote.ip())))
+        http::Response::new(axum::body::Body::from(format!("{:?} {} {}", request.version(), remote.ip(), crate::app::request_host(&request))))
     };
     tokio::spawn(serve(listener, listener::server_config(shared), handler, shutdown.clone(), Logger::new(LogLevel::Error)));
     (address, shutdown.drop_guard())
@@ -43,10 +43,10 @@ async fn serves_the_certificate_for_the_name_asked_over_h2_and_http1() {
 
     let h2 = client(&issued.ca, address, false).get(&url).send().await.unwrap();
     assert_eq!(h2.status(), StatusCode::OK);
-    assert_eq!(h2.text().await.unwrap(), "HTTP/2.0 127.0.0.1");
+    assert_eq!(h2.text().await.unwrap(), "HTTP/2.0 127.0.0.1 example.org");
 
     let h1 = client(&issued.ca, address, true).get(&url).send().await.unwrap();
-    assert_eq!(h1.text().await.unwrap(), "HTTP/1.1 127.0.0.1");
+    assert_eq!(h1.text().await.unwrap(), "HTTP/1.1 127.0.0.1 example.org");
 
     // A name with no certificate gets no handshake.
     let unknown = format!("https://unknown.example:{}/", address.port());

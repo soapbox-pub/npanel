@@ -10,12 +10,13 @@
 //! leaves the page as published. It draws text in the fonts installed on the
 //! system, and imports nothing: what it needs is bundled into it.
 //!
-//! Each run gets a QuickJS runtime of its own, on a thread of its own, with a
-//! memory limit, a deadline, and the web a preview needs (`prelude.js`) and
-//! nothing else: no file, and no network but `nostr` and an `https://`-only
-//! `fetch` through the public-addresses-only resolver, both metered. The
-//! prelude and the script are parsed once, and their bytecode loaded after,
-//! since parsing a bundle costs more than all the rest of a run.
+//! A script is a stranger's code, so it runs in a process of its own, which
+//! may do next to nothing (`sandbox.rs`), with a QuickJS runtime of its own
+//! for each run (`worker.rs`). Everything it asks of the world is asked of
+//! the gateway, here: relays through `nostr`, and an `https://`-only `fetch`
+//! through the public-addresses-only resolver, both metered. What it returns
+//! is held to npanel's limits here too, since nothing the process says can
+//! be taken on trust.
 //!
 //! The image is the slow part, so a run hands back the page's fields as soon
 //! as the handler returns them, and goes on drawing behind them. What names
@@ -25,27 +26,27 @@
 //! is, and changes when anything the image is drawn from changes.
 
 pub mod canvas;
+mod sandbox;
+mod worker;
 
-use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
+use bytes::Bytes;
+use futures_util::future::{BoxFuture, FutureExt, Shared};
+use futures_util::stream::FuturesUnordered;
+use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use rquickjs::function::Opt;
-use rquickjs::loader::{ImportAttributes, Loader, Resolver};
-use rquickjs::module::{Declared, WriteOptions};
-use rquickjs::prelude::Promised;
-use rquickjs::{AsyncContext, AsyncRuntime, Ctx, Exception, Function, Module, Object, Promise, TypedArray, Value};
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{oneshot, OwnedSemaphorePermit};
+use tokio::sync::oneshot;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
-use self::canvas::{Font, Line, State, Style, Surfaces, Text};
+use self::sandbox::{FromWorker, Job, Lease, Picture, ToWorker};
 use super::preview::Extras;
 use super::relays::{outbox, EventSource};
 use crate::blobs::BlobStore;
@@ -53,27 +54,39 @@ use crate::db::Db;
 use crate::fields;
 use crate::hash::BlobHash;
 use crate::log::Logger;
+use crate::net::is_public_address;
 use crate::nostr::pool::Filter;
 use crate::nostr::service::dedupe;
 use crate::nostr::{is_hex64, Event};
 
+pub use self::sandbox::{init as init_sandbox, COMMAND as WORKER_COMMAND};
+pub use self::worker::main as worker_main;
+
 /// Where a site publishes its script.
 pub const PATH: &str = "/.well-known/npanel/preview.js";
 
-const PRELUDE: &str = include_str!("prelude.js");
+/// The request headers a script is given. Anything else a crawler sent is
+/// no business of a preview's — and a script can `fetch` anywhere, so a
+/// header naming the visitor, from whatever proxy is in front, would be
+/// theirs to send on.
+pub const HEADERS: &[&str] = &["accept", "accept-language", "user-agent"];
 
 const MAX_SCRIPT_BYTES: u64 = 4 << 20;
 /// How long a script's top level has to run when it's loaded to read its
-/// routes: a page waits on it, the first time its build is served.
+/// routes: a crawler's request waits on it, the first time its build is
+/// served.
 const LOAD_DEADLINE: Duration = Duration::from_secs(2);
 /// Routes a script may declare.
 const MAX_ROUTES: usize = 32;
 
-/// What one run's JavaScript may hold, and how deep it may call.
-const MEMORY: usize = 64 << 20;
-const STACK: usize = 1 << 20;
 /// How long a handler has to return. Its image has as long again.
 pub const DEADLINE: Duration = Duration::from_secs(10);
+/// How long past a deadline the gateway waits before killing the process:
+/// the worker's own deadline comes first, and says what was running.
+const GRACE: Duration = Duration::from_secs(1);
+/// How long a new process has to start and say it's ready: reading the
+/// system's fonts, on a system with thousands, takes a while.
+const STARTUP: Duration = Duration::from_secs(30);
 
 /// What one run may ask of relays: calls, and events found in all.
 const MAX_QUERIES: usize = 8;
@@ -94,15 +107,17 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOG_LINES: usize = 50;
 const MAX_LOG_LINE: usize = 1024;
 
+const STOPPED: &str = "The preview script stopped without an answer.";
+const PAST_DEADLINE: &str = "The preview script ran past its deadline.";
+const DEPLOYING: &str = "Nothing is fetched while a site deploys.";
+const IMAGE_FORMAT: &str = "The image must be a PNG, JPEG, GIF or WebP, 4096 pixels a side at most.";
+
 /// A build's script.
 pub struct Script {
     /// Names what the script is. Two builds with the same script share
     /// previews.
     pub digest: String,
     source: String,
-    /// The script compiled, by the first run that loads it, for the rest to
-    /// load instead of parsing it again: a bundle takes a tenth of the time.
-    bytecode: OnceLock<Vec<u8>>,
     /// The pages it previews, once a load has read them: `None` for every
     /// page.
     routes: OnceLock<Option<Routes>>,
@@ -118,6 +133,10 @@ impl Script {
             None => false,
         }
     }
+
+    fn new(source: String, digest: String) -> Script {
+        Script { digest, source, routes: OnceLock::new() }
+    }
 }
 
 /// Read a build's script. Blocking.
@@ -127,7 +146,7 @@ pub fn load(sha256: BlobHash, blobs: &BlobStore) -> Result<Script, String> {
         return Err("The preview script is larger than 4 MB, so it isn't loaded.".into());
     }
     let source = String::from_utf8(blobs.read_bytes(sha256, MAX_SCRIPT_BYTES)).map_err(|_| "The preview script isn't UTF-8 text, so it isn't loaded.")?;
-    Ok(Script { digest: sha256.to_string()[..32].to_string(), source, bytecode: OnceLock::new(), routes: OnceLock::new() })
+    Ok(Script::new(source, sha256.to_string()[..32].to_string()))
 }
 
 /// The script in a build, if it has one.
@@ -135,6 +154,13 @@ pub fn build_script(conn: &Connection, build_id: i64) -> rusqlite::Result<Option
     conn.prepare_cached("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = ?")?
         .query_row(rusqlite::params![build_id, PATH], |row| row.get(0))
         .optional()
+}
+
+/// Start a worker, so the first crawler doesn't wait for one, and so the
+/// log says early what it found: the fonts it draws with, and how it's
+/// confined.
+pub async fn warm() {
+    let _ = check(Arc::new(Script::new("export default { preview() { return null; } };".into(), "warm".into()))).await;
 }
 
 /// The pages a script previews: URLPattern pathnames.
@@ -187,60 +213,101 @@ impl urlpattern::regexp::RegExp for Bounded {
 }
 
 /// Builds' scripts, read once each, and loaded to read their routes. A
-/// build's files never change, so neither does its script.
+/// build's files never change, so neither does its script; and a script is
+/// named by its hash, so builds that share one load it once.
 pub struct Scripts {
     db: Db,
     blobs: BlobStore,
-    cache: Mutex<lru::LruCache<i64, Arc<Loading>>>,
+    /// Each build's script, by hash, or `None` for none.
+    builds: Mutex<lru::LruCache<i64, Option<BlobHash>>>,
+    loaded: Mutex<lru::LruCache<BlobHash, Loading>>,
 }
 
-/// A build's script, once it has loaded: every request for it waits on one
-/// load.
-type Loading = tokio::sync::OnceCell<Option<Arc<Script>>>;
+/// A script being loaded, or loaded: every request for it waits on one load,
+/// which goes on whether or not anyone still waits.
+#[derive(Clone)]
+struct Loading {
+    started: Instant,
+    script: Shared<BoxFuture<'static, Option<Arc<Script>>>>,
+}
 
-/// Builds whose scripts are kept.
-const MAX_CACHED_BUILDS: usize = 64;
+/// Builds whose scripts are remembered, and scripts kept loaded.
+const MAX_CACHED_BUILDS: usize = 4096;
+const MAX_CACHED_SCRIPTS: usize = 256;
+/// How long a script that didn't load is believed not to. It is the same
+/// script next time, but what stopped it — no process to run it in, say —
+/// may not be.
+const RELOAD_AFTER: Duration = Duration::from_secs(60);
 
 impl Scripts {
     pub fn new(db: Db, blobs: BlobStore) -> Scripts {
-        Scripts { db, blobs, cache: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_BUILDS).unwrap())) }
+        Scripts {
+            db,
+            blobs,
+            builds: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_BUILDS).unwrap())),
+            loaded: Mutex::new(lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_SCRIPTS).unwrap())),
+        }
     }
 
     /// A build's script, or `None` for a build without one, or with one that
     /// doesn't load: its deploy log says why.
     pub async fn for_build(&self, build_id: i64) -> anyhow::Result<Option<Arc<Script>>> {
-        let cell = self.cache.lock().get_or_insert(build_id, Default::default).clone();
-        let script = cell
-            .get_or_try_init(|| async {
-                let blobs = self.blobs.clone();
-                let loaded = self
-                    .db
-                    .call(move |conn| {
-                        let Some(sha256) = build_script(conn, build_id)? else { return Ok(None) };
-                        Ok(load(sha256, &blobs).ok())
-                    })
-                    .await?;
-                let Some(script) = loaded.map(Arc::new) else { return anyhow::Ok(None) };
-                Ok(check(script.clone()).await.ok().map(|_| script))
-            })
-            .await?;
-        Ok(script.clone())
+        let cached = self.builds.lock().get(&build_id).copied();
+        let sha256 = match cached {
+            Some(sha256) => sha256,
+            None => {
+                let sha256 = self.db.call(move |conn| Ok(build_script(conn, build_id)?)).await?;
+                self.builds.lock().put(build_id, sha256);
+                sha256
+            }
+        };
+        let Some(sha256) = sha256 else { return Ok(None) };
+        let loading = self.loading(sha256);
+        Ok(loading.await)
+    }
+
+    /// A build's script without waiting for anything: `None` while that
+    /// isn't known yet.
+    pub fn known(&self, build_id: i64) -> Option<Option<Arc<Script>>> {
+        let sha256 = (*self.builds.lock().get(&build_id)?)?;
+        self.loaded.lock().get(&sha256)?.script.peek().cloned()
+    }
+
+    fn loading(&self, sha256: BlobHash) -> Shared<BoxFuture<'static, Option<Arc<Script>>>> {
+        let mut loaded = self.loaded.lock();
+        if let Some(loading) = loaded.get(&sha256) {
+            let failed = matches!(loading.script.peek(), Some(None));
+            if !failed || loading.started.elapsed() < RELOAD_AFTER {
+                return loading.script.clone();
+            }
+        }
+        let blobs = self.blobs.clone();
+        let task = tokio::spawn(async move {
+            let script = Arc::new(tokio::task::spawn_blocking(move || load(sha256, &blobs)).await.ok()?.ok()?);
+            check(script.clone()).await.ok()?;
+            Some(script)
+        });
+        let script = async move { task.await.ok().flatten() }.boxed().shared();
+        loaded.put(sha256, Loading { started: Instant::now(), script: script.clone() });
+        script
     }
 }
 
 /// The request a handler is given.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Page {
     /// The page's URL: its origin and path, without the query a crawler may
     /// have added.
     pub url: String,
     pub method: String,
+    /// Of [`HEADERS`] only.
     pub headers: Vec<(String, String)>,
 }
 
 /// What a run needs from the gateway.
 pub struct Env {
-    /// The previews runtime, where relay queries and fetches happen.
+    /// The previews runtime, where a run is driven, and its queries and
+    /// fetches made.
     pub runtime: tokio::runtime::Handle,
     pub source: Arc<dyn EventSource>,
     pub http: reqwest::Client,
@@ -266,15 +333,13 @@ pub struct Ran {
     /// What names this preview's image.
     pub version: String,
     pub timings: Timings,
-    /// What the script's `routes` lists, when it was loaded only to check
-    /// it: `None` for no `routes`.
-    pub routes: Option<Vec<String>>,
 }
 
 /// How long a run took getting to its answer, a phase at a time.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Timings {
-    /// From being asked for to its thread starting.
+    /// From being asked for to the job reaching a worker: waiting for one,
+    /// or starting one.
     pub spawn: Duration,
     /// Making a QuickJS runtime and context.
     pub setup: Duration,
@@ -309,299 +374,357 @@ pub enum Image {
     Pending(oneshot::Receiver<Option<Vec<u8>>>),
 }
 
-/// Run a site's handler for one page, holding `permit` — one of the runs
-/// that may go at once — until it's done drawing.
-pub async fn run(script: Arc<Script>, page: Page, env: Env, permit: OwnedSemaphorePermit) -> Result<Ran, String> {
+/// Run a site's handler for one page, waiting for one of the processes
+/// that may run at once.
+pub async fn run(script: Arc<Script>, page: Page, env: Env) -> Result<Ran, String> {
     let (done, ran) = oneshot::channel();
-    spawn(script, Some((page, env)), done, Some(permit), Instant::now())?;
-    ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into()))
+    let runtime = env.runtime.clone();
+    // Driven by a task of its own, since it goes on drawing after it has
+    // answered.
+    runtime.spawn(drive(script, page, env, Instant::now(), done));
+    ran.await.unwrap_or_else(|_| Err(STOPPED.into()))
 }
 
 /// Load a site's script as a run would, check it exports a handler, without
 /// calling it, and read its routes. What's wrong is for its deploy log.
 pub async fn check(script: Arc<Script>) -> Result<(), String> {
-    let (done, ran) = oneshot::channel();
-    spawn(script.clone(), None, done, None, Instant::now())?;
-    let ran = ran.await.unwrap_or_else(|_| Err("The preview script stopped without an answer.".into()))?;
-    let routes = ran.routes.as_deref().map(Routes::compile).transpose()?;
+    let routes = tokio::spawn(read_routes(script.clone())).await.unwrap_or_else(|_| Err(STOPPED.into()))?;
+    let routes = routes.as_deref().map(Routes::compile).transpose()?;
     let _ = script.routes.set(routes);
     Ok(())
 }
 
-/// A thread for one run, with a runtime of its own to drive it. The thread
-/// is a plain one, not the blocking pool's, because a runtime can't be
-/// started on a thread that's already in one.
-fn spawn(
-    script: Arc<Script>,
-    job: Option<(Page, Env)>,
-    done: oneshot::Sender<Result<Ran, String>>,
-    permit: Option<OwnedSemaphorePermit>,
-    asked: Instant,
-) -> Result<(), String> {
-    std::thread::Builder::new()
-        .name("npanel-preview".into())
-        .spawn(move || {
-            let _permit = permit;
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
-            runtime.block_on(execute(script, job, done, asked));
-        })
-        .map(|_| ())
-        .map_err(|e| format!("No thread for the preview script: {e}"))
+async fn read_routes(script: Arc<Script>) -> Result<Option<Vec<String>>, String> {
+    let job = Job { script: script.digest.clone(), page: None, now: 0, deadline: LOAD_DEADLINE };
+    let mut session = Session::open(script, job, None).await?;
+    let answer = match session.next().await? {
+        (FromWorker::Loaded { routes }, _) => Ok(routes),
+        (FromWorker::Failed(error), _) => Err(error),
+        _ => return Err(confused()),
+    };
+    session.close();
+    answer
 }
 
-/// What a run has spent, and what it was given.
-#[derive(Default)]
-struct Spent {
-    queries: Cell<usize>,
-    events: Cell<usize>,
-    fetches: Cell<usize>,
-    fetched: Cell<u64>,
-    logged: Cell<usize>,
+/// One run, start to finish: its fields, then its image.
+async fn drive(script: Arc<Script>, page: Page, env: Env, asked: Instant, done: oneshot::Sender<Result<Ran, String>>) {
+    let world = World {
+        source: env.source.clone(),
+        http: env.http.clone(),
+        relays: env.relays.clone(),
+        log: env.log,
+        url: page.url.clone(),
+        queries: 0,
+        events: 0,
+        fetches: 0,
+        fetched: Arc::new(AtomicU64::new(0)),
+        logged: 0,
+        inputs: Vec::new(),
+    };
+    let job = Job { script: script.digest.clone(), page: Some(page.clone()), now: env.now, deadline: env.deadline };
+    let mut session = match Session::open(script.clone(), job, Some(world)).await {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = done.send(Err(error));
+            return;
+        }
+    };
+    let spawn = asked.elapsed();
+
+    let answer = match session.next().await {
+        Ok((FromWorker::Returned(returned), payload)) => Ok((returned, payload)),
+        Ok((FromWorker::Failed(error), _)) => {
+            let _ = done.send(Err(error));
+            return session.close();
+        }
+        Ok(_) => Err(confused()),
+        Err(error) => Err(error),
+    };
+    let (returned, payload) = match answer {
+        Ok(answer) => answer,
+        Err(error) => {
+            let _ = done.send(Err(error));
+            return;
+        }
+    };
+    let inputs = session.world.as_ref().map_or(&[][..], |world| &world.inputs);
+    let (mut ran, pending) = match read(&script, &page, *returned, payload, inputs) {
+        Ok(read) => read,
+        Err(error) => {
+            let _ = done.send(Err(error));
+            return;
+        }
+    };
+    ran.timings.spawn = spawn;
+
+    // The fields go now; the image follows, unless it's drawn already.
+    if !pending {
+        let _ = done.send(Ok(ran));
+        return session.close();
+    }
+    let (drawn, image) = oneshot::channel();
+    if let Some(preview) = &mut ran.preview {
+        preview.image = Image::Pending(image);
+    }
+    let version = ran.version.clone();
+    let _ = done.send(Ok(ran));
+    let draw = !(env.have_image)(&version);
+    if session.send(&ToWorker::Draw(draw), &[]).await.is_err() || !draw {
+        return session.close();
+    }
+
+    session.deadline = session.started + env.deadline * 2 + GRACE;
+    let drawing = Instant::now();
+    let warn = |error: &str| env.log.warn("link_preview_script_failed", fields! { "url" => page.url.as_str(), "err_msg" => error });
+    let bytes = match session.next().await {
+        Ok((FromWorker::Drawn(true), bytes)) => {
+            session.close();
+            let bytes = picture(bytes.to_vec());
+            if bytes.is_none() {
+                warn(IMAGE_FORMAT);
+            }
+            bytes
+        }
+        Ok((FromWorker::Drawn(false), _)) => {
+            session.close();
+            None
+        }
+        Ok((FromWorker::Failed(error), _)) => {
+            session.close();
+            warn(&error);
+            None
+        }
+        Ok(_) => {
+            warn(&confused());
+            None
+        }
+        Err(error) => {
+            warn(&error);
+            None
+        }
+    };
+    env.log.debug("link_preview_drawn", fields! { "url" => page.url.as_str(), "drawn" => bytes.is_some(), "ms" => drawing.elapsed().as_millis() as u64 });
+    let _ = drawn.send(bytes);
+}
+
+/// What a worker said its handler returned, held to what npanel accepts.
+/// Whether an image is to follow.
+fn read(script: &Script, page: &Page, returned: sandbox::Returned, payload: Bytes, inputs: &[String]) -> Result<(Ran, bool), String> {
+    // A header it wasn't given can't vary what it made.
+    let mut vary: Vec<String> = returned.headers.into_iter().filter(|name| HEADERS.contains(&name.as_str())).collect();
+    vary.sort();
+    vary.dedup();
+    let version = version(script, page, &vary, inputs);
+    let timings = returned.timings;
+    if returned.none {
+        return Ok((Ran { preview: None, vary, version, timings }, false));
+    }
+    let (image, pending) = match returned.image {
+        Picture::None => (Image::None, false),
+        Picture::Url(url) => (Image::Url(url), false),
+        Picture::Bytes => (Image::Bytes(picture(payload.to_vec()).ok_or(IMAGE_FORMAT)?), false),
+        Picture::Pending => (Image::None, true),
+    };
+    let extras = match returned.extras {
+        Some(extras) => serde_json::from_str::<Extras>(&extras)
+            .map_err(|_| "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read.".to_string())?,
+        None => Extras::default(),
+    };
+    let preview = Returned { title: returned.title, description: returned.description, body: returned.body, image, extras };
+    Ok((Ran { preview: Some(preview), vary, version, timings }, pending))
+}
+
+fn confused() -> String {
+    "The preview script's process said something npanel didn't expect.".into()
+}
+
+/// What a run may ask of the world, and what it has asked.
+struct World {
+    source: Arc<dyn EventSource>,
+    http: reqwest::Client,
+    relays: Vec<String>,
+    log: Logger,
+    url: String,
+    queries: usize,
+    events: usize,
+    fetches: usize,
+    /// Bytes fetched in all, counted as they arrive.
+    fetched: Arc<AtomicU64>,
+    logged: usize,
     /// What its queries and fetches asked for and found, in order.
-    inputs: RefCell<Vec<String>>,
+    inputs: Vec<String>,
 }
 
-async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::Sender<Result<Ran, String>>, asked: Instant) {
-    let started = Instant::now();
-    let mut timings = Timings { spawn: started - asked, ..Timings::default() };
-    let deadline = job.as_ref().map_or(LOAD_DEADLINE, |(_, env)| env.deadline);
-    let limit = Arc::new(AtomicU64::new(deadline.as_millis() as u64));
-    let runtime = match AsyncRuntime::new() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = done.send(Err(error.to_string()));
+type Response = (u16, String, Vec<(String, String)>, Vec<u8>);
+
+/// A query or a fetch, done.
+enum Answer {
+    Queried { call: u64, asked: String, found: Vec<Event> },
+    Fetched { call: u64, url: String, result: Result<Response, String> },
+}
+
+/// One job on one worker: the gateway's end of the conversation, which
+/// answers what the worker asks on the way to what the job is for.
+///
+/// Dropped rather than closed — after a deadline, a worker gone quiet, or
+/// anything else that leaves the conversation in doubt — its process is
+/// killed.
+struct Session {
+    lease: Lease,
+    channel: Framed<tokio::net::UnixStream, LengthDelimitedCodec>,
+    script: Arc<Script>,
+    /// When the job reached the worker.
+    started: Instant,
+    /// When the worker is killed if it hasn't answered.
+    deadline: Instant,
+    world: Option<World>,
+    calls: FuturesUnordered<BoxFuture<'static, Answer>>,
+}
+
+impl Session {
+    async fn open(script: Arc<Script>, job: Job, world: Option<World>) -> Result<Session, String> {
+        let mut lease = sandbox::pool().lease().await?;
+        let stream = lease.take_stream();
+        let stream = stream.set_nonblocking(true).and_then(|_| tokio::net::UnixStream::from_std(stream)).map_err(|e| e.to_string())?;
+        let now = Instant::now();
+        let mut session =
+            Session { lease, channel: Framed::new(stream, sandbox::codec()), script, started: now, deadline: now + STARTUP, world, calls: FuturesUnordered::new() };
+        if session.lease.process().fresh {
+            match session.next().await? {
+                (FromWorker::Ready { faces, unconfined }, _) => sandbox::pool().announce(faces, &unconfined),
+                _ => return Err(confused()),
+            }
+            session.lease.process().fresh = false;
+        }
+        session.started = Instant::now();
+        session.deadline = session.started + job.deadline + GRACE;
+        session.send(&ToWorker::Job(job), &[]).await?;
+        Ok(session)
+    }
+
+    /// Done, the worker's job finished: its process goes back for the next.
+    fn close(self) {
+        let Session { lease, channel, .. } = self;
+        let parts = channel.into_parts();
+        // Anything still in transit means the two disagree about where the
+        // conversation is.
+        if !parts.read_buf.is_empty() || !parts.write_buf.is_empty() {
             return;
         }
-    };
-    runtime.set_memory_limit(MEMORY).await;
-    runtime.set_max_stack_size(STACK).await;
-    {
-        let limit = limit.clone();
-        runtime.set_interrupt_handler(Some(Box::new(move || started.elapsed().as_millis() as u64 > limit.load(Ordering::Relaxed)))).await;
+        if let Ok(stream) = parts.io.into_std() {
+            lease.give_back(stream);
+        }
     }
-    runtime.set_loader(Only(script.clone()), Only(script.clone())).await;
-    let context = match AsyncContext::full(&runtime).await {
-        Ok(context) => context,
-        Err(error) => {
-            let _ = done.send(Err(error.to_string()));
+
+    async fn send(&mut self, message: &ToWorker, payload: &[u8]) -> Result<(), String> {
+        match tokio::time::timeout_at(self.deadline.into(), self.channel.send(sandbox::encode(message, payload))).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(self.stopped()),
+            Err(_) => Err(PAST_DEADLINE.into()),
+        }
+    }
+
+    /// Why the worker stopped answering.
+    fn stopped(&mut self) -> String {
+        match self.lease.process().ended() {
+            Some(how) => format!("{STOPPED} Its process {how}."),
+            None => STOPPED.into(),
+        }
+    }
+
+    /// The worker's next word that isn't a question for the gateway,
+    /// answering those on the way.
+    async fn next(&mut self) -> Result<(FromWorker, Bytes), String> {
+        loop {
+            tokio::select! {
+                frame = self.channel.next() => {
+                    let Some(Ok(frame)) = frame else { return Err(self.stopped()) };
+                    let (message, payload) = sandbox::decode::<FromWorker>(frame).map_err(|_| confused())?;
+                    match message {
+                        FromWorker::Want => {
+                            let source = self.script.source.clone();
+                            self.send(&ToWorker::Source(source), &[]).await?;
+                        }
+                        FromWorker::Query { call, filters } => self.query(call, &filters).await?,
+                        FromWorker::Fetch { call, url } => self.fetch(call, url).await?,
+                        FromWorker::Log { level, message } => self.log(&level, &message),
+                        other => return Ok((other, payload)),
+                    }
+                }
+                Some(answer) = self.calls.next(), if !self.calls.is_empty() => self.answer(answer).await?,
+                _ = tokio::time::sleep_until(self.deadline.into()) => return Err(PAST_DEADLINE.into()),
+            }
+        }
+    }
+
+    async fn query(&mut self, call: u64, filters: &str) -> Result<(), String> {
+        let Some(world) = &mut self.world else { return self.send(&ToWorker::Queried { call, result: Err(DEPLOYING.into()) }, &[]).await };
+        let checked = parse_filters(filters).and_then(|filters| {
+            if world.queries >= MAX_QUERIES {
+                return Err(format!("A preview may query relays {MAX_QUERIES} times at most."));
+            }
+            world.queries += 1;
+            Ok(filters)
+        });
+        match checked {
+            Ok(filters) => {
+                let asked = serde_json::to_string(&filters.iter().map(Filter::to_json).collect::<Vec<_>>()).expect("filters serialize");
+                let (source, relays) = (world.source.clone(), world.relays.clone());
+                self.calls.push(async move { Answer::Queried { call, asked, found: query(source, filters, relays).await } }.boxed());
+                Ok(())
+            }
+            Err(error) => self.send(&ToWorker::Queried { call, result: Err(error) }, &[]).await,
+        }
+    }
+
+    async fn fetch(&mut self, call: u64, url: String) -> Result<(), String> {
+        let Some(world) = &mut self.world else { return self.send(&ToWorker::Fetched { call, result: Err(DEPLOYING.into()) }, &[]).await };
+        let checked = fetch_target(&url).and_then(|target| {
+            if world.fetches >= MAX_FETCHES {
+                return Err(format!("A preview may fetch {MAX_FETCHES} times at most."));
+            }
+            world.fetches += 1;
+            Ok(target)
+        });
+        match checked {
+            Ok(target) => {
+                let (http, fetched) = (world.http.clone(), world.fetched.clone());
+                self.calls.push(async move { Answer::Fetched { call, url, result: get(http, target, fetched).await } }.boxed());
+                Ok(())
+            }
+            Err(error) => self.send(&ToWorker::Fetched { call, result: Err(error) }, &[]).await,
+        }
+    }
+
+    async fn answer(&mut self, answer: Answer) -> Result<(), String> {
+        let world = self.world.as_mut().expect("only a run asks");
+        match answer {
+            Answer::Queried { call, asked, mut found } => {
+                found.truncate(MAX_EVENTS - world.events);
+                world.events += found.len();
+                let ids: Vec<&str> = found.iter().map(|e| e.id.as_str()).collect();
+                world.inputs.push(format!("q {asked} {}", ids.join(",")));
+                let events = serde_json::to_string(&found).expect("events serialize");
+                self.send(&ToWorker::Queried { call, result: Ok(events) }, &[]).await
+            }
+            Answer::Fetched { call, url, result: Ok((status, final_url, headers, body)) } => {
+                world.inputs.push(format!("f {url} {status}"));
+                let fetched = sandbox::Fetched { status, url: final_url, headers };
+                self.send(&ToWorker::Fetched { call, result: Ok(fetched) }, &body).await
+            }
+            Answer::Fetched { call, result: Err(error), .. } => self.send(&ToWorker::Fetched { call, result: Err(error) }, &[]).await,
+        }
+    }
+
+    fn log(&mut self, level: &str, message: &str) {
+        let Some(world) = &mut self.world else { return };
+        if world.logged >= MAX_LOG_LINES {
             return;
         }
-    };
-
-    context
-        .async_with(async move |ctx| {
-            let spent = Rc::new(Spent::default());
-            let (page, env) = match job {
-                Some((page, env)) => (Some(page), Some(env)),
-                None => (None, None),
-            };
-            let env = env.map(Rc::new);
-            let extend = |to: Duration| limit.store(to.as_millis() as u64, Ordering::Relaxed);
-            let overran = || started.elapsed().as_millis() as u64 >= limit.load(Ordering::Relaxed);
-            let fail = |ctx: &Ctx<'_>, error: rquickjs::Error| {
-                if overran() {
-                    "The preview script ran past its deadline.".to_string()
-                } else {
-                    describe(ctx, error)
-                }
-            };
-
-            timings.setup = started.elapsed();
-            let start = async {
-                let at = Instant::now();
-                let natives = natives(&ctx, env.clone(), page.as_ref().map(|p| p.url.clone()).unwrap_or_default(), spent.clone())?;
-                let prelude = prelude(&ctx).await?;
-                let seed = page.as_ref().map_or(0, |page| u32::from_le_bytes(Sha256::digest(page.url.as_bytes())[..4].try_into().unwrap()));
-                let now = env.as_ref().map_or(0, |env| env.now);
-                let hooks: Object = prelude.call((natives, seed, now as f64))?;
-                timings.prelude = at.elapsed();
-                let at = Instant::now();
-                let module: Object = Module::import(&ctx, PATH)?.into_future().await?;
-                let handler: Value = module.get("default")?;
-                timings.module = at.elapsed();
-                rquickjs::Result::Ok((hooks, handler))
-            };
-            let (hooks, handler) = match start.await {
-                Ok(started) => started,
-                Err(error) => {
-                    let _ = done.send(Err(fail(&ctx, error)));
-                    return;
-                }
-            };
-            let (Some(page), Some(env)) = (page, env) else {
-                let _ = done.send(exports(&handler).map(|routes| Ran { preview: None, vary: Vec::new(), version: String::new(), timings, routes }));
-                return;
-            };
-
-            let called = Instant::now();
-            let call = async {
-                let call: Function = hooks.get("call")?;
-                let headers = ctx.json_parse(serde_json::to_string(&page.headers).expect("headers serialize"))?;
-                let promise: Promise = call.call((handler, page.url.as_str(), page.method.as_str(), headers, deadline.as_millis() as f64))?;
-                let out: Object = promise.into_future().await?;
-                rquickjs::Result::Ok(out)
-            };
-            let out = match tokio::time::timeout(deadline, call).await {
-                Ok(Ok(out)) => out,
-                Ok(Err(error)) => {
-                    let _ = done.send(Err(fail(&ctx, error)));
-                    return;
-                }
-                Err(_) => {
-                    let _ = done.send(Err("The preview script ran past its deadline.".into()));
-                    return;
-                }
-            };
-            timings.handler = called.elapsed();
-            timings.heap = heap(&ctx);
-
-            let read = async {
-                let mut vary: Vec<String> = out.get("headers")?;
-                vary.sort();
-                vary.dedup();
-                let version = version(&script, &page, &vary, &spent.inputs.borrow());
-                if out.get::<_, bool>("none")? {
-                    return rquickjs::Result::Ok((Ran { preview: None, vary, version, timings, routes: None }, None));
-                }
-                let mut pending = None;
-                let image = if let Some(url) = out.get::<_, Option<String>>("url")? {
-                    Image::Url(url)
-                } else if let Some(bytes) = out.get::<_, Option<TypedArray<u8>>>("bytes")? {
-                    match picture(bytes_of(&bytes)) {
-                        Some(bytes) => Image::Bytes(bytes),
-                        None => return Err(Exception::throw_type(&ctx, "The image must be a PNG, JPEG, GIF or WebP, 4096 pixels a side at most.")),
-                    }
-                } else if let Some(promise) = out.get::<_, Option<Promise>>("pending")? {
-                    pending = Some(promise);
-                    Image::None
-                } else {
-                    Image::None
-                };
-                let extras: String = out.get("extras")?;
-                let Ok(extras) = serde_json::from_str::<Extras>(&extras) else {
-                    return Err(Exception::throw_type(&ctx, "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read."));
-                };
-                let preview = Returned { title: out.get("title")?, description: out.get("description")?, body: out.get("body")?, image, extras };
-                Ok((Ran { preview: Some(preview), vary, version, timings, routes: None }, pending))
-            };
-            let (mut ran, pending) = match read.await {
-                Ok(read) => read,
-                Err(error) => {
-                    let _ = done.send(Err(fail(&ctx, error)));
-                    return;
-                }
-            };
-
-            // The fields go now; the image follows, unless it's drawn already.
-            let Some(pending) = pending else {
-                let _ = done.send(Ok(ran));
-                return;
-            };
-            let (drawn, image) = oneshot::channel();
-            if let Some(preview) = &mut ran.preview {
-                preview.image = Image::Pending(image);
-            }
-            let version = ran.version.clone();
-            let _ = done.send(Ok(ran));
-            if (env.have_image)(&version) {
-                return;
-            }
-            extend(deadline * 2);
-            let drawing = Instant::now();
-            let bytes = match tokio::time::timeout((deadline * 2).saturating_sub(started.elapsed()), pending.into_future::<Option<TypedArray<u8>>>()).await {
-                Ok(Ok(Some(bytes))) => {
-                    let bytes = picture(bytes_of(&bytes));
-                    if bytes.is_none() {
-                        env.log.warn("link_preview_script_failed", fields! { "url" => page.url.as_str(), "err_msg" => "The image must be a PNG, JPEG, GIF or WebP, 4096 pixels a side at most." });
-                    }
-                    bytes
-                }
-                Ok(Ok(None)) => None,
-                Ok(Err(error)) => {
-                    env.log.warn("link_preview_script_failed", fields! { "url" => page.url.as_str(), "err_msg" => fail(&ctx, error) });
-                    None
-                }
-                Err(_) => {
-                    env.log.warn("link_preview_script_failed", fields! { "url" => page.url.as_str(), "err_msg" => "The preview's image took too long to draw." });
-                    None
-                }
-            };
-            env.log.debug("link_preview_drawn", fields! { "url" => page.url.as_str(), "drawn" => bytes.is_some(), "ms" => drawing.elapsed().as_millis() as u64 });
-            let _ = drawn.send(bytes);
-        })
-        .await;
-}
-
-/// What a script's default export lists as its routes, having checked it
-/// has a handler.
-fn exports(handler: &Value<'_>) -> Result<Option<Vec<String>>, String> {
-    let shape = || format!("{PATH} must export default {{ routes, preview(request, ctx) }}.");
-    let handler = handler.as_object().ok_or_else(shape)?;
-    if !handler.get::<_, Value>("preview").is_ok_and(|f| f.is_function()) {
-        return Err(shape());
-    }
-    let routes: Value = handler.get("routes").map_err(|_| shape())?;
-    if routes.is_undefined() || routes.is_null() {
-        return Ok(None);
-    }
-    let list = routes.as_array().ok_or("A preview script's routes must be a list of URLPattern pathnames, like \"/:id\".")?;
-    list.iter::<Value>()
-        .map(|route| route.ok().and_then(|r| r.as_string().and_then(|s| s.to_string().ok())).ok_or_else(|| "A preview script's routes must all be strings.".to_string()))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
-}
-
-/// The prelude's function, from its bytecode once it has been compiled.
-async fn prelude<'js>(ctx: &Ctx<'js>) -> rquickjs::Result<Function<'js>> {
-    /// The prelude, compiled by the first run.
-    static BYTECODE: OnceLock<Vec<u8>> = OnceLock::new();
-    let module = match BYTECODE.get() {
-        // SAFETY: the bytecode is what this QuickJS wrote of the prelude, below.
-        Some(bytecode) => unsafe { Module::load(ctx.clone(), bytecode)? },
-        None => {
-            let module = Module::declare(ctx.clone(), "npanel:prelude", PRELUDE)?;
-            if let Ok(bytecode) = module.write(WriteOptions::default()) {
-                let _ = BYTECODE.set(bytecode);
-            }
-            module
-        }
-    };
-    let (module, evaluated) = module.eval()?;
-    evaluated.into_future::<()>().await?;
-    module.get("default")
-}
-
-/// What a run's JavaScript heap holds now, in bytes.
-fn heap(ctx: &Ctx<'_>) -> u64 {
-    // SAFETY: `ctx` holds its runtime's lock, and the runtime lives as long
-    // as it does.
-    let usage = unsafe {
-        let mut usage = std::mem::MaybeUninit::uninit();
-        rquickjs::qjs::JS_ComputeMemoryUsage(rquickjs::qjs::JS_GetRuntime(ctx.as_raw().as_ptr()), usage.as_mut_ptr());
-        usage.assume_init()
-    };
-    usage.memory_used_size.max(0) as u64
-}
-
-/// What a script threw, for a log or a deploy log.
-fn describe(ctx: &Ctx<'_>, error: rquickjs::Error) -> String {
-    if !matches!(error, rquickjs::Error::Exception) {
-        return error.to_string();
-    }
-    let thrown = ctx.catch();
-    if let Some(exception) = thrown.as_exception() {
-        let message = match exception.get::<_, String>("name") {
-            Ok(name) if !name.is_empty() => format!("{name}: {}", exception.message().unwrap_or_default()),
-            _ => exception.message().unwrap_or_default(),
-        };
-        return match exception.stack().filter(|stack| !stack.trim().is_empty()) {
-            Some(stack) => format!("{message}\n{}", stack.trim_end()),
-            None => message,
-        };
-    }
-    match thrown.as_string().and_then(|s| s.to_string().ok()) {
-        Some(text) => text,
-        None => "The preview script threw something that isn't an Error.".into(),
+        world.logged += 1;
+        let level = crate::site_preview::clamp(level, 16);
+        let message = crate::site_preview::clamp(message, MAX_LOG_LINE);
+        world.log.debug("link_preview_script_log", fields! { "url" => world.url.as_str(), "level" => level, "message" => message });
     }
 }
 
@@ -628,312 +751,6 @@ fn picture(bytes: Vec<u8>) -> Option<Vec<u8>> {
         imagesize::ImageType::Png | imagesize::ImageType::Jpeg | imagesize::ImageType::Gif | imagesize::ImageType::Webp
     );
     (ok && size.width <= canvas::MAX_PICTURE as usize && size.height <= canvas::MAX_PICTURE as usize).then_some(bytes)
-}
-
-fn bytes_of(array: &TypedArray<'_, u8>) -> Vec<u8> {
-    // SAFETY: the bytes are copied out at once, while nothing else runs.
-    unsafe { array.as_bytes() }.map(<[u8]>::to_vec).unwrap_or_default()
-}
-
-/// The script, and nothing else: a preview script imports nothing.
-struct Only(Arc<Script>);
-
-impl Resolver for Only {
-    fn resolve<'js>(&mut self, _: &Ctx<'js>, base: &str, name: &str, _: Option<ImportAttributes<'js>>) -> rquickjs::Result<String> {
-        if base.is_empty() && name == PATH {
-            return Ok(PATH.into());
-        }
-        Err(rquickjs::Error::new_resolving_message(base, name, "a preview script imports nothing; bundle what it needs into it"))
-    }
-}
-
-impl Loader for Only {
-    fn load<'js>(&mut self, ctx: &Ctx<'js>, name: &str, _: Option<ImportAttributes<'js>>) -> rquickjs::Result<Module<'js, Declared>> {
-        if name != PATH {
-            return Err(rquickjs::Error::new_loading(name));
-        }
-        if let Some(bytecode) = self.0.bytecode.get() {
-            // SAFETY: the bytecode is what this QuickJS wrote of this script,
-            // below.
-            return unsafe { Module::load(ctx.clone(), bytecode) };
-        }
-        let module = Module::declare(ctx.clone(), name, self.0.source.as_bytes())?;
-        if let Ok(bytecode) = module.write(WriteOptions::default()) {
-            let _ = self.0.bytecode.set(bytecode);
-        }
-        Ok(module)
-    }
-}
-
-fn thrown(ctx: &Ctx<'_>, message: impl std::fmt::Display) -> rquickjs::Error {
-    Exception::throw_type(ctx, &message.to_string())
-}
-
-/// What `prelude.js` is built on.
-fn natives<'js>(ctx: &Ctx<'js>, env: Option<Rc<Env>>, url: String, spent: Rc<Spent>) -> rquickjs::Result<Object<'js>> {
-    let natives = Object::new(ctx.clone())?;
-    let surfaces = Rc::new(RefCell::new(Surfaces::default()));
-    natives.set("utf8Encode", Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String| TypedArray::<u8>::new(ctx, text.into_bytes())))?;
-    natives.set("utf8Decode", Function::new(ctx.clone(), |bytes: TypedArray<'js, u8>| String::from_utf8_lossy(&bytes_of(&bytes)).into_owned()))?;
-    natives.set(
-        "btoa",
-        Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String| {
-            let bytes = text.chars().map(|c| u8::try_from(u32::from(c)).map_err(|_| thrown(&ctx, "btoa only encodes Latin-1 text."))).collect::<rquickjs::Result<Vec<u8>>>()?;
-            rquickjs::Result::Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
-        }),
-    )?;
-    natives.set(
-        "atob",
-        Function::new(ctx.clone(), |ctx: Ctx<'js>, text: String| {
-            let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-            let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
-                .decode(compact.trim_end_matches('='))
-                .map_err(|_| thrown(&ctx, "atob was given something that isn't base64."))?;
-            rquickjs::Result::Ok(bytes.into_iter().map(char::from).collect::<String>())
-        }),
-    )?;
-    natives.set(
-        "urlParse",
-        Function::new(ctx.clone(), |ctx: Ctx<'js>, input: String, base: Opt<String>| {
-            let parsed = match base.0 {
-                Some(base) => url::Url::parse(&base).and_then(|base| base.join(&input)),
-                None => url::Url::parse(&input),
-            }
-            .map_err(|_| thrown(&ctx, format!("{input} isn't a valid URL.")))?;
-            let parts = Object::new(ctx.clone())?;
-            let host = parsed.host_str().unwrap_or_default();
-            let port = parsed.port().map(|p| p.to_string()).unwrap_or_default();
-            parts.set("href", parsed.as_str())?;
-            parts.set("origin", parsed.origin().ascii_serialization())?;
-            parts.set("protocol", format!("{}:", parsed.scheme()))?;
-            parts.set("username", parsed.username())?;
-            parts.set("password", parsed.password().unwrap_or_default())?;
-            parts.set("host", if port.is_empty() { host.to_string() } else { format!("{host}:{port}") })?;
-            parts.set("hostname", host)?;
-            parts.set("port", port)?;
-            parts.set("pathname", parsed.path())?;
-            parts.set("search", parsed.query().map(|q| format!("?{q}")).unwrap_or_default())?;
-            parts.set("hash", parsed.fragment().map(|f| format!("#{f}")).unwrap_or_default())?;
-            rquickjs::Result::Ok(parts)
-        }),
-    )?;
-    {
-        let (env, spent, url) = (env.clone(), spent.clone(), url.clone());
-        natives.set(
-            "log",
-            Function::new(ctx.clone(), move |level: String, message: String| {
-                let Some(env) = &env else { return };
-                if spent.logged.get() >= MAX_LOG_LINES {
-                    return;
-                }
-                spent.logged.set(spent.logged.get() + 1);
-                let message = crate::site_preview::clamp(&message, MAX_LOG_LINE);
-                env.log.debug("link_preview_script_log", fields! { "url" => url.as_str(), "level" => level, "message" => message });
-            }),
-        )?;
-    }
-    natives.set("isColor", Function::new(ctx.clone(), |text: String| text.trim().parse::<svgtypes::Color>().is_ok()))?;
-
-    // Canvases and bitmaps.
-    let surface = |ctx: &Ctx<'js>, result: Result<(), String>| result.map_err(|e| thrown(ctx, e));
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "canvasNew",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, width: u32, height: u32| s.borrow_mut().create(width, height).map(|id| id as u32).map_err(|e| thrown(&ctx, e))),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set("surfaceFree", Function::new(ctx.clone(), move |id: u32| s.borrow_mut().free(id as usize)))?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "surfaceCopy",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32| s.borrow_mut().copy(id as usize).map(|id| id as u32).map_err(|e| thrown(&ctx, e))),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "surfaceSize",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32| s.borrow().size(id as usize).map(|(w, h)| vec![w, h]).map_err(|e| thrown(&ctx, e))),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "fill",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, path: Vec<f64>, rule: String, style: String, state: String| {
-                let (style, state) = (parse::<Style>(&ctx, &style)?, parse::<State>(&ctx, &state)?);
-                surface(&ctx, s.borrow_mut().fill(id as usize, &path, &rule, &style, &state))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "stroke",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, path: Vec<f64>, style: String, line: String, state: String| {
-                let (style, line, state) = (parse::<Style>(&ctx, &style)?, parse::<Line>(&ctx, &line)?, parse::<State>(&ctx, &state)?);
-                surface(&ctx, s.borrow_mut().stroke(id as usize, &path, &style, &line, &state))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "drawImage",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, source: u32, rects: Vec<f64>, matrix: Vec<f64>, state: String| {
-                let state = parse::<State>(&ctx, &state)?;
-                let (Ok(rects), Ok(matrix)) = (<[f64; 8]>::try_from(rects), <[f64; 6]>::try_from(matrix)) else {
-                    return Err(thrown(&ctx, "drawImage was given the wrong number of coordinates."));
-                };
-                let rects = rects.map(|v| v as f32);
-                let source_rect = [rects[0], rects[1], rects[2], rects[3]];
-                let target = [rects[4], rects[5], rects[6], rects[7]];
-                surface(&ctx, s.borrow_mut().draw_image(id as usize, source as usize, source_rect, target, matrix.map(|v| v as f32), &state))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "getImageData",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, x: f64, y: f64, width: f64, height: f64| {
-                let data = s.borrow().get_image_data(id as usize, x as i32, y as i32, width as u32, height as u32).map_err(|e| thrown(&ctx, e))?;
-                TypedArray::<u8>::new(ctx, data)
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "putImageData",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, data: TypedArray<'js, u8>, x: f64, y: f64, width: f64, height: f64| {
-                surface(&ctx, s.borrow_mut().put_image_data(id as usize, &bytes_of(&data), x as i32, y as i32, width as u32, height as u32))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "drawText",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, text: String, style: String, state: String| {
-                let (text, style, state) = (parse::<Text>(&ctx, &text)?, parse::<Style>(&ctx, &style)?, parse::<State>(&ctx, &state)?);
-                surface(&ctx, s.borrow_mut().draw_text(id as usize, &text, &style, &state))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "measureText",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, text: String, font: String| {
-                let font = parse::<Font>(&ctx, &font)?;
-                let m = s.borrow().measure_text(&text, &font).map_err(|e| thrown(&ctx, e))?;
-                rquickjs::Result::Ok(vec![m.width, m.left, m.right, m.ascent, m.descent])
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "decode",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, bytes: TypedArray<'js, u8>| {
-                s.borrow_mut().decode(bytes_of(&bytes)).map(|id| id as u32).map_err(|e| thrown(&ctx, e))
-            }),
-        )?;
-    }
-    {
-        let s = surfaces.clone();
-        natives.set(
-            "encode",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, id: u32, mime: String, quality: f64| {
-                let (bytes, mime) = s.borrow().encode(id as usize, &mime, Some(quality)).map_err(|e| thrown(&ctx, e))?;
-                let out = Object::new(ctx.clone())?;
-                out.set("bytes", TypedArray::<u8>::new(ctx.clone(), bytes)?)?;
-                out.set("type", mime)?;
-                rquickjs::Result::Ok(out)
-            }),
-        )?;
-    }
-
-    // Time, relays and the network.
-    natives.set(
-        "sleep",
-        Function::new(ctx.clone(), |ms: f64| {
-            Promised(async move {
-                tokio::time::sleep(Duration::from_millis(ms.clamp(0.0, 60_000.0) as u64)).await;
-            })
-        }),
-    )?;
-    {
-        let (env, spent) = (env.clone(), spent.clone());
-        natives.set(
-            "query",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, filters: String| {
-                let Some(env) = env.clone() else { return Err(thrown(&ctx, "Nothing is fetched while a site deploys.")) };
-                let filters = parse_filters(&filters).map_err(|e| thrown(&ctx, e))?;
-                if spent.queries.get() >= MAX_QUERIES {
-                    return Err(thrown(&ctx, format!("A preview may query relays {MAX_QUERIES} times at most.")));
-                }
-                spent.queries.set(spent.queries.get() + 1);
-                let spent = spent.clone();
-                let asked = serde_json::to_string(&filters.iter().map(Filter::to_json).collect::<Vec<_>>()).expect("filters serialize");
-                let task = env.runtime.spawn(query(env.source.clone(), filters, env.relays.clone()));
-                rquickjs::Result::Ok(Promised(async move {
-                    let mut found = task.await.unwrap_or_default();
-                    found.truncate(MAX_EVENTS - spent.events.get());
-                    spent.events.set(spent.events.get() + found.len());
-                    let ids: Vec<&str> = found.iter().map(|e| e.id.as_str()).collect();
-                    spent.inputs.borrow_mut().push(format!("q {asked} {}", ids.join(",")));
-                    rquickjs::Result::Ok(serde_json::to_string(&found).expect("events serialize"))
-                }))
-            }),
-        )?;
-    }
-    {
-        let (env, spent) = (env, spent);
-        natives.set(
-            "fetch",
-            Function::new(ctx.clone(), move |ctx: Ctx<'js>, url: String| {
-                let Some(env) = env.clone() else { return Err(thrown(&ctx, "Nothing is fetched while a site deploys.")) };
-                let target = url::Url::parse(&url).map_err(|_| thrown(&ctx, format!("{url} isn't a valid URL.")))?;
-                if target.scheme() != "https" {
-                    return Err(thrown(&ctx, "A preview can only fetch https:// URLs."));
-                }
-                if spent.fetches.get() >= MAX_FETCHES {
-                    return Err(thrown(&ctx, format!("A preview may fetch {MAX_FETCHES} times at most.")));
-                }
-                spent.fetches.set(spent.fetches.get() + 1);
-                let spent = spent.clone();
-                let task = env.runtime.spawn(get(env.http.clone(), target));
-                let ctx2 = ctx.clone();
-                rquickjs::Result::Ok(Promised(async move {
-                    let fetched = task.await.map_err(|e| e.to_string()).and_then(|r| r);
-                    let (status, final_url, headers, body) = fetched.map_err(|e| thrown(&ctx2, e))?;
-                    spent.fetched.set(spent.fetched.get() + body.len() as u64);
-                    if spent.fetched.get() > MAX_FETCHED_BYTES {
-                        return Err(thrown(&ctx2, "A preview may fetch 32 MB at most, in all."));
-                    }
-                    spent.inputs.borrow_mut().push(format!("f {url} {status}"));
-                    let out = Object::new(ctx2.clone())?;
-                    out.set("status", status)?;
-                    out.set("url", final_url)?;
-                    out.set("headers", ctx2.json_parse(serde_json::to_string(&headers).expect("headers serialize"))?)?;
-                    out.set("body", TypedArray::<u8>::new(ctx2.clone(), body)?)?;
-                    rquickjs::Result::Ok(out)
-                }))
-            }),
-        )?;
-    }
-    Ok(natives)
-}
-
-fn parse<T: serde::de::DeserializeOwned>(ctx: &Ctx<'_>, json: &str) -> rquickjs::Result<T> {
-    serde_json::from_str(json).map_err(|e| thrown(ctx, format!("npanel's canvas was given something it can't read: {e}")))
 }
 
 /// NIP-01 filters, as a script wrote them. Each must name ids, authors or a
@@ -1028,8 +845,34 @@ fn select(filters: &[Filter], events: Vec<Event>) -> Vec<Event> {
     out
 }
 
-/// One `https://` fetch: its status, final URL, headers and body.
-async fn get(http: reqwest::Client, url: url::Url) -> Result<(u16, String, Vec<(String, String)>, Vec<u8>), String> {
+/// A URL a script may fetch: `https://`, and not at an address that isn't
+/// public. A name is checked by the resolver as it's dialed; an address
+/// written out is never resolved, so it's checked here.
+fn fetch_target(url: &str) -> Result<url::Url, String> {
+    let target = url::Url::parse(url).map_err(|_| format!("{url} isn't a valid URL."))?;
+    if target.scheme() != "https" {
+        return Err("A preview can only fetch https:// URLs.".into());
+    }
+    if !public_literal(&target) {
+        return Err(format!("{url} isn't on a public address, so a preview can't fetch it."));
+    }
+    Ok(target)
+}
+
+/// Whether a URL's host, if it's an address, is a public one.
+fn public_literal(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(_)) => true,
+        Some(url::Host::Ipv4(address)) => is_public_address(address.into()),
+        Some(url::Host::Ipv6(address)) => is_public_address(address.into()),
+        None => false,
+    }
+}
+
+/// One `https://` fetch: its status, final URL, headers and body. `fetched`
+/// counts the run's bytes in all, as they arrive, so fetches at once can't
+/// hold more between them than one run may.
+async fn get(http: reqwest::Client, url: url::Url, fetched: Arc<AtomicU64>) -> Result<Response, String> {
     let mut response = http.get(url.clone()).send().await.map_err(|e| format!("Fetching {url} failed: {}", e.without_url()))?;
     let status = response.status().as_u16();
     let final_url = response.url().to_string();
@@ -1040,18 +883,23 @@ async fn get(http: reqwest::Client, url: url::Url) -> Result<(u16, String, Vec<(
         if body.len() > MAX_FETCH_BYTES {
             return Err(format!("{url} is larger than 8 MB."));
         }
+        if fetched.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64 > MAX_FETCHED_BYTES {
+            return Err("A preview may fetch 32 MB at most, in all.".into());
+        }
     }
     Ok((status, final_url, headers, body))
 }
 
 /// The client a script's `fetch` goes through. Every address it connects to
 /// is checked to be public, on every hop, and a redirect is followed only to
-/// another `https://` URL.
+/// another `https://` URL. No proxy from the environment: one would dial
+/// what the resolver never saw.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .dns_resolver(Arc::new(crate::net::PublicResolver))
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 3 || attempt.url().scheme() != "https" {
+            if attempt.previous().len() >= 3 || attempt.url().scheme() != "https" || !public_literal(attempt.url()) {
                 attempt.stop()
             } else {
                 attempt.follow()

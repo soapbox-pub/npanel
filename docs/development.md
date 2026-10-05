@@ -158,7 +158,7 @@ instead of the script, and the dashboard's tests need Vitest's DOM environment.
 ### Timing a preview script
 
 `bench_preview` times runs of a real site's preview script, a phase at a time:
-the thread, the QuickJS runtime, the prelude, the script, the handler, and the
+reaching a worker process (its first run starts one), the QuickJS runtime, the prelude, the script, the handler, and the
 heap it ends with. It runs Ditto's from a checkout beside this one
 (`../ditto/dist/.well-known/npanel/preview.js`, after a `npm run build`
 there), or the file `NPANEL_BENCH_SCRIPT` names, against relays that answer at
@@ -168,6 +168,10 @@ in a release build:
 ```sh
 cargo test --release bench_preview -- --ignored --nocapture
 ```
+
+Under `cargo test` the worker processes are the test binary itself, run as
+the `preview_worker` test with `NPANEL_PREVIEW_WORKER` set, since the harness
+isn't the `npanel` binary.
 
 It leaves each page's image in the system's temporary directory, as
 `npanel-bench-*.jpg`, to be looked at. In production the same phases are in

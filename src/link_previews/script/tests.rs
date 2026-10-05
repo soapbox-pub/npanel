@@ -4,6 +4,15 @@ use tokio::sync::Semaphore;
 use super::*;
 use crate::log::LogLevel;
 
+/// The worker, when the test harness is started as one: see
+/// `sandbox::worker_command`. A test that passes as nothing otherwise.
+#[test]
+fn preview_worker() {
+    if std::env::var_os(sandbox::TEST_ENV).is_some() {
+        worker::main();
+    }
+}
+
 const SECRET: &str = "0000000000000000000000000000000000000000000000000000000000000003";
 
 /// Relays holding exactly the events a test gives them.
@@ -40,8 +49,7 @@ async fn run_with(script: &Arc<Script>, page: Page, events: Vec<Event>, deadline
         now: 1_700_000_000_000,
         deadline,
     };
-    let permit = Arc::new(Semaphore::new(1)).acquire_owned().await.unwrap();
-    run(script.clone(), page, env, permit).await
+    run(script.clone(), page, env).await
 }
 
 async fn run_page(script: &Arc<Script>, url: &str, events: Vec<Event>) -> Result<Ran, String> {
@@ -194,7 +202,8 @@ async fn a_handler_is_held_to_its_limits() {
     let started = Instant::now();
     let error = run_with(&script_, page("https://x.example/a"), vec![], Duration::from_millis(300)).await.unwrap_err();
     assert!(error.contains("deadline"), "{error}");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    // However long a new worker took to start.
+    assert!(started.elapsed() < STARTUP + Duration::from_secs(5));
 
     let (_site, script_) = script(r#"export default { async preview() { await fetch("http://127.0.0.1/"); } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
@@ -211,6 +220,110 @@ async fn a_handler_is_held_to_its_limits() {
     let (_site, script_) = script(r#"export default { preview() { return new OffscreenCanvas(5000, 1); } };"#);
     let error = run_page(&script_, "https://x.example/a", vec![]).await.unwrap_err();
     assert!(error.contains("2400"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_that_never_settles_is_stopped() {
+    // A promise that never settles runs nothing for an interrupt to stop.
+    let (_site, hanging) = script("await new Promise(() => {}); export default { preview() {} };");
+    let started = Instant::now();
+    let error = check(hanging).await.unwrap_err();
+    assert!(error.contains("deadline"), "{error}");
+    assert!(started.elapsed() < STARTUP + LOAD_DEADLINE + Duration::from_secs(5));
+
+    let (_site, hanging) = script("export default { preview() { return new Promise(() => {}); } };");
+    let error = run_with(&hanging, page("https://x.example/a"), vec![], Duration::from_millis(300)).await.unwrap_err();
+    assert!(error.contains("deadline"), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fetch_reaches_only_public_addresses() {
+    for url in ["https://127.0.0.1:1/", "https://[::ffff:10.0.0.1]/", "https://169.254.169.254/latest/meta-data/", "https://[::1]:8443/"] {
+        let (_site, fetching) = script(&format!(r#"export default {{ async preview() {{ await fetch("{url}"); }} }};"#));
+        let error = run_page(&fetching, "https://x.example/a", vec![]).await.unwrap_err();
+        assert!(error.contains("isn't on a public address"), "{url}: {error}");
+    }
+    let target = |url: &str| fetch_target(url).map(|_| ());
+    assert_eq!(target("https://example.com/"), Ok(()));
+    assert_eq!(target("https://8.8.8.8/"), Ok(()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_preview_varies_only_by_headers_it_was_given() {
+    let reading = r#"
+export default {
+  preview(request) {
+    const read = ["a\nb", "cookie", "x-forwarded-for", "accept-language", "Accept-Language"].map((name) => request.headers.get(name));
+    return { title: read.join("|") };
+  },
+};
+"#;
+    let (_site, reading) = script(reading);
+    let mut page = page("https://x.example/a");
+    page.headers.push(("cookie".into(), "secret".into()));
+    let ran = run_with(&reading, page, vec![], DEADLINE).await.unwrap();
+    assert_eq!(ran.vary, ["accept-language"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_that_crashes_takes_nothing_with_it() {
+    // An SVG nested as deep as a parser will go, which recursion over it may
+    // or may not survive: either way, only the worker is at stake.
+    let deep = r#"
+export default {
+  async preview() {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4">${"<g>".repeat(5000)}<rect width="4" height="4"/>${"</g>".repeat(5000)}</svg>`;
+    try { await createImageBitmap(new Blob([svg])); } catch {}
+    return { title: "survived" };
+  },
+};
+"#;
+    let (_site, deep) = script(deep);
+    let _ = run_page(&deep, "https://x.example/a", vec![]).await;
+    let (_site, fine) = script(r#"export default { preview() { return { title: "fine" }; } };"#);
+    assert_eq!(previewed(run_page(&fine, "https://x.example/a", vec![]).await.unwrap()).title.as_deref(), Some("fine"));
+}
+
+/// What a confined worker can still do, as the bits of its exit code: see
+/// [`a_worker_is_confined`].
+#[test]
+fn confinement_probe() {
+    if std::env::var_os("NPANEL_CONFINEMENT_PROBE").is_none() {
+        return;
+    }
+    let unconfined = sandbox::confine();
+    let mut could = 0;
+    if std::fs::File::open("/etc/hostname").is_ok() || std::fs::File::open("/proc/self/status").is_ok() {
+        could |= 1;
+    }
+    if std::net::UdpSocket::bind("127.0.0.1:0").is_ok() {
+        could |= 2;
+    }
+    if std::process::Command::new("/bin/true").status().is_ok() {
+        could |= 4;
+    }
+    // SAFETY: signal 0 only asks whether a signal could be sent.
+    if unsafe { libc::kill(libc::getppid(), 0) } == 0 {
+        could |= 8;
+    }
+    if !unconfined.is_empty() {
+        could |= 16;
+    }
+    std::process::exit(64 + could);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_is_confined() {
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["link_previews::script::tests::confinement_probe", "--exact", "--nocapture", "--test-threads=1", "-q"])
+        .env("NPANEL_CONFINEMENT_PROBE", "1")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    // 1: opened a file, 2: made a socket, 4: ran a program, 8: signalled
+    // the gateway, 16: couldn't confine itself fully.
+    assert_eq!(status.code(), Some(64), "{status}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -36,7 +36,8 @@ Everything hangs off the `Host` header, checked in one middleware in
 `/api` and otherwise to the built dashboard SPA. Any other hostname is served as
 an nsite.
 
-Only `Host` is read. Ports and the trailing dot of an FQDN are stripped and the
+Only `Host` is read — or, over HTTP/2, which has none, `:authority`, which is
+the same thing by another name (`request_host`). Ports and the trailing dot of an FQDN are stripped and the
 name is lowercased (`request_hostname`, `src/hostname.rs`, shared with onion
 connections so the two cannot drift). `X-Forwarded-Host` is deliberately ignored:
 npanel cannot tell a proxy's copy of that header from a client's, and a proxy
@@ -943,11 +944,15 @@ A site publishes one self-contained module at
 `/.well-known/npanel/preview.js` (`src/link_previews/script/`), served like any
 other file there: it's public on Blossom anyway. It imports nothing — a static
 `import` or `import()` alike fails — so what it uses is bundled into it, and
-npanel knows nothing of any other file. A deploy loads the script as a run
-would and says in the version's deploy log that it found it, or why it doesn't
-load; a script that fails leaves the site without previews, and the build goes
-on. Serving loads it the same way, once per build per process, to read its
-routes; its top level has two seconds.
+npanel knows nothing of any other file. A deploy of a site with link previews
+on loads the script as a run would, beside the build rather than in its way,
+and says in the version's deploy log that it found it, or why it doesn't load;
+a script that fails leaves the site without previews. With link previews off
+the script isn't run at all, not even to check it: it is the author's code,
+and nothing runs it until staff say it may. Serving loads it the same way,
+once per script, to read its routes, and its top level has two seconds; only a
+crawler waits for that, and anyone else is sent the page at once, varying by
+User-Agent unless the script is known not to preview it.
 
 ```js
 export default {
@@ -979,10 +984,12 @@ deadline — and an object shaped like Nostrify's `NRelay`: `query(filters)`,
 `req(filters)` (the stored events, then `EOSE`), and an `event()` that
 refuses, since a preview publishes nothing. The script decodes the path
 itself, NIP-05 names included; npanel reads only the relay hints in its NIP-19
-segments, to ask besides the configured relays. Credentials and what the proxy
-says about the visitor (`Cookie`, `Authorization`, `X-Forwarded-*`, …) aren't
-passed on. Copying the request — `clone()`, `new Request(request)` — doesn't
-count as reading its headers.
+segments, to ask besides the configured relays. Of the request's headers, only
+`Accept`, `Accept-Language` and `User-Agent` are passed on: a script can
+`fetch` anywhere, and anything else — credentials, and whatever a proxy or a
+CDN in front says about the visitor — would be the script's to send there.
+Copying the request — `clone()`, `new Request(request)` — doesn't count as
+reading its headers.
 
 **What it returns.** Any of:
 
@@ -1024,18 +1031,18 @@ and `measureText` — `createImageBitmap` of a PNG, JPEG, GIF, WebP or SVG,
 patterns and conic gradients throw rather than draw something wrong, as does
 anything else that isn't there. An SVG drawn as an image draws nothing it names
 elsewhere, as in a browser: a script fetches what it draws. `Date` stands still
-at when the run started, and `Math.random` is seeded by the URL, so one input
-gives one image.
+at when the run started, its local time is UTC, and `Math.random` is seeded
+by the URL, so one input gives one image.
 
 **Text is drawn in the gateway's fonts**, the ones installed on its system,
-read once when the previews runtime starts; a site ships none. `serif`,
+read by each process scripts run in as it starts; a site ships none. `serif`,
 `sans-serif` and `monospace` are what fontconfig says they are, or else DejaVu,
 Noto or Liberation, whichever is installed. A character the font asked for
 lacks — an emoji, usually — is drawn in one that has it, as a browser does. A
 script names a font by its family, and can't reach a file. The Docker image
 installs DejaVu and Noto Color Emoji, and the deployment guide has a systemd
 install do the same, and says how to add others. Fonts installed later are
-read on the next restart, and since an image's version doesn't name the fonts,
+read once npanel restarts, and since an image's version doesn't name the fonts,
 images already drawn stay as they were until they expire or the cache is
 cleared.
 
@@ -1049,21 +1056,43 @@ when they're `http(s)`, and the JSON-LD escapes `<`, `>` and `&`. The page goes
 out under the site's Content Security Policy like any other, and nothing npanel
 adds to it is a script that runs.
 
+**A script runs in a process that can do next to nothing**
+(`src/link_previews/script/sandbox.rs`). It's a stranger's code, run by
+QuickJS — a C engine — and drawn with decoders of pictures and SVG, and a bug
+in any of those is a bug in whatever process they run in. The gateway's holds
+the database: every TLS and onion key, the ACME account, and what every host
+serves. So scripts run in processes of their own, npanel's own binary started
+again as `npanel preview-worker`, with none of its configuration or open
+files. Once a worker has read the fonts it confines itself: on Linux,
+Landlock and seccomp leave it no file to open, no socket to make or connect,
+no program to run and no process to signal but itself, and its memory is
+capped at a gigabyte. Everything a script asks of the world — relays, `fetch`,
+its log — is a message to the gateway, which decides and does it, and what a
+script returns is held to every limit again in the gateway, as from anyone
+else. The gateway keeps the deadline as well: a worker that hasn't answered
+in time is killed, wherever it is — in a promise that never settles, or a
+decoder that never returns — and one that crashes takes nothing else with it.
+A kernel without Landlock, or a container that forbids it, is logged at
+startup as `link_preview_unconfined`.
+
 **A script is held to npanel's limits.** Each run gets a QuickJS runtime of its
-own on a thread of its own, as many at once as there are cores: 64 MB of memory,
-ten seconds to return and ten more to draw, past which it is interrupted
-wherever it is. It may query relays eight times, for fifty events in all — each
-filter naming ids, authors or a tag, and its `limit` honoured however many a
-relay sends. It may fetch sixteen `https://` URLs, through the
-public-addresses-only resolver blob downloads use, following redirects only to
-`https://`, 8 MB each and 32 MB in all; it reads no file. Its canvases and
+own, in one of as many workers as there are cores: 64 MB of memory, ten seconds
+to return and ten more to draw, past which it is stopped wherever it is. It may
+query relays eight times, for fifty events in all — each filter naming ids,
+authors or a tag, and its `limit` honoured however many a relay sends. It may
+fetch sixteen `https://` URLs, through the public-addresses-only resolver blob
+downloads use, never at an address that isn't public whether a name or written
+out, following redirects only to `https://`, 8 MB each and 32 MB in all,
+counted as they arrive; it reads no file. Its canvases and
 decoded images may hold 16 million pixels between them, none over 2400 pixels a
 side for a canvas or 4096 for a picture. The script may be 4 MB.
 
-**A run starts in a few milliseconds.** A fresh runtime costs well under one;
-what costs is the code. The prelude and a script are compiled once — the
-prelude by the process's first run, a build's script when it's first loaded —
-and later runs load their QuickJS bytecode, which takes a tenth of the time
+**A run starts in a few milliseconds.** Workers are kept between runs — for
+ten minutes idle, or a thousand runs — so a run seldom waits for one to start,
+and a fresh runtime costs well under a millisecond; what costs is the code. The
+prelude and a script are compiled once a worker — the prelude by its first
+run, a script when it first runs there — and later runs load their QuickJS
+bytecode, which takes a tenth of the time
 parsing does. What a script does at its top level still runs every time, so a
 script should bundle only what it uses: Ditto's bundle once spent a tenth of a
 second building AES tables for ciphers its previews never call.
@@ -1072,8 +1101,8 @@ handler that returns its image as a promise sends the page without waiting
 for the encoding, the slowest part of drawing. `bench_preview`
 (`docs/development.md`) times each part.
 
-**Serving never waits long.** Scripts run on a runtime and a thread of their
-own, with a relay pool of their own, restarted with backoff like the analytics
+**Serving never waits long.** Scripts' lookups run on a runtime and a thread
+of their own, with a relay pool of their own, restarted with backoff like the analytics
 runtime. A request asks memory first; a preview there is sent at once, and a
 stale one is sent while a fresh one is made behind it. Otherwise it hands the
 lookup across and waits two and a half seconds at most. A lookup that can't
@@ -1089,11 +1118,15 @@ are sorted out from the answer: identical filters are sent once, and filters
 for authors' newest replaceable or addressable events of the same kinds become
 one filter. Every lookup of one page at once is the same lookup. Runs are
 metered by `link_preview_misses_per_minute`; cached previews never count, so
-the meter is exactly what a stranger requesting made-up ids can cost. A lookup
-over it is answered from whatever is cached. Queries go to the configured
+the meter is exactly what a stranger requesting made-up ids can cost, and no
+one site may spend more than half of a minute's, so a stranger spending one
+site's leaves the rest for the others. A lookup over it is answered from
+whatever is cached. Queries go to the configured
 relays and the path's own hints and, when those have nothing, to the outboxes
 of the authors the filters name. Every relay an author names is held to the
-rule deploys follow: `wss://`, public addresses, five at most.
+rule deploys follow: `wss://`, public addresses, five at most. A relay
+connection idle for half a minute is closed and forgotten, so the relays a
+stranger's paths name don't pile up.
 
 **Storage.** Previews are kept in memory, up to 32 MB of them, and in
 `DATA_DIR/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from

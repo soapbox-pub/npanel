@@ -480,8 +480,8 @@ it may only mean the relays were slow.
 Default `256`. How many lookups may run at once. Past it, a crawler that asks
 for a preview nobody has cached gets the page as published straight away rather
 than waiting in line. Lookups run on a thread of their own, and never on the
-ones serving sites; the scripts themselves run as many at once as there are
-cores, and the rest wait their turn.
+ones serving sites; the scripts themselves run in as many processes at once as
+there are cores, and the rest wait their turn.
 
 ### `link_preview_misses_per_minute`
 
@@ -489,7 +489,8 @@ Default `600`. How many times a minute sites' preview scripts may run.
 Previews already cached don't count, stale ones included, so this is the most
 that someone requesting made-up event ids can make the scripts ask relays and
 fetch for — which matters because those are the relays npanel's deploys
-depend on too. A lookup over it is answered from what is cached, if anything.
+depend on too. No one site may spend more than half of them. A lookup over it
+is answered from what is cached, if anything.
 
 ### `link_preview_max_entries`
 

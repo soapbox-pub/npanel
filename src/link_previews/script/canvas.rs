@@ -35,8 +35,9 @@ pub const MAX_PICTURE: u32 = 4096;
 const MAX_PIXELS: u64 = 16 << 20;
 
 /// The fonts installed on the system, read once, the first time anything
-/// asks: by [`fonts`] when the previews runtime starts. Mapped rather than
-/// copied: an emoji font is ten megabytes.
+/// asks: by [`fonts`] when a worker starts. Every file is mapped then, rather
+/// than copied — an emoji font is ten megabytes — or opened when first drawn
+/// with, since a worker can't open files once it's confined.
 static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
 
 /// Families a generic one stands for when fontconfig doesn't name one that's
@@ -60,6 +61,15 @@ pub fn fonts() -> Arc<fontdb::Database> {
                 (fontdb::Family::Cursive, &SANS_SERIF, fontdb::Database::set_cursive_family),
                 (fontdb::Family::Fantasy, &SANS_SERIF, fontdb::Database::set_fantasy_family),
             ];
+            let ids: Vec<fontdb::ID> = db.faces().map(|face| face.id).collect();
+            for id in ids {
+                // Every face of a file shares its mapping, so a collection's
+                // first face maps the rest.
+                // SAFETY: a font file changed on disk under its mapping is
+                // the hazard fontdb's own lazy mapping has; the system's
+                // fonts change only when packages are installed.
+                let _ = unsafe { db.make_shared_face_data(id) };
+            }
             for (generic, likely, set) in generics {
                 if installed(&db, generic) {
                     continue;
@@ -206,12 +216,18 @@ pub struct Surfaces {
 type Result<T> = std::result::Result<T, String>;
 
 impl Surfaces {
-    fn add(&mut self, pixmap: Pixmap) -> Result<usize> {
-        let pixels = u64::from(pixmap.width()) * u64::from(pixmap.height());
-        if self.pixels + pixels > MAX_PIXELS {
+    /// Whether a surface this size fits in what's left, asked before its
+    /// pixels are made: a picture is drawn into them, which takes time.
+    fn fits(&self, width: u32, height: u32) -> Result<()> {
+        if self.pixels + u64::from(width) * u64::from(height) > MAX_PIXELS {
             return Err("A preview may draw 16 million pixels at most, in all its canvases and images together.".into());
         }
-        self.pixels += pixels;
+        Ok(())
+    }
+
+    fn add(&mut self, pixmap: Pixmap) -> Result<usize> {
+        self.fits(pixmap.width(), pixmap.height())?;
+        self.pixels += u64::from(pixmap.width()) * u64::from(pixmap.height());
         self.entries.push(Some(pixmap));
         Ok(self.entries.len() - 1)
     }
@@ -442,6 +458,7 @@ impl Surfaces {
         if width == 0 || height == 0 || width > MAX_PICTURE || height > MAX_PICTURE {
             return Err(format!("An image must be between 1 and {MAX_PICTURE} pixels a side."));
         }
+        self.fits(width, height)?;
         let tree = usvg::Tree::from_str(&svg, &self.picture_options(Some(data))).map_err(|e| format!("The image couldn't be read: {e}"))?;
         let mut pixmap = Pixmap::new(width, height).expect("a nonzero size");
         let size = tree.size();
@@ -772,5 +789,9 @@ mod tests {
         s.free(ids[0]);
         assert!(s.create(MAX_CANVAS, MAX_CANVAS).is_ok());
         assert!(s.size(ids[0]).is_err());
+
+        // A picture that wouldn't fit isn't drawn at all.
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="4000"/>"#;
+        assert!(s.decode(svg.to_vec()).unwrap_err().contains("16 million"));
     }
 }

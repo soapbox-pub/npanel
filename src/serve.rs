@@ -82,11 +82,6 @@ const MAX_PREVIEW_PAGE: u64 = 512 * 1024;
 const IMAGE_CACHE_CONTROL: &str = "public, max-age=604800, immutable";
 const STALE_IMAGE_CACHE_CONTROL: &str = "public, max-age=300";
 
-/// Request headers a site's preview script isn't shown: credentials, and
-/// what the proxy says about who's asking.
-const PRIVATE_HEADERS: &[&str] =
-    &["cookie", "authorization", "proxy-authorization", "forwarded", "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host", "x-real-ip"];
-
 /// How long a browser may reuse a preflight result, in seconds.
 const PREFLIGHT_MAX_AGE: &str = "86400";
 
@@ -356,13 +351,33 @@ impl SiteServer {
         // A page the site's script previews, on a site with link previews on,
         // answers crawlers with the script's preview and everyone else as
         // published — so a cache in between has to keep the two apart.
-        let previewable = if site.host.host.link_previews && is_page(&file) { self.previewed(version.build_id, path).await? } else { None };
-        if let Some((script, hints)) = &previewable {
+        //
+        // Only a crawler waits for the script to load, to learn its routes:
+        // anyone else is served at once, varying by user agent unless the
+        // script is known not to preview the page.
+        let mut previewable = false;
+        if site.host.host.link_previews && is_page(&file) {
             let crawler = request.method == Method::GET && self.deps.link_previews.is_crawler(header_str(&request.headers, header::USER_AGENT));
             if crawler && variants.identity <= MAX_PREVIEW_PAGE {
-                if let Some(reply) = self.link_preview(request, origin, site, &file, hints, script).await {
-                    return Ok(reply);
+                let deadline = tokio::time::Instant::now() + WAIT;
+                match tokio::time::timeout_at(deadline, self.previewed(version.build_id, path)).await {
+                    Ok(Ok(Some((script, hints)))) => {
+                        previewable = true;
+                        let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        if let Some(reply) = self.link_preview(request, origin, site, &file, &hints, &script, wait).await {
+                            return Ok(reply);
+                        }
+                    }
+                    Ok(Ok(None)) => {}
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => previewable = true,
                 }
+            } else {
+                previewable = match self.deps.scripts.known(version.build_id) {
+                    Some(Some(script)) => script.serves(path) && Hints::of(path).is_some(),
+                    Some(None) => false,
+                    None => true,
+                };
             }
         }
 
@@ -385,7 +400,7 @@ impl SiteServer {
         if let Some(encoding) = encoding {
             builder = builder.header(header::CONTENT_ENCODING, encoding.as_str());
         }
-        if previewable.is_some() {
+        if previewable {
             builder = builder.header(header::VARY, "user-agent");
         }
 
@@ -493,13 +508,14 @@ impl SiteServer {
     /// document, with its script's preview in its head and its article at the
     /// top of its body. `None` sends the page as published, whatever the
     /// reason — this is never worth an error.
-    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, hints: &Hints, script: &Arc<Script>) -> Option<Reply> {
+    #[allow(clippy::too_many_arguments)]
+    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, hints: &Hints, script: &Arc<Script>, wait: Duration) -> Option<Reply> {
         let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
         let path = request.uri.path();
         let url = page_url(&site_origin, path);
 
         let page = Arc::new(ScriptPage { script: script.clone(), page: script_page(request, &url), hints: hints.clone() });
-        let Answer::Preview(preview) = self.deps.link_previews.preview(page.clone(), WAIT).await else { return None };
+        let Answer::Preview(preview) = self.deps.link_previews.preview(page.clone(), wait).await else { return None };
         let vary = self.deps.link_previews.vary(&page);
         let document = self.open(file.sha256, None).await.ok()?;
         let body = splice(&document, &preview, &Page { url: &url, origin: &site_origin })?;
@@ -513,8 +529,12 @@ impl SiteServer {
             .header(header::ETAG, &etag)
             .header(header::VARY, "user-agent")
             .header("x-nsite-addr", site.naddr.clone());
-        // The preview depends on whatever the script read, too.
-        let builder = vary.iter().filter(|name| *name != "user-agent").fold(builder, |builder, name| builder.header(header::VARY, name.as_str()));
+        // The preview depends on whatever the script read, too: of the
+        // headers it's given, so names that are all valid ones.
+        let builder = script::HEADERS
+            .iter()
+            .filter(|name| **name != "user-agent" && vary.iter().any(|read| read == *name))
+            .fold(builder, |builder, name| builder.header(header::VARY, *name));
 
         self.deps.log.debug("site_link_preview", fields! { "hostname" => origin.hostname.as_str(), "path" => path });
 
@@ -545,7 +565,12 @@ impl SiteServer {
         if !self.resolve(build_id, page, site.host.host.spa).await?.is_some_and(|file| is_page(&file)) {
             return not_found();
         }
-        let Some((script, hints)) = self.previewed(build_id, page).await? else { return not_found() };
+        let Some((script, hints)) = (match tokio::time::timeout(IMAGE_WAIT, self.previewed(build_id, page)).await {
+            Ok(previewed) => previewed?,
+            Err(_) => return busy(),
+        }) else {
+            return not_found();
+        };
         let previews = &self.deps.link_previews;
 
         let named = request.uri.query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "v").map(|(_, v)| v.into_owned()));
@@ -707,12 +732,12 @@ pub fn page_url(origin: &str, path: &str) -> String {
 }
 
 /// The request a site's preview script is handed: the crawler's own, but
-/// for its query and the headers it has no business with.
+/// for its query and every header but the few a script is given.
 fn script_page(request: &Parts, url: &str) -> script::Page {
     let headers = request
         .headers
         .iter()
-        .filter(|(name, _)| !PRIVATE_HEADERS.contains(&name.as_str()))
+        .filter(|(name, _)| script::HEADERS.contains(&name.as_str()))
         .filter_map(|(name, value)| Some((name.as_str().to_string(), value.to_str().ok()?.to_string())))
         .collect();
     script::Page { url: url.to_string(), method: request.method.as_str().to_string(), headers }

@@ -8,7 +8,6 @@ use axum::body::Body;
 use http::{header, HeaderValue, Request, Response, StatusCode};
 
 use super::Shared;
-use crate::hostname::request_hostname;
 
 const CHALLENGE_PATH: &str = "/.well-known/acme-challenge/";
 
@@ -37,7 +36,7 @@ impl Redirect {
 
         // Only to a name npanel serves, so this can't be made to send a
         // visitor anywhere else: the name is the request's to write.
-        let hostname = request_hostname(request.headers().get(header::HOST).and_then(|v| v.to_str().ok()));
+        let hostname = crate::app::request_host(request);
         if !self.shared.names.load().contains(&hostname) {
             return not_found();
         }

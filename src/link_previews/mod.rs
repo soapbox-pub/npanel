@@ -40,7 +40,7 @@ use parking_lot::{Mutex, RwLock};
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 use self::page::Hints;
@@ -90,6 +90,11 @@ const MAX_VARIES: usize = 10_000;
 /// go; the database still has them.
 const MEMORY_BYTES: usize = 32 << 20;
 
+/// The most of a minute's runs one site may spend.
+const SITE_SHARE: f64 = 0.5;
+/// Sites whose spending is remembered. Only configured hosts reach a lookup.
+const MAX_SITE_BUDGETS: usize = 4096;
+
 /// How often, in rows written, the database is trimmed to
 /// `link_preview_max_entries`.
 const EVICT_EVERY: u64 = 64;
@@ -111,8 +116,6 @@ struct Worker {
     /// What scripts fetch through.
     http: reqwest::Client,
     images: Arc<Images>,
-    /// Scripts that may run at once: one a core, since drawing is work.
-    runs: Arc<Semaphore>,
 }
 
 /// A page a site's preview script previews.
@@ -246,7 +249,7 @@ struct Shared {
     flights: Mutex<HashMap<String, Vec<oneshot::Sender<Option<Cached>>>>>,
     running: AtomicUsize,
     /// Runs that may go to relays, a minute's worth at a time.
-    budget: Mutex<RateLimiter>,
+    budget: Mutex<Budget>,
     crawlers: RwLock<Option<Crawlers>>,
     stats: Stats,
     writes: AtomicU64,
@@ -264,6 +267,7 @@ impl LinkPreviews {
     /// Start the previews runtime. Returns at once; until it is ready, every
     /// page is sent as published.
     pub fn start(settings: Arc<Settings>, log: Logger, config: LinkPreviewsConfig) -> LinkPreviews {
+        script::init_sandbox(log);
         let shared = Arc::new(Shared {
             settings,
             log,
@@ -272,7 +276,7 @@ impl LinkPreviews {
             memory: Mutex::new(Memory::default()),
             flights: Mutex::new(HashMap::new()),
             running: AtomicUsize::new(0),
-            budget: Mutex::new(RateLimiter::new(1)),
+            budget: Mutex::new(Budget::default()),
             crawlers: RwLock::new(None),
             stats: Stats::default(),
             writes: AtomicU64::new(0),
@@ -517,27 +521,11 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
         let dir = shared.config.data_dir.join("preview-images");
         Arc::new(tokio::task::spawn_blocking(move || Images::open(dir)).await??)
     };
-    // Read now, so a run seldom waits on them, and an admin learns of a
-    // gateway without fonts before a preview comes out without text. Not
-    // waited for: a page that draws no text needn't.
-    let log = shared.log;
-    tokio::task::spawn_blocking(move || {
-        let started = Instant::now();
-        match script::canvas::fonts().len() {
-            0 => log.warn("link_preview_no_fonts", fields! {}),
-            faces => log.info("link_preview_fonts", fields! { "faces" => faces, "ms" => started.elapsed().as_millis() as u64 }),
-        }
-    });
-    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
-    let worker = Arc::new(Worker {
-        runtime: tokio::runtime::Handle::current(),
-        store,
-        path,
-        source,
-        http: script::http_client(),
-        images,
-        runs: Arc::new(Semaphore::new(cores)),
-    });
+    // A process for scripts, started now, so a crawler seldom waits for
+    // one, and an admin learns of a gateway without fonts before a preview
+    // comes out without text. Not waited for.
+    tokio::spawn(script::warm());
+    let worker = Arc::new(Worker { runtime: tokio::runtime::Handle::current(), store, path, source, http: script::http_client(), images });
     *shared.worker.write() = Some(worker);
     shared.log.info("link_previews_started", fields! {});
 
@@ -580,8 +568,8 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, page: Arc<ScriptPage>,
         }
     }
 
-    let limit = RateLimit { capacity: settings.link_preview_misses_per_minute as f64, interval_ms: 60_000.0 };
-    if !shared.budget.lock().take("relays", limit) {
+    let site = url::Url::parse(&page.page.url).ok().and_then(|url| url.host_str().map(str::to_string)).unwrap_or_default();
+    if !shared.budget.lock().spend(&site, settings.link_preview_misses_per_minute) {
         shared.stats.over_budget.fetch_add(1, Ordering::Relaxed);
         flight.answer(stored);
         return;
@@ -619,7 +607,6 @@ fn stale_soon(settings: &SettingsValues) -> i64 {
 /// and the key it's kept under; or why it failed.
 async fn run_script(shared: &Shared, worker: &Worker, page: &ScriptPage) -> Result<(Cached, String), String> {
     shared.stats.runs.fetch_add(1, Ordering::Relaxed);
-    let permit = worker.runs.clone().acquire_owned().await.map_err(|e| e.to_string())?;
     let images = worker.images.clone();
     let env = Env {
         runtime: worker.runtime.clone(),
@@ -631,7 +618,7 @@ async fn run_script(shared: &Shared, worker: &Worker, page: &ScriptPage) -> Resu
         now: crate::util::now() * 1000,
         deadline: script::DEADLINE,
     };
-    let ran = match script::run(page.script.clone(), page.page.clone(), env, permit).await {
+    let ran = match script::run(page.script.clone(), page.page.clone(), env).await {
         Ok(ran) => ran,
         Err(error) => {
             shared.stats.failures.fetch_add(1, Ordering::Relaxed);
@@ -719,6 +706,30 @@ async fn keep(shared: &Arc<Shared>, worker: &Worker, key: &str, cached: &Cached)
             Ok(())
         })
         .await
+}
+
+/// The runs that may go to relays: a minute's worth in all, and no more
+/// than a share of them for any one site. They're anyone's to spend, with a
+/// crawler's User-Agent and made-up paths, and one site's would otherwise
+/// leave the others' crawlers nothing.
+struct Budget {
+    all: RateLimiter,
+    sites: RateLimiter,
+}
+
+impl Default for Budget {
+    fn default() -> Budget {
+        Budget { all: RateLimiter::new(1), sites: RateLimiter::new(MAX_SITE_BUDGETS) }
+    }
+}
+
+impl Budget {
+    /// Spend a run for `site`, if there's one to spend.
+    fn spend(&mut self, site: &str, per_minute: i64) -> bool {
+        let all = RateLimit { capacity: per_minute as f64, interval_ms: 60_000.0 };
+        let share = RateLimit { capacity: (all.capacity * SITE_SHARE).ceil(), ..all };
+        self.sites.take(site, share) && self.all.take("all", all)
+    }
 }
 
 /// One of the lookups that may run at once, given back when dropped.
@@ -833,6 +844,16 @@ mod tests {
         ] {
             assert!(!pattern.is_match(browser), "{browser}");
         }
+    }
+
+    #[test]
+    fn no_site_spends_every_run() {
+        let mut budget = Budget::default();
+        assert!(budget.spend("a.example", 4) && budget.spend("a.example", 4));
+        assert!(!budget.spend("a.example", 4));
+        assert!(budget.spend("b.example", 4) && budget.spend("b.example", 4));
+        // The minute's runs are spent, whoever asks.
+        assert!(!budget.spend("c.example", 4));
     }
 
     #[test]

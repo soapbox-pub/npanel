@@ -38,7 +38,7 @@ pub enum Via {
 
 impl App {
     pub async fn handle(&self, request: Request<Body>, via: Via) -> Response<Body> {
-        let hostname = request_hostname(request.headers().get(header::HOST).and_then(|v| v.to_str().ok()));
+        let hostname = request_host(&request);
 
         if hostname != self.dashboard_host {
             let (scheme, peer) = match via {
@@ -66,6 +66,16 @@ impl App {
         headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
         headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
         response
+    }
+}
+
+/// The hostname a request names. HTTP/1.1 says it in `Host`; HTTP/2 says it
+/// in `:authority`, which hyper hands over as the URI's authority and which
+/// browsers send instead of `Host`, not beside it.
+pub fn request_host<B>(request: &Request<B>) -> String {
+    match request.headers().get(header::HOST) {
+        Some(host) => request_hostname(host.to_str().ok()),
+        None => request_hostname(request.uri().host()),
     }
 }
 

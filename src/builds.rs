@@ -547,9 +547,12 @@ impl HostBuilder {
             }
         };
 
-        // Once per version: the onion's build has the same script.
-        if target.kind == BuildKind::Clearnet {
-            self.check_script(target, &files).await;
+        // Once per version: the onion's build has the same script. Beside
+        // the build rather than in its way: what it says is for the deploy
+        // log, and a site goes live without waiting for a stranger's code.
+        if let Some(sha256) = files.get(script::PATH).map(|file| file.sha256).filter(|_| target.kind == BuildKind::Clearnet) {
+            let (builder, target) = (self.clone(), target.clone());
+            tokio::spawn(async move { builder.check_script(&target, sha256).await });
         }
 
         let count = files.len();
@@ -609,28 +612,26 @@ impl HostBuilder {
 impl HostBuilder {
     /// The site's own link-preview script, loaded and checked as a run would
     /// load it, and what's wrong with it said in its deploy log. A script that
-    /// fails leaves the site without previews, and nothing else: the build
-    /// goes on.
-    async fn check_script(&self, target: &BuildTarget, files: &IndexMap<String, BuildFile>) {
+    /// fails leaves the site without previews, and nothing else. A site with
+    /// link previews off has its script left alone: it is the author's code,
+    /// and nothing runs it until staff say it may.
+    async fn check_script(&self, target: &BuildTarget, sha256: BlobHash) {
         let deps = &self.inner.deps;
-        let Some(sha256) = files.get(script::PATH).map(|file| file.sha256) else { return };
-        let blobs = deps.blobs.clone();
-        let Ok(loaded) = tokio::task::spawn_blocking(move || script::load(sha256, &blobs)).await else { return };
-
         let hostname = target.origin.hostname.as_str();
         let mut entries: Vec<(&'static str, &'static str, crate::log::Fields)> = Vec::new();
-        match loaded.map(Arc::new) {
-            Ok(found) => match script::check(found).await {
-                Ok(()) => {
-                    entries.push(("info", "preview_script_found", fields! { "hostname" => hostname }));
-                    if !target.host.link_previews {
-                        let message = "Link previews are off for this site, so its preview script doesn't run. Turn them on in the site's SEO settings.";
-                        entries.push(("warn", "preview_script_unused", fields! { "hostname" => hostname, "err_msg" => message }));
-                    }
-                }
+        if target.host.link_previews {
+            let blobs = deps.blobs.clone();
+            let Ok(loaded) = tokio::task::spawn_blocking(move || script::load(sha256, &blobs)).await else { return };
+            match loaded.map(Arc::new) {
+                Ok(found) => match script::check(found).await {
+                    Ok(()) => entries.push(("info", "preview_script_found", fields! { "hostname" => hostname })),
+                    Err(error) => entries.push(("warn", "preview_script_failed", fields! { "hostname" => hostname, "err_msg" => error })),
+                },
                 Err(error) => entries.push(("warn", "preview_script_failed", fields! { "hostname" => hostname, "err_msg" => error })),
-            },
-            Err(error) => entries.push(("warn", "preview_script_failed", fields! { "hostname" => hostname, "err_msg" => error })),
+            }
+        } else {
+            let message = "Link previews are off for this site, so its preview script isn't run. Turn them on in the site's SEO settings.";
+            entries.push(("warn", "preview_script_unused", fields! { "hostname" => hostname, "err_msg" => message }));
         }
 
         let event_id = target.event.event_id.clone();
