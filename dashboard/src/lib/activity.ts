@@ -216,7 +216,12 @@ export function describe(entry: AuditEntry): Activity {
       return {
         kind: 'settings',
         sentence: ['refreshed the link preview for', { strong: target }],
-        details: after.found === false ? [{ type: 'value', label: 'Found', value: 'Nothing' }] : [],
+        details:
+          typeof after.unsupported === 'number'
+            ? [{ type: 'value', label: 'Found', value: `A kind ${after.unsupported} event, which has no preview` }]
+            : after.found === false
+              ? [{ type: 'value', label: 'Found', value: 'Nothing' }]
+              : [],
       };
 
     case 'link_preview.clear':

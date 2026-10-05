@@ -21,6 +21,7 @@
 pub mod card;
 pub mod entity;
 pub mod fetch;
+pub mod kinds;
 mod render;
 pub mod splice;
 mod store;
@@ -40,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 use self::card::Card;
 use self::entity::Entity;
 use self::fetch::{Batcher, EventSource, Names};
+pub use self::store::Outcome;
 use self::store::Cached;
 use crate::db::Db;
 use crate::fields;
@@ -122,6 +124,8 @@ pub struct StatsSnapshot {
 pub struct Status {
     /// Entities with a card.
     pub found: i64,
+    /// Events of a kind that isn't previewed.
+    pub unsupported: i64,
     /// Entities a lookup found nothing for.
     pub not_found: i64,
     /// What the cache takes up on disk.
@@ -157,7 +161,7 @@ impl PreviewError {
 pub struct Refreshed {
     pub key: String,
     pub entity: String,
-    pub card: Option<Arc<Card>>,
+    pub outcome: Outcome,
 }
 
 /// The crawler pattern, compiled, and the settings it was read from: `None`
@@ -270,7 +274,7 @@ impl LinkPreviews {
                 // Nobody waits on this one: the stale card goes out now.
                 drop(self.begin(entity, &key));
             }
-            return cached.card;
+            return cached.card();
         }
 
         let Some(answer) = self.begin(entity, &key) else {
@@ -278,7 +282,7 @@ impl LinkPreviews {
             return None;
         };
         match tokio::time::timeout(WAIT, answer).await {
-            Ok(Ok(cached)) => cached.and_then(|cached| cached.card),
+            Ok(Ok(cached)) => cached.and_then(|cached| cached.card()),
             Ok(Err(_)) => None,
             Err(_) => {
                 self.shared.stats.timeouts.fetch_add(1, Ordering::Relaxed);
@@ -321,8 +325,8 @@ impl LinkPreviews {
             let key = key.clone();
             let entity = entity.clone();
             async move {
-                let card = fetch::fetch(worker.source.as_ref(), &worker.names, &entity).await.map(Arc::new);
-                let cached = Cached { card, fetched_at: crate::util::now() };
+                let outcome = fetch::fetch(worker.source.as_ref(), &worker.names, &entity).await;
+                let cached = Cached { outcome, fetched_at: crate::util::now() };
                 keep(&shared, &worker, &key, &cached).await?;
                 anyhow::Ok(cached)
             }
@@ -334,8 +338,8 @@ impl LinkPreviews {
             Err(_) => return Err(PreviewError::TimedOut),
         };
 
-        self.shared.log.info("link_preview_refreshed", fields! { "key" => key.as_str(), "found" => cached.card.is_some() });
-        Ok(Refreshed { key, entity: entity.label(), card: cached.card })
+        self.shared.log.info("link_preview_refreshed", fields! { "key" => key.as_str(), "outcome" => describe(&cached.outcome) });
+        Ok(Refreshed { key, entity: entity.label(), outcome: cached.outcome })
     }
 
     /// What is cached, and how lookups have gone since startup.
@@ -344,18 +348,19 @@ impl LinkPreviews {
         let task = worker.runtime.spawn({
             let worker = worker.clone();
             async move {
-                let (found, not_found) = worker.store.call(|conn| store::counts(conn)).await?;
+                let counts = worker.store.call(|conn| store::counts(conn)).await?;
                 let path = worker.path.clone();
                 let bytes = tokio::task::spawn_blocking(move || store::disk_bytes(&path)).await?;
-                anyhow::Ok((found, not_found, bytes))
+                anyhow::Ok((counts, bytes))
             }
         });
-        let (found, not_found, bytes) = task.await.map_err(|e| PreviewError::Failed(e.into()))?.map_err(PreviewError::Failed)?;
+        let ((found, unsupported, not_found), bytes) = task.await.map_err(|e| PreviewError::Failed(e.into()))?.map_err(PreviewError::Failed)?;
 
         let stats = &self.shared.stats;
         let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
         Ok(Status {
             found,
+            unsupported,
             not_found,
             bytes,
             in_memory: self.shared.memory.lock().entries.len(),
@@ -453,24 +458,32 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, entity: Entity, flight
 
     shared.stats.fetches.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
-    let card = fetch::fetch(worker.source.as_ref(), &worker.names, &entity).await.map(Arc::new);
+    let outcome = fetch::fetch(worker.source.as_ref(), &worker.names, &entity).await;
     let now = crate::util::now();
-    shared.log.debug("link_preview_fetched", fields! { "key" => key.as_str(), "found" => card.is_some(), "ms" => started.elapsed().as_millis() as u64 });
+    shared.log.debug("link_preview_fetched", fields! { "key" => key.as_str(), "outcome" => describe(&outcome), "ms" => started.elapsed().as_millis() as u64 });
 
-    let cached = match (card, stored) {
-        (Some(card), _) => Cached { card: Some(card), fetched_at: now },
+    let cached = match (outcome, stored) {
         // Finding nothing where a card was found before more likely means the
         // relays were slow than that the event is gone. The card stays, and
         // is tried again as soon as a page that found nothing would be.
-        (None, Some(Cached { card: Some(card), .. })) => {
-            Cached { card: Some(card), fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
+        (Outcome::NotFound, Some(Cached { outcome: Outcome::Card(card), .. })) => {
+            Cached { outcome: Outcome::Card(card), fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
         }
-        (None, _) => Cached { card: None, fetched_at: now },
+        (outcome, _) => Cached { outcome, fetched_at: now },
     };
     if let Err(error) = keep(&shared, &worker, &key, &cached).await {
         shared.log.error("link_preview_write_failed", with_err(fields! { "key" => key.as_str() }, error));
     }
     flight.answer(Some(cached));
+}
+
+/// An outcome, for the log.
+fn describe(outcome: &Outcome) -> &'static str {
+    match outcome {
+        Outcome::Card(_) => "card",
+        Outcome::Unsupported(_) => "unsupported",
+        Outcome::NotFound => "not_found",
+    }
 }
 
 /// Remember what a lookup found, in memory and on disk.
@@ -609,7 +622,7 @@ mod tests {
     #[test]
     fn memory_is_bounded_by_size() {
         let mut memory = Memory::default();
-        let empty = || Cached { card: None, fetched_at: 0 };
+        let empty = || Cached { outcome: Outcome::NotFound, fetched_at: 0 };
         memory.put("a".into(), empty());
         memory.put("a".into(), empty());
         assert_eq!(memory.bytes, 1 + 64);

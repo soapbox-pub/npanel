@@ -10,8 +10,10 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::card::{event_card, profile_card, Card};
+use super::card::{card, profile_card};
 use super::entity::Entity;
+use super::kinds;
+use super::store::Outcome;
 use crate::db::Db;
 use crate::manifest::relay_list_tags;
 use crate::net::PublicResolver;
@@ -151,9 +153,12 @@ async fn query(pool: Pool, configured: Vec<String>, batch: Vec<Ask>) {
     }
     // One filter per kind, by every author and identifier asked for: it can
     // match a pairing nobody asked for, which is sorted out below, and costs
-    // a relay one subscription rather than one per address.
+    // a relay one subscription rather than one per address. A replaceable
+    // event has no `d` tag for a relay to match, so its address is just
+    // the author's.
     for (kind, (authors, identifiers)) in addresses {
-        filters.push(Filter { kinds: vec![i64::from(kind)], authors: authors.into_iter().collect(), d: identifiers.into_iter().collect(), ..Default::default() });
+        let d = if replaceable(kind) { Vec::new() } else { identifiers.into_iter().collect() };
+        filters.push(Filter { kinds: vec![i64::from(kind)], authors: authors.into_iter().collect(), d, ..Default::default() });
     }
 
     let events = if relays.is_empty() { Vec::new() } else { pool.query(filters, &relays, QUERY_TIMEOUT, &CancellationToken::new()).await };
@@ -161,6 +166,12 @@ async fn query(pool: Pool, configured: Vec<String>, batch: Vec<Ask>) {
         let found = events.iter().filter(|event| ask.want.matches(event)).max_by_key(|event| event.created_at).cloned();
         let _ = ask.reply.send(found);
     }
+}
+
+/// Whether a kind is replaceable: one event per author, by kind alone. NIP-01
+/// counts 0 and 3 among them, from before there was a range for them.
+fn replaceable(kind: u32) -> bool {
+    kind == 0 || kind == 3 || (10_000..20_000).contains(&kind)
 }
 
 /// What a NIP-05 name stands for.
@@ -242,19 +253,20 @@ fn read_nip05(body: &[u8], name: &str) -> Option<(String, Vec<String>)> {
     Some((pubkey, relays))
 }
 
-/// The card for an entity, or `None` when nothing could be found for it.
+/// What there is to show for an entity: its card, or that it is of a kind
+/// that isn't previewed, or that nothing could be found for it.
 ///
 /// Configured relays and the entity's own hints are asked first. An author
 /// who could not be found there is looked for on the relays they say they
 /// write to, which costs a round trip more and is only paid for what is
 /// otherwise missing.
-pub async fn fetch(source: &dyn EventSource, names: &Names, entity: &Entity) -> Option<Card> {
+pub async fn fetch(source: &dyn EventSource, names: &Names, entity: &Entity) -> Outcome {
     match entity {
         Entity::Profile { pubkey, relays } => profile(source, pubkey, relays).await,
-        Entity::Nip05 { name, domain } => {
-            let (pubkey, relays) = names.resolve(name, domain).await?;
-            profile(source, &pubkey, &relays).await
-        }
+        Entity::Nip05 { name, domain } => match names.resolve(name, domain).await {
+            Some((pubkey, relays)) => profile(source, &pubkey, &relays).await,
+            None => Outcome::NotFound,
+        },
         Entity::Event { id, author, relays } => {
             let hints = vet_relay_hints(relays).await;
             let want = Want::Event(id.clone());
@@ -263,36 +275,56 @@ pub async fn fetch(source: &dyn EventSource, names: &Names, entity: &Entity) -> 
                 None => (source.get(want.clone(), hints.clone()).await, None),
             };
             let event = match (event, author) {
-                (Some(event), _) => event,
-                (None, Some(author)) => source.get(want, outbox(source, author).await).await?,
-                (None, None) => return None,
+                (Some(event), _) => Some(event),
+                (None, Some(author)) => source.get(want, outbox(source, author).await).await,
+                (None, None) => None,
             };
-            let profile = match profile.filter(|p| p.pubkey == event.pubkey) {
-                Some(profile) => Some(profile),
-                None => source.get(Want::Profile(event.pubkey.clone()), hints).await,
-            };
-            Some(event_card(&event, profile.as_ref()))
+            match event {
+                Some(event) => finish(source, &event, profile, hints).await,
+                None => Outcome::NotFound,
+            }
         }
         Entity::Address { kind, pubkey, identifier, relays } => {
             let hints = vet_relay_hints(relays).await;
             let want = Want::Address { kind: *kind, pubkey: pubkey.clone(), identifier: identifier.clone() };
-            let (event, profile) = tokio::join!(source.get(want.clone(), hints.clone()), source.get(Want::Profile(pubkey.clone()), hints));
+            let (event, profile) = tokio::join!(source.get(want.clone(), hints.clone()), source.get(Want::Profile(pubkey.clone()), hints.clone()));
             let event = match event {
-                Some(event) => event,
-                None => source.get(want, outbox(source, pubkey).await).await?,
+                Some(event) => Some(event),
+                None => source.get(want, outbox(source, pubkey).await).await,
             };
-            Some(event_card(&event, profile.as_ref()))
+            match event {
+                Some(event) => finish(source, &event, profile, hints).await,
+                None => Outcome::NotFound,
+            }
         }
     }
 }
 
-async fn profile(source: &dyn EventSource, pubkey: &str, relays: &[String]) -> Option<Card> {
+/// An event's card, with the profile of whoever it is attributed to: the
+/// one fetched beside it when that is theirs, or theirs fetched now — a
+/// repost's is its original author's, a zap's its sender's.
+async fn finish(source: &dyn EventSource, event: &Event, profile: Option<Event>, hints: Vec<String>) -> Outcome {
+    if event.kind == 0 {
+        return Outcome::Card(Arc::new(profile_card(event)));
+    }
+    let Some(parts) = kinds::read(event) else { return Outcome::Unsupported(event.kind) };
+    let profile = match profile.filter(|p| p.pubkey == parts.author) {
+        Some(profile) => Some(profile),
+        None => source.get(Want::Profile(parts.author.clone()), hints).await,
+    };
+    Outcome::Card(Arc::new(card(event.kind, parts, profile.as_ref())))
+}
+
+async fn profile(source: &dyn EventSource, pubkey: &str, relays: &[String]) -> Outcome {
     let want = Want::Profile(pubkey.to_string());
     let event = match source.get(want.clone(), vet_relay_hints(relays).await).await {
-        Some(event) => event,
-        None => source.get(want, outbox(source, pubkey).await).await?,
+        Some(event) => Some(event),
+        None => source.get(want, outbox(source, pubkey).await).await,
     };
-    Some(profile_card(&event))
+    match event {
+        Some(event) => Outcome::Card(Arc::new(profile_card(&event))),
+        None => Outcome::NotFound,
+    }
 }
 
 /// The relays an author writes to, as their kind 10002 says.

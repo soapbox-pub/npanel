@@ -324,6 +324,8 @@ export interface Storage {
 export interface LinkPreviewStatus {
   /** Entities with a preview. */
   found: number;
+  /** Events of a kind that has no preview. */
+  unsupported: number;
   /** Entities a lookup found nothing for, remembered for a few minutes. */
   not_found: number;
   /** What the cache takes up on disk. */
@@ -350,12 +352,15 @@ export interface LinkPreviewStatus {
 
 /** A preview as crawlers will be shown it, less the article in the page's body. */
 export interface LinkPreviewCard {
-  kind: 'profile' | 'article' | 'post' | 'video';
+  kind: 'profile' | 'article' | 'post' | 'video' | 'audio';
+  /** The Nostr kind of the event it is of: 0 for a profile. */
+  event_kind: number;
   /** The event's own title. A note has none, and its page is titled after its author. */
   title: string | null;
   description: string | null;
   image: string | null;
   video: string | null;
+  audio: string | null;
   author: { pubkey: string; npub: string; name: string | null; picture: string | null };
   published: number | null;
 }
@@ -365,6 +370,8 @@ export interface RefreshedLinkPreview {
   key: string;
   /** The entity as a person writes it: its NIP-19 form, or a NIP-05 name. */
   entity: string;
-  /** Null when nothing could be found for it. */
+  /** Null when nothing could be found for it, or it has no preview. */
   card: LinkPreviewCard | null;
+  /** The event's kind, when it is one with no preview. */
+  unsupported: number | null;
 }

@@ -926,7 +926,7 @@ page — its title, description, Open Graph and Twitter tags, canonical link —
 replaced by what the event says, as the same tags and as schema.org JSON-LD, and
 the event as an `<article>` at the top of the body: a note's text with its
 links, images and mentions, an article's Markdown rendered, a profile's name,
-picture and about. The page is otherwise as published, so it is still the
+picture and about, a track's audio, a poll's options, a follow pack's people. The page is otherwise as published, so it is still the
 site's — its styles, its icon, its scripts. The image is the event's own, else
 the author's avatar (drawn as a small card), else the site's own `og:image`.
 Wording that names the site — "Alex on Ditto" — comes from the page's
@@ -934,6 +934,19 @@ Wording that names the site — "Alex on Ditto" — comes from the page's
 serves every site. Sites with their own idea of how a preview should look were
 considered and left out: the fields are the same everywhere, and a site that
 wants more can publish pages of its own.
+
+**Which events.** Only the kinds Ditto renders, each read the way its NIP or
+its app writes it (`kinds.rs`): which tag is a music track's title and which
+its cover, that a poll's options are `option` tags, that a 31990's content is a
+profile's JSON. Content that isn't for reading — JSON, ciphertext, a memory
+card's hex — is left out of the description and the page, and an event with a
+NIP-36 content warning shows the warning and none of its media. An event is
+credited to whoever it is from: a repost to the author of the event it carries,
+when that event's signature holds, and a zap to the sender who signed its
+request rather than the wallet that signed its receipt. Any other kind gets no
+card at all, and its page is served as published: a guess at what an unknown
+event means is worse than the site's own preview. An naddr names its kind, as
+an nevent may, so a path naming a kind with no preview costs no lookup.
 
 The article is visible, not hidden. A search engine reads text it can see, and
 treats text it can't as an attempt to deceive it. It goes before whatever the
@@ -980,7 +993,9 @@ resolver blob downloads use, following no redirects, a 64 KB document at most.
 the gateway's database, so clearing it and `VACUUM`ing it touch nothing else,
 and what it takes up is its size. A row is a card: its fields, and its article
 already rendered, so a cache hit costs a splice of the page and nothing more.
-Finding nothing is remembered too, for ten minutes at most, since nothing found
+An event of a kind with no preview is remembered as that for as long as a card
+would be, since an event's kind never changes. Finding nothing is remembered
+too, for ten minutes at most, since nothing found
 may only mean the relays were slow; for the same reason a refetch that finds
 nothing where a card was found keeps the card and tries again in ten minutes.
 Past `link_preview_max_entries`, the least recently fetched rows go.

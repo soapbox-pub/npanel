@@ -588,6 +588,7 @@ function cacheRows(status: LinkPreviewStatus): [string, string][] {
   const count = (n: number) => n.toLocaleString();
   return [
     ['Previews', count(status.found)],
+    ['Kinds with no preview', count(status.unsupported)],
     ['Found nothing', count(status.not_found)],
     ['Disk used', formatBytes(status.bytes)],
     ['Answered from memory', count(stats.hits)],
@@ -647,6 +648,15 @@ function RefreshLinkPreview() {
 /** A refreshed preview, drawn roughly as a chat app would unfurl it. */
 function RefreshedPreview({ result }: { result: RefreshedLinkPreview }) {
   const { card } = result;
+
+  if (result.unsupported !== null) {
+    return (
+      <Row
+        label="No preview"
+        description={`${result.entity} is a kind ${result.unsupported} event, which has no link preview. Crawlers get the page as published.`}
+      />
+    );
+  }
 
   if (!card) {
     return (

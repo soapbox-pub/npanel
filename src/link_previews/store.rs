@@ -17,22 +17,42 @@ use super::card::Card;
 /// card's, since nothing found may only mean the relays were slow.
 pub const NOT_FOUND_TTL: i64 = 10 * 60;
 
+/// What a lookup found.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outcome {
+    Card(Arc<Card>),
+    /// An event of a kind that isn't previewed. Its page is served as
+    /// published, and since an event's kind never changes, that is known
+    /// for as long as a card would be.
+    Unsupported(i64),
+    NotFound,
+}
+
 /// What is known about one entity, and when it was learned.
 #[derive(Clone, Debug)]
 pub struct Cached {
-    /// `None` when nothing was found.
-    pub card: Option<Arc<Card>>,
+    pub outcome: Outcome,
     pub fetched_at: i64,
 }
 
 impl Cached {
+    pub fn card(&self) -> Option<Arc<Card>> {
+        match &self.outcome {
+            Outcome::Card(card) => Some(card.clone()),
+            _ => None,
+        }
+    }
+
     pub fn fresh(&self, ttl: i64, now: i64) -> bool {
-        let ttl = if self.card.is_some() { ttl } else { ttl.min(NOT_FOUND_TTL) };
+        let ttl = if self.outcome == Outcome::NotFound { ttl.min(NOT_FOUND_TTL) } else { ttl };
         now - self.fetched_at < ttl
     }
 
     pub fn weight(&self) -> usize {
-        self.card.as_ref().map_or(64, |card| card.weight())
+        match &self.outcome {
+            Outcome::Card(card) => card.weight(),
+            _ => 64,
+        }
     }
 }
 
@@ -52,34 +72,48 @@ pub fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 2 {
+        // The kind of an event that isn't previewed, on a row with no card.
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE previews ADD COLUMN unsupported INTEGER;
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
 pub fn get(conn: &Connection, key: &str) -> Result<Option<Cached>> {
-    let row: Option<(Option<String>, i64)> = conn
-        .prepare_cached("SELECT card, fetched_at FROM previews WHERE key = ?")?
-        .query_row([key], |r| Ok((r.get(0)?, r.get(1)?)))
+    let row: Option<(Option<String>, Option<i64>, i64)> = conn
+        .prepare_cached("SELECT card, unsupported, fetched_at FROM previews WHERE key = ?")?
+        .query_row([key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .optional()?;
-    let Some((card, fetched_at)) = row else { return Ok(None) };
-    // A row an older npanel wrote in a shape this one can't read is as good as
-    // missing, and is replaced by the next lookup.
-    let card = match card {
-        Some(json) => match serde_json::from_str::<Card>(&json) {
-            Ok(card) => Some(Arc::new(card)),
+    let Some((card, unsupported, fetched_at)) = row else { return Ok(None) };
+    let outcome = match (card, unsupported) {
+        // A row an older npanel wrote in a shape this one can't read is as
+        // good as missing, and is replaced by the next lookup.
+        (Some(json), _) => match serde_json::from_str::<Card>(&json) {
+            Ok(card) => Outcome::Card(Arc::new(card)),
             Err(_) => return Ok(None),
         },
-        None => None,
+        (None, Some(kind)) => Outcome::Unsupported(kind),
+        (None, None) => Outcome::NotFound,
     };
-    Ok(Some(Cached { card, fetched_at }))
+    Ok(Some(Cached { outcome, fetched_at }))
 }
 
 pub fn put(conn: &Connection, key: &str, cached: &Cached) -> Result<()> {
-    let card = cached.card.as_ref().map(|card| serde_json::to_string(card.as_ref())).transpose()?;
+    let (card, unsupported) = match &cached.outcome {
+        Outcome::Card(card) => (Some(serde_json::to_string(card.as_ref())?), None),
+        Outcome::Unsupported(kind) => (None, Some(*kind)),
+        Outcome::NotFound => (None, None),
+    };
     conn.prepare_cached(
-        "INSERT INTO previews (key, card, fetched_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT (key) DO UPDATE SET card = ?2, fetched_at = ?3",
+        "INSERT INTO previews (key, card, unsupported, fetched_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (key) DO UPDATE SET card = ?2, unsupported = ?3, fetched_at = ?4",
     )?
-    .execute(params![key, card, cached.fetched_at])?;
+    .execute(params![key, card, unsupported, cached.fetched_at])?;
     Ok(())
 }
 
@@ -102,9 +136,12 @@ pub fn clear(conn: &Connection) -> Result<usize> {
     Ok(deleted)
 }
 
-/// How many rows hold a card, and how many remember finding nothing.
-pub fn counts(conn: &Connection) -> Result<(i64, i64)> {
-    Ok(conn.query_row("SELECT COUNT(card), COUNT(*) - COUNT(card) FROM previews", [], |r| Ok((r.get(0)?, r.get(1)?)))?)
+/// How many rows hold a card, how many an event that isn't previewed, and
+/// how many remember finding nothing.
+pub fn counts(conn: &Connection) -> Result<(i64, i64, i64)> {
+    Ok(conn.query_row("SELECT COUNT(card), COUNT(unsupported), COUNT(*) - COUNT(card) - COUNT(unsupported) FROM previews", [], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+    })?)
 }
 
 /// The database's size on disk, its write-ahead log included.
@@ -133,28 +170,35 @@ mod tests {
 
         let profile = Event::sign("0000000000000000000000000000000000000000000000000000000000000003", 1, 0, vec![], r#"{"name":"a"}"#);
         let card = Arc::new(profile_card(&profile));
-        put(&conn, "p:a", &Cached { card: Some(card.clone()), fetched_at: 10 }).unwrap();
-        put(&conn, "e:b", &Cached { card: None, fetched_at: 20 }).unwrap();
-        put(&conn, "e:c", &Cached { card: None, fetched_at: 30 }).unwrap();
-        assert_eq!(get(&conn, "p:a").unwrap().unwrap().card.as_deref(), Some(card.as_ref()));
-        assert!(get(&conn, "e:b").unwrap().unwrap().card.is_none());
+        put(&conn, "p:a", &Cached { outcome: Outcome::Card(card.clone()), fetched_at: 10 }).unwrap();
+        put(&conn, "e:b", &Cached { outcome: Outcome::NotFound, fetched_at: 20 }).unwrap();
+        put(&conn, "e:c", &Cached { outcome: Outcome::Unsupported(31337), fetched_at: 30 }).unwrap();
+        assert_eq!(get(&conn, "p:a").unwrap().unwrap().outcome, Outcome::Card(card));
+        assert_eq!(get(&conn, "e:b").unwrap().unwrap().outcome, Outcome::NotFound);
+        assert_eq!(get(&conn, "e:c").unwrap().unwrap().outcome, Outcome::Unsupported(31337));
         assert!(get(&conn, "e:x").unwrap().is_none());
-        assert_eq!(counts(&conn).unwrap(), (1, 2));
+        assert_eq!(counts(&conn).unwrap(), (1, 1, 1));
+
+        // A card that was found is written over by what is found next.
+        put(&conn, "e:c", &Cached { outcome: Outcome::NotFound, fetched_at: 40 }).unwrap();
+        assert_eq!(counts(&conn).unwrap(), (1, 0, 2));
 
         assert_eq!(evict(&conn, 2).unwrap(), 1);
         assert!(get(&conn, "p:a").unwrap().is_none());
         assert!(disk_bytes(&path) > 0);
 
         assert_eq!(clear(&conn).unwrap(), 2);
-        assert_eq!(counts(&conn).unwrap(), (0, 0));
+        assert_eq!(counts(&conn).unwrap(), (0, 0, 0));
     }
 
     #[test]
     fn freshness() {
-        let found = Cached { card: Some(Arc::new(profile_card(&Event::sign("0000000000000000000000000000000000000000000000000000000000000003", 1, 0, vec![], "{}")))), fetched_at: 0 };
-        let missing = Cached { card: None, fetched_at: 0 };
+        let found = Cached { outcome: Outcome::Card(Arc::new(profile_card(&Event::sign("0000000000000000000000000000000000000000000000000000000000000003", 1, 0, vec![], "{}")))), fetched_at: 0 };
+        let unsupported = Cached { outcome: Outcome::Unsupported(31337), fetched_at: 0 };
+        let missing = Cached { outcome: Outcome::NotFound, fetched_at: 0 };
         assert!(found.fresh(3600, 3599));
         assert!(!found.fresh(3600, 3600));
+        assert!(unsupported.fresh(3600, 3599));
         assert!(missing.fresh(3600, NOT_FOUND_TTL - 1));
         assert!(!missing.fresh(3600, NOT_FOUND_TTL));
         assert!(!missing.fresh(60, 60));

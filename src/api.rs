@@ -34,7 +34,7 @@ use crate::hostname::parse_hostname;
 use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse_relay_url};
 use crate::link_previews::card::Card;
 use crate::link_previews::entity::Entity;
-use crate::link_previews::{LinkPreviews, PreviewError};
+use crate::link_previews::{LinkPreviews, Outcome, PreviewError};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
 use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
@@ -1603,11 +1603,16 @@ async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Exte
     let entity = Entity::parse(&entity).map_err(bad)?;
     let refreshed = deps.link_previews.refresh(entity).await?;
 
+    let (card, unsupported) = match &refreshed.outcome {
+        Outcome::Card(card) => (Some(card_json(card)), None),
+        Outcome::Unsupported(kind) => (None, Some(*kind)),
+        Outcome::NotFound => (None, None),
+    };
     let (actor, target) = (user.pubkey.clone(), refreshed.entity.clone());
-    let found = refreshed.card.is_some();
-    deps.db.call(move |conn| Ok(audit(conn, &actor, "link_preview.refresh", Some(&target), None, Some(&json!({ "found": found })))?)).await?;
+    let after = json!({ "found": card.is_some(), "unsupported": unsupported });
+    deps.db.call(move |conn| Ok(audit(conn, &actor, "link_preview.refresh", Some(&target), None, Some(&after))?)).await?;
 
-    ok(json!({ "key": refreshed.key, "entity": refreshed.entity, "card": refreshed.card.as_deref().map(card_json) }))
+    ok(json!({ "key": refreshed.key, "entity": refreshed.entity, "card": card, "unsupported": unsupported }))
 }
 
 /// Forget every preview, so each is fetched again the next time a crawler
@@ -1624,10 +1629,12 @@ async fn clear_link_previews(State(deps): State<Deps>, Admin(user): Admin) -> Ap
 fn card_json(card: &Card) -> Value {
     json!({
         "kind": card.kind,
+        "event_kind": card.event_kind,
         "title": card.title,
         "description": card.description,
         "image": card.image,
         "video": card.video.as_ref().map(|video| &video.url),
+        "audio": card.audio.as_ref().map(|audio| &audio.url),
         "author": {
             "pubkey": card.author.pubkey,
             "npub": nip19::npub_encode(&card.author.pubkey),

@@ -599,7 +599,7 @@ async fn crawlers_get_a_preview_of_the_event_a_path_names() {
     let note = Event::sign(AUTHOR, crate::util::now() - 30, 1, vec![], "Hello from <Nostr>");
     let profile = Event::sign(AUTHOR, crate::util::now() - 30, 0, vec![], r#"{"name":"Author"}"#);
     gw.events.events.lock().extend([note.clone(), profile]);
-    let path = format!("/{}", crate::nostr::nip19::nevent_encode(&note.id, &[], Some(&note.pubkey)));
+    let path = format!("/{}", crate::nostr::nip19::nevent_encode(&note.id, &[], Some(&note.pubkey), None));
     let bot = ("user-agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
     let browser = ("user-agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
     let varies = |headers: &http::HeaderMap| headers.get_all("vary").iter().any(|v| v == "user-agent");
@@ -636,9 +636,40 @@ async fn crawlers_get_a_preview_of_the_event_a_path_names() {
     let (status, _, body) = gw.request("GET", "social.example.com", &missing, &[bot], None).await;
     assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
 
+    // A repost is the post it carries, under its own author's name.
+    let original = Event::sign(ADMIN, crate::util::now() - 60, 1, vec![], "Worth sharing");
+    let original_author = Event::sign(ADMIN, crate::util::now() - 60, 0, vec![], r#"{"name":"Original"}"#);
+    let repost = Event::sign(AUTHOR, crate::util::now() - 30, 6, vec![vec!["e".into(), original.id.clone()]], &serde_json::to_string(&original).unwrap());
+    gw.events.events.lock().extend([repost.clone(), original_author]);
+    let reposted = format!("/{}", crate::nostr::nip19::nevent_encode(&repost.id, &[], Some(&repost.pubkey), None));
+    let (_, _, body) = gw.request("GET", "social.example.com", &reposted, &[bot], None).await;
+    let body = String::from_utf8(body).unwrap();
+    assert!(body.contains("<title>Original on Ditto</title>"), "{body}");
+    assert!(body.contains(r#"<meta property="og:description" content="Worth sharing">"#), "{body}");
+
+    // An event of a kind with no preview is the page as published. One a
+    // path names the kind of is that without a lookup.
+    let custom = Event::sign(AUTHOR, crate::util::now() - 30, 1337, vec![vec!["alt".into(), "Something new".into()]], "Something new");
+    gw.events.events.lock().push(custom.clone());
+    let unknown = format!("/{}", crate::nostr::nip19::note_encode(&custom.id));
+    let (status, headers, body) = gw.request("GET", "social.example.com", &unknown, &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(varies(&headers));
+    let (_, before) = gw.api("GET", "/api/link-previews", None).await;
+    let named = format!("/{}", crate::nostr::nip19::naddr_encode(&custom.pubkey, 31337, "x", &[]));
+    let (status, headers, body) = gw.request("GET", "social.example.com", &named, &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(!varies(&headers));
+    let (_, after) = gw.api("GET", "/api/link-previews", None).await;
+    assert_eq!(before["stats"]["lookups"], after["stats"]["lookups"]);
+
     let (status, previews) = gw.api("GET", "/api/link-previews", None).await;
     assert_eq!(status, StatusCode::OK, "{previews}");
-    assert_eq!((previews["found"].as_i64(), previews["not_found"].as_i64()), (Some(1), Some(1)), "{previews}");
+    assert_eq!(
+        (previews["found"].as_i64(), previews["unsupported"].as_i64(), previews["not_found"].as_i64()),
+        (Some(2), Some(1), Some(1)),
+        "{previews}"
+    );
     assert!(previews["bytes"].as_u64().unwrap() > 0);
     assert!(previews["stats"]["hits"].as_u64().unwrap() >= 1, "{previews}");
 
@@ -653,11 +684,14 @@ async fn crawlers_get_a_preview_of_the_event_a_path_names() {
     assert!(String::from_utf8(body).unwrap().contains("<title>Renamed on Ditto</title>"));
     let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "entity": "nonsense" }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+    let (status, refreshed) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "entity": &unknown[1..] }))).await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    assert_eq!((refreshed["card"].is_null(), refreshed["unsupported"].as_i64()), (true, Some(1337)), "{refreshed}");
 
     let (status, cleared) = gw.api("DELETE", "/api/link-previews", None).await;
-    assert_eq!((status, cleared["cleared"].as_u64()), (StatusCode::OK, Some(2)), "{cleared}");
+    assert_eq!((status, cleared["cleared"].as_u64()), (StatusCode::OK, Some(4)), "{cleared}");
     let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
-    assert_eq!((previews["found"].as_i64(), previews["not_found"].as_i64()), (Some(0), Some(0)), "{previews}");
+    assert_eq!((previews["found"].as_i64(), previews["unsupported"].as_i64(), previews["not_found"].as_i64()), (Some(0), Some(0), Some(0)), "{previews}");
 
     // Relays that never answer cost a crawler a short wait and the page as
     // published, and a lookup past the limit costs it no wait at all.

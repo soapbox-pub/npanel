@@ -1,6 +1,7 @@
 //! What a link preview is of — a profile, an event, or an address — named by
 //! the path a crawler asked for, or by whatever an admin pasted.
 
+use super::kinds;
 use crate::hostname::{is_hostname, normalize_hostname};
 use crate::identifiers::parse_nip05_name;
 use crate::nostr::nip19::{self, Decoded};
@@ -36,7 +37,8 @@ impl Entity {
     /// The entity a page's path names, the way Nostr web clients route them:
     /// `/<nip19>` or `/<name@domain>`, either with an `@` in front, and
     /// nothing after but a trailing slash. Anything else names nothing, so
-    /// the page is served as published.
+    /// the page is served as published — as does one that names its event's
+    /// kind, when that kind isn't previewed, which costs no lookup at all.
     pub fn from_path(path: &str) -> Option<Entity> {
         let segment = path.strip_prefix('/')?;
         let segment = segment.strip_suffix('/').unwrap_or(segment);
@@ -60,7 +62,10 @@ impl Entity {
             let url = url::Url::parse(value).map_err(|_| format!("Not a valid URL: {value}"))?;
             let last = url.path_segments().and_then(|mut segments| segments.rfind(|s| !s.is_empty())).unwrap_or("");
             let segment = crate::util::decode_uri_component(last).unwrap_or_else(|| last.to_string());
-            return from_segment(&segment).map_err(|_| format!("{value} doesn't end in an npub, a note, an naddr, or a NIP-05 name."));
+            return from_segment(&segment).map_err(|error| match error {
+                SegmentError::Unsupported(kind) => unsupported(kind),
+                _ => format!("{value} doesn't end in an npub, a note, an naddr, or a NIP-05 name."),
+            });
         }
 
         let value = crate::util::strip_prefix_ci(value, "web+nostr:");
@@ -70,6 +75,7 @@ impl Entity {
         }
         from_segment(value).map_err(|error| match error {
             SegmentError::Secret => "That's a private key. Never paste an nsec anywhere.".into(),
+            SegmentError::Unsupported(kind) => unsupported(kind),
             SegmentError::Unknown => format!("Not an npub, a note, an naddr, or a NIP-05 name: {value}"),
         })
     }
@@ -87,7 +93,13 @@ impl Entity {
 
 enum SegmentError {
     Secret,
+    /// An naddr, or an nevent that says its kind, of a kind with no preview.
+    Unsupported(u32),
     Unknown,
+}
+
+fn unsupported(kind: u32) -> String {
+    format!("Kind {kind} events have no link preview, so crawlers get the page as published. There's nothing to refresh.")
 }
 
 fn from_segment(segment: &str) -> Result<Entity, SegmentError> {
@@ -118,7 +130,10 @@ fn from_segment(segment: &str) -> Result<Entity, SegmentError> {
         Decoded::Npub(pubkey) => Ok(Entity::Profile { pubkey, relays: Vec::new() }),
         Decoded::Nprofile { pubkey, relays } => Ok(Entity::Profile { pubkey, relays }),
         Decoded::Note(id) => Ok(Entity::Event { id, author: None, relays: Vec::new() }),
-        Decoded::Nevent { id, relays, author } => Ok(Entity::Event { id, author, relays }),
+        Decoded::Nevent { kind: Some(kind), .. } | Decoded::Naddr { kind, .. } if !kinds::supported(i64::from(kind)) => {
+            Err(SegmentError::Unsupported(kind))
+        }
+        Decoded::Nevent { id, relays, author, .. } => Ok(Entity::Event { id, author, relays }),
         Decoded::Naddr { pubkey, kind, identifier, relays } => Ok(Entity::Address { kind, pubkey, identifier, relays }),
         Decoded::Nsec(_) => Err(SegmentError::Secret),
     }
@@ -143,7 +158,7 @@ mod tests {
         assert_eq!(Entity::from_path(&format!("/{}", nip19::nsec_encode(PUBKEY))), None);
 
         let id = "b".repeat(64);
-        let nevent = nip19::nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY));
+        let nevent = nip19::nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY), None);
         assert_eq!(
             Entity::from_path(&format!("/{nevent}")),
             Some(Entity::Event { id: id.clone(), author: Some(PUBKEY.into()), relays: vec!["wss://r.example.com".into()] })
@@ -152,6 +167,11 @@ mod tests {
 
         let naddr = nip19::naddr_encode(PUBKEY, 30023, "my-post", &[]);
         assert_eq!(Entity::from_path(&format!("/{naddr}")).unwrap().key(), format!("a:30023:{PUBKEY}:my-post"));
+
+        // A kind with no preview names nothing, when the path says the kind.
+        assert_eq!(Entity::from_path(&format!("/{}", nip19::naddr_encode(PUBKEY, 31337, "x", &[]))), None);
+        assert_eq!(Entity::from_path(&format!("/{}", nip19::nevent_encode(&id, &[], None, Some(31337)))), None);
+        assert!(Entity::from_path(&format!("/{}", nip19::nevent_encode(&id, &[], None, Some(1)))).is_some());
 
         assert_eq!(Entity::from_path("/@Alex@Example.com"), Some(Entity::Nip05 { name: "alex".into(), domain: "example.com".into() }));
         assert_eq!(Entity::from_path("/alex@localhost"), None);
@@ -169,6 +189,9 @@ mod tests {
         assert!(Entity::parse(&nip19::nsec_encode(PUBKEY)).unwrap_err().contains("private key"));
         assert!(Entity::parse(PUBKEY).unwrap_err().contains("npub"));
         assert!(Entity::parse("https://ditto.pub/feed").unwrap_err().contains("doesn't end in"));
+        let naddr = nip19::naddr_encode(PUBKEY, 31337, "x", &[]);
+        assert!(Entity::parse(&naddr).unwrap_err().contains("Kind 31337"));
+        assert!(Entity::parse(&format!("https://ditto.pub/{naddr}")).unwrap_err().contains("Kind 31337"));
         assert!(Entity::parse("").is_err());
         assert_eq!(Entity::parse(&npub).unwrap().label(), npub);
     }

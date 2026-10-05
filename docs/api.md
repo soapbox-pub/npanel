@@ -841,6 +841,7 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 ```json
 {
   "found": 1520,
+  "unsupported": 7,
   "not_found": 41,
   "bytes": 9437184,
   "in_memory": 830,
@@ -849,8 +850,9 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 }
 ```
 
-What the cache holds: entities with a preview, entities a lookup found nothing
-for (remembered for ten minutes at most), and what `previews.sqlite3` takes up
+What the cache holds: entities with a preview, events of a kind with no
+preview, entities a lookup found nothing for (remembered for ten minutes at
+most), and what `previews.sqlite3` takes up
 on disk. `stats` count since the server started: answers from memory, lookups
 handed to the previews runtime, lookups that went to relays, pages sent without
 a preview because as many lookups were running as may (`busy`) or the lookup
@@ -875,19 +877,26 @@ which are for crawlers.
   "entity": "note1...",
   "card": {
     "kind": "post",
+    "event_kind": 1,
     "title": null,
     "description": "Hello from Nostr",
     "image": "https://cdn.example.com/cat.png",
     "video": null,
+    "audio": null,
     "author": { "pubkey": "<hex>", "npub": "npub1...", "name": "Alex", "picture": "https://..." },
     "published": 1754000000
-  }
+  },
+  "unsupported": null
 }
 ```
 
-`card` is `null` when nothing was found. `kind` is `profile`, `article`,
-`post`, or `video`. `400` for an entity that names nothing, `503` if the relays
-take longer than thirty seconds.
+`card` is `null` when nothing was found, and when the event is of a kind with no
+preview; `unsupported` is then that kind. `kind` is `profile`, `article`,
+`post`, `video`, or `audio`; `event_kind` is the event's Nostr kind, `0` for a
+profile. `author` is whoever the event is from: for a repost, the reposted
+event's author, and for a zap, its sender. `400` for an entity that names
+nothing, or an naddr (or an nevent that says its kind) of a kind with no
+preview; `503` if the relays take longer than thirty seconds.
 
 ### `DELETE /api/link-previews`
 

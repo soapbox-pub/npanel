@@ -131,8 +131,11 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
     };
     let og_type = match card.kind {
         CardKind::Profile => "profile",
-        CardKind::Article | CardKind::Post => "article",
         CardKind::Video => "video.other",
+        // A music track is a song; other audio — a podcast, a voice
+        // message — has no type of its own.
+        CardKind::Audio if card.event_kind == 36787 => "music.song",
+        CardKind::Article | CardKind::Post | CardKind::Audio => "article",
     };
 
     let mut out = String::new();
@@ -162,6 +165,11 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
             meta("property", "og:video:width", &width.to_string());
             meta("property", "og:video:height", &height.to_string());
         }
+    }
+    if let Some(audio) = &card.audio {
+        meta("property", "og:audio", &audio.url);
+        meta("property", "og:audio:secure_url", &audio.url);
+        meta("property", "og:audio:type", &audio.mime);
     }
     if card.kind != CardKind::Profile {
         if let Some(published) = card.published.and_then(iso_date) {
@@ -219,6 +227,13 @@ fn linked_data(card: &Card, page: &Page, title: &str, image: Option<&String>) ->
                 "thumbnailUrl": card.image,
                 "uploadDate": card.published.and_then(iso_date),
             })),
+            "audio": card.audio.as_ref().map(|audio| json!({
+                "@type": "AudioObject",
+                "name": title,
+                "contentUrl": audio.url,
+                "encodingFormat": audio.mime,
+                "uploadDate": card.published.and_then(iso_date),
+            })),
             "author": person,
         }),
     };
@@ -270,7 +285,7 @@ mod tests {
     fn note(content: &str) -> Card {
         let event = Event::sign(SECRET, 1_700_000_000, 1, vec![], content);
         let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex","picture":"https://cdn.example/a.png"}"#);
-        event_card(&event, Some(&profile))
+        event_card(&event, Some(&profile)).unwrap()
     }
 
     fn spliced(html: &str, card: &Card) -> String {
@@ -302,7 +317,7 @@ mod tests {
     #[test]
     fn falls_back_to_the_sites_image() {
         let event = Event::sign(SECRET, 1, 1, vec![], "No picture anywhere");
-        let out = spliced(DITTO, &event_card(&event, None));
+        let out = spliced(DITTO, &event_card(&event, None).unwrap());
         assert!(out.contains(r#"<meta property="og:image" content="https://ditto.example/og-image.jpg">"#), "{out}");
         assert!(out.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "{out}");
     }
@@ -317,11 +332,33 @@ mod tests {
     }
 
     #[test]
+    fn describes_audio() {
+        let tags = vec![
+            vec!["d".into(), "song".into()],
+            vec!["title".into(), "A Song".into()],
+            vec!["imeta".into(), "url https://cdn.example/s.mp3".into(), "m audio/mpeg".into(), "image https://cdn.example/cover.jpg".into()],
+        ];
+        let track = Event::sign(SECRET, 1, 36787, tags, "");
+        let out = spliced(DITTO, &event_card(&track, None).unwrap());
+        assert!(out.contains(r#"<meta property="og:type" content="music.song">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:audio" content="https://cdn.example/s.mp3">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:audio:type" content="audio/mpeg">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:image" content="https://cdn.example/cover.jpg">"#), "{out}");
+        assert!(out.contains("\"@type\":\"AudioObject\""), "{out}");
+        assert!(out.contains(r#"<audio src="https://cdn.example/s.mp3" controls preload="none"></audio>"#), "{out}");
+
+        let voice = Event::sign(SECRET, 1, 1222, vec![], "https://cdn.example/v.m4a");
+        let out = spliced(DITTO, &event_card(&voice, None).unwrap());
+        assert!(out.contains(r#"<meta property="og:type" content="article">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:audio:type" content="audio/mp4">"#), "{out}");
+    }
+
+    #[test]
     fn nothing_an_author_writes_escapes_its_element() {
         let hostile = r#"</script><script>alert(1)</script>"><img src=x onerror=alert(1)>"#;
         let event = Event::sign(SECRET, 1, 30023, vec![vec!["title".into(), hostile.into()], vec!["d".into(), "x".into()]], hostile);
         let profile = Event::sign(SECRET, 1, 0, vec![], &serde_json::json!({ "name": hostile }).to_string());
-        let out = spliced(DITTO, &event_card(&event, Some(&profile)));
+        let out = spliced(DITTO, &event_card(&event, Some(&profile)).unwrap());
         assert!(!out.contains("<script>alert"), "{out}");
         assert!(!out.contains("<img src=x"), "{out}");
         assert!(!out.contains("\"><img"), "{out}");

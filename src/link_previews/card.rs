@@ -7,14 +7,12 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::render::{escape, markdown_text, media_kind, render_markdown, render_text, safe_url, video_type, MediaKind};
+use super::kinds::{truncate, Content, Parts, MAX_CONTENT};
+use super::render::{escape, render_markdown, render_text, safe_url};
 use crate::nostr::nip19;
 use crate::nostr::Event;
 use crate::site_preview::clamp;
 
-/// The most of an event's content that is rendered. A long article is cut
-/// here rather than left out: its first hundred-odd kilobytes are the page.
-const MAX_CONTENT: usize = 128 * 1024;
 const MAX_TITLE: usize = 200;
 const MAX_DESCRIPTION: usize = 200;
 const MAX_NAME: usize = 100;
@@ -26,6 +24,7 @@ pub enum CardKind {
     Article,
     Post,
     Video,
+    Audio,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -52,8 +51,16 @@ pub struct Video {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Audio {
+    pub url: String,
+    pub mime: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Card {
     pub kind: CardKind,
+    /// The kind of the event it is of: 0 for a profile.
+    pub event_kind: i64,
     /// The event's own title, where it has one. A note has none, and its page
     /// is titled after its author.
     pub title: Option<String>,
@@ -61,6 +68,7 @@ pub struct Card {
     /// The event's own image, as an http(s) URL.
     pub image: Option<String>,
     pub video: Option<Video>,
+    pub audio: Option<Audio>,
     pub author: Author,
     pub published: Option<i64>,
     /// The `<article>` a crawler finds at the top of the page's body.
@@ -122,182 +130,94 @@ pub fn profile_card(event: &Event) -> Card {
 
     Card {
         kind: CardKind::Profile,
+        event_kind: 0,
         title: None,
         description: profile.about.as_deref().map(describe).filter(|d| !d.is_empty()),
         image: None,
         video: None,
+        audio: None,
         author,
         published: None,
         body,
     }
 }
 
-/// An event's card. `author` is its author's kind 0, where one was found.
-pub fn event_card(event: &Event, author: Option<&Event>) -> Card {
+/// An event's card, or `None` for a kind that isn't previewed. `author` is
+/// the kind 0 of whoever the card is attributed to, where one was found.
+/// Lookups make one in two steps, since who that is depends on the event.
+#[cfg(test)]
+pub fn event_card(event: &Event, author: Option<&Event>) -> Option<Card> {
     if event.kind == 0 {
-        return profile_card(event);
+        return Some(profile_card(event));
     }
+    super::kinds::read(event).map(|parts| card(event.kind, parts, author))
+}
 
-    let profile = author.filter(|a| a.kind == 0 && a.pubkey == event.pubkey).map(read_profile).unwrap_or_default();
-    let author = Author { pubkey: event.pubkey.clone(), name: profile.name, picture: profile.picture };
-    let content = truncate(&event.content, MAX_CONTENT);
-    let media = Media::of(event, content);
-    let markdown = matches!(event.kind, 30023 | 30024);
+/// A card from what [`kinds::read`] made of its event.
+pub fn card(event_kind: i64, parts: Parts, author: Option<&Event>) -> Card {
+    let profile = author.filter(|a| a.kind == 0 && a.pubkey == parts.author).map(read_profile).unwrap_or_default();
+    let author = Author { pubkey: parts.author.clone(), name: profile.name, picture: profile.picture };
+    let description = parts.summary.or_else(|| parts.content.text()).or(parts.fallback);
 
-    let mut title = tag(event, "title").or_else(|| tag(event, "name")).or_else(|| tag(event, "subject"));
-    let mut summary = tag(event, "summary").or_else(|| tag(event, "description"));
-    let mut image = tag(event, "image").or_else(|| tag(event, "thumb")).and_then(|url| safe_url(&url)).or(media.image);
-    let mut video = media.video;
-    let mut published = event.created_at;
-
-    match event.kind {
-        30023 | 30024 => {
-            published = tag(event, "published_at").and_then(|at| at.parse().ok()).filter(|at| *at > 0).unwrap_or(published);
-        }
-        // NIP-94: the file itself is the image or the video.
-        1063 => {
-            let mime = tag(event, "m").unwrap_or_default();
-            if let Some(url) = tag(event, "url").and_then(|url| safe_url(&url)) {
-                if mime.starts_with("image/") {
-                    image = Some(url);
-                } else if mime.starts_with("video/") {
-                    let (width, height) = dimensions(tag(event, "dim").as_deref());
-                    video = Some(Video { url, mime, width, height });
-                }
-            }
-            title = title.or_else(|| tag(event, "alt"));
-        }
-        30311 if tag(event, "status").as_deref() == Some("live") => title = title.map(|t| format!("{t} (live)")),
-        31922 | 31923 => {
-            if let Some(location) = tag(event, "location") {
-                let what = summary.take().or_else(|| Some(content.trim().to_string())).filter(|s| !s.is_empty());
-                summary = Some(match what {
-                    Some(what) => format!("{what} — {location}"),
-                    None => location,
-                });
-            }
-        }
-        _ => {}
-    }
-
-    let text = if markdown { markdown_text(content) } else { without_references(content) };
-    // NIP-31: an `alt` describes an event its content doesn't.
-    let description = summary.or_else(|| Some(text).filter(|t| !t.trim().is_empty())).or_else(|| tag(event, "alt"));
-
-    let kind = if markdown {
+    let kind = if matches!(parts.content, Content::Markdown(_)) {
         CardKind::Article
-    } else if video.is_some() {
+    } else if parts.video.is_some() {
         CardKind::Video
+    } else if parts.audio.is_some() {
+        CardKind::Audio
     } else {
         CardKind::Post
     };
-    let title = title.map(|t| clamp(&t, MAX_TITLE));
+    let title = parts.title.map(|t| clamp(&t, MAX_TITLE));
 
     let mut body = String::from("<article>\n<header>\n");
     if let Some(title) = &title {
         body.push_str(&format!("<h1>{}</h1>\n", escape(title)));
     }
     body.push_str(&format!(
-        "<p><a href=\"/{}\" rel=\"author\">{}</a> · {}</p>\n</header>\n",
-        nip19::npub_encode(&event.pubkey),
+        "<p><a href=\"/{}\" rel=\"author\">{}</a> · {}</p>\n",
+        nip19::npub_encode(&author.pubkey),
         escape(&author.display()),
-        time(published)
+        time(parts.published)
     ));
-    // Media a note names only in its tags is shown too; what its text names
-    // is shown where the text names it.
-    if let Some(video) = video.as_ref().filter(|v| !content.contains(&v.url)) {
-        let poster = image.as_ref().map(|i| format!(" poster=\"{}\"", escape(i))).unwrap_or_default();
+    body.push_str(&parts.lead);
+    body.push_str("</header>\n");
+
+    // Media an event names only in its tags is shown too; what its text, or
+    // what follows it, names is shown there.
+    let source = parts.content.source();
+    let unshown = |url: &str| !source.contains(url) && !parts.extra.contains(&escape(url));
+    if let Some(video) = parts.video.as_ref().filter(|v| unshown(&v.url)) {
+        let poster = parts.image.as_ref().map(|i| format!(" poster=\"{}\"", escape(i))).unwrap_or_default();
         body.push_str(&format!("<p><video src=\"{}\"{poster} controls preload=\"none\"></video></p>\n", escape(&video.url)));
-    } else if let Some(image) = image.as_ref().filter(|i| !content.contains(i.as_str())) {
+    } else if let Some(image) = parts.image.as_ref().filter(|i| unshown(i)) {
         body.push_str(&format!("<p><img src=\"{}\" alt=\"\"></p>\n", escape(image)));
     }
-    body.push_str(&if markdown { render_markdown(content) } else { render_text(content) });
+    if let Some(audio) = parts.audio.as_ref().filter(|a| parts.video.is_none() && unshown(&a.url)) {
+        body.push_str(&format!("<p><audio src=\"{}\" controls preload=\"none\"></audio></p>\n", escape(&audio.url)));
+    }
+    body.push_str(&match &parts.content {
+        Content::Text(text) => render_text(text),
+        Content::Markdown(text) => render_markdown(text),
+        Content::Quote(text) => format!("<blockquote>\n{}</blockquote>\n", render_text(text)),
+        Content::Code(text) => format!("<pre><code>{}</code></pre>\n", escape(text)),
+        Content::Hidden => String::new(),
+    });
+    body.push_str(&parts.extra);
     body.push_str("</article>\n");
 
     Card {
         kind,
+        event_kind,
         title,
         description: description.map(|d| describe(&d)).filter(|d| !d.is_empty()),
-        image,
-        video,
+        image: parts.image,
+        video: parts.video,
+        audio: parts.audio,
         author,
-        published: Some(published),
+        published: Some(parts.published),
         body,
     }
-}
-
-/// The first image and video an event carries: from its NIP-92 `imeta` tags,
-/// then from its `url` tags, then from URLs in its text.
-#[derive(Default)]
-struct Media {
-    image: Option<String>,
-    video: Option<Video>,
-}
-
-impl Media {
-    fn of(event: &Event, content: &str) -> Media {
-        let mut media = Media::default();
-        let mut thumbnail = None;
-
-        for entries in event.tags.iter().filter(|tag| tag.first().map(String::as_str) == Some("imeta")) {
-            let field = |key: &str| {
-                entries[1..].iter().find_map(|entry| entry.strip_prefix(key).and_then(|rest| rest.strip_prefix(' '))).map(str::trim)
-            };
-            let Some(url) = field("url").and_then(safe_url) else { continue };
-            let mime = field("m").unwrap_or("");
-            let kind = if mime.starts_with("image/") {
-                Some(MediaKind::Image)
-            } else if mime.starts_with("video/") {
-                Some(MediaKind::Video)
-            } else {
-                media_kind(&url)
-            };
-            match kind {
-                Some(MediaKind::Image) if media.image.is_none() => media.image = Some(url),
-                Some(MediaKind::Video) if media.video.is_none() => {
-                    let (width, height) = dimensions(field("dim"));
-                    let mime = if mime.starts_with("video/") { mime.to_string() } else { video_type(&url).to_string() };
-                    thumbnail = field("image").or(field("thumb")).and_then(safe_url);
-                    media.video = Some(Video { url, mime, width, height });
-                }
-                _ => {}
-            }
-        }
-
-        let tagged = event.tags.iter().filter(|tag| tag.first().map(String::as_str) == Some("url")).filter_map(|tag| tag.get(1));
-        let written = super::render::urls(content);
-        for url in tagged.cloned().chain(written).filter_map(|url| safe_url(&url)) {
-            match media_kind(&url) {
-                Some(MediaKind::Image) if media.image.is_none() => media.image = Some(url),
-                Some(MediaKind::Video) if media.video.is_none() => {
-                    media.video = Some(Video { mime: video_type(&url).to_string(), url, width: None, height: None })
-                }
-                _ => {}
-            }
-        }
-
-        media.image = media.image.or(thumbnail);
-        media
-    }
-}
-
-/// `WxH`, as `imeta` and NIP-94 write a size.
-fn dimensions(dim: Option<&str>) -> (Option<u32>, Option<u32>) {
-    let Some((width, height)) = dim.and_then(|d| d.split_once('x')) else { return (None, None) };
-    (width.trim().parse().ok().filter(|w| *w > 0), height.trim().parse().ok().filter(|h| *h > 0))
-}
-
-/// A note's text as a description: without the media and `nostr:`
-/// references it carries, which say nothing in a preview.
-fn without_references(content: &str) -> String {
-    let mut text = content.to_string();
-    for url in super::render::urls(content) {
-        let reference = crate::util::strip_prefix_ci(&url, "nostr:").len() != url.len();
-        if reference || safe_url(&url).and_then(|u| media_kind(&u)).is_some() {
-            text = text.replacen(&url, " ", 1);
-        }
-    }
-    text
 }
 
 /// Text cut to a description's length, on one line.
@@ -305,24 +225,7 @@ fn describe(text: &str) -> String {
     clamp(text, MAX_DESCRIPTION)
 }
 
-/// The first tag of a name's value, when it has a non-empty one.
-fn tag(event: &Event, name: &str) -> Option<String> {
-    event.tag(name).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string)
-}
-
-/// At most `max` bytes of `text`, cut on a character boundary.
-fn truncate(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
-fn short_npub(pubkey: &str) -> String {
+pub fn short_npub(pubkey: &str) -> String {
     let npub = nip19::npub_encode(pubkey);
     format!("{}…{}", &npub[..npub.len().min(12)], &npub[npub.len().saturating_sub(4)..])
 }
@@ -371,7 +274,7 @@ mod tests {
     fn notes() {
         let profile = sign(0, vec![], r#"{"name":"alex"}"#);
         let event = sign(1, vec![], "Look at this https://cdn.example/cat.png and nostr:npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6");
-        let card = event_card(&event, Some(&profile));
+        let card = event_card(&event, Some(&profile)).unwrap();
         assert_eq!(card.kind, CardKind::Post);
         assert_eq!(card.title, None);
         assert_eq!(card.description.as_deref(), Some("Look at this and"));
@@ -383,7 +286,7 @@ mod tests {
 
         // Someone else's profile is not the author's.
         let other = Event::sign("0000000000000000000000000000000000000000000000000000000000000004", 1, 0, vec![], r#"{"name":"mallory"}"#);
-        assert_ne!(event_card(&event, Some(&other)).author.name.as_deref(), Some("mallory"));
+        assert_ne!(event_card(&event, Some(&other)).unwrap().author.name.as_deref(), Some("mallory"));
     }
 
     #[test]
@@ -393,7 +296,7 @@ mod tests {
             vec![vec!["title", "Clip"], vec!["imeta", "url https://cdn.example/v", "m video/mp4", "dim 720x1280", "image https://cdn.example/t.jpg"]],
             "",
         );
-        let card = event_card(&event, None);
+        let card = event_card(&event, None).unwrap();
         assert_eq!(card.kind, CardKind::Video);
         assert_eq!(card.title.as_deref(), Some("Clip"));
         assert_eq!(card.video, Some(Video { url: "https://cdn.example/v".into(), mime: "video/mp4".into(), width: Some(720), height: Some(1280) }));
@@ -408,7 +311,7 @@ mod tests {
             vec![vec!["d", "post"], vec!["title", "My <Post>"], vec!["summary", "About things."], vec!["image", "https://cdn.example/c.jpg"], vec!["published_at", "1600000000"]],
             "# Heading\n\nBody text.",
         );
-        let card = event_card(&event, None);
+        let card = event_card(&event, None).unwrap();
         assert_eq!(card.kind, CardKind::Article);
         assert_eq!(card.title.as_deref(), Some("My <Post>"));
         assert_eq!(card.description.as_deref(), Some("About things."));
@@ -417,19 +320,25 @@ mod tests {
         assert!(card.body.contains("<h1>Heading</h1>"), "{}", card.body);
         assert!(card.body.contains("<img src=\"https://cdn.example/c.jpg\""), "{}", card.body);
 
-        let untitled = event_card(&sign(30023, vec![vec!["d", "x"]], "Just **words** here."), None);
+        let untitled = event_card(&sign(30023, vec![vec!["d", "x"]], "Just **words** here."), None).unwrap();
         assert_eq!(untitled.description.as_deref(), Some("Just words here."));
     }
 
     #[test]
     fn falls_back_to_alt() {
-        let card = event_card(&sign(31337, vec![vec!["alt", "A custom thing"]], ""), None);
-        assert_eq!(card.description.as_deref(), Some("A custom thing"));
+        let card = event_card(&sign(1, vec![vec!["alt", "A note with nothing to say"]], ""), None).unwrap();
+        assert_eq!(card.description.as_deref(), Some("A note with nothing to say"));
+    }
+
+    #[test]
+    fn previews_only_the_kinds_it_knows() {
+        assert_eq!(event_card(&sign(31337, vec![vec!["alt", "A custom thing"]], "hello"), None), None);
+        assert_eq!(event_card(&sign(10000, vec![], ""), None), None);
     }
 
     #[test]
     fn cuts_long_content() {
-        let card = event_card(&sign(1, vec![], &"é".repeat(MAX_CONTENT)), None);
+        let card = event_card(&sign(1, vec![], &"é".repeat(MAX_CONTENT)), None).unwrap();
         assert!(card.body.len() < MAX_CONTENT * 2);
     }
 }

@@ -13,6 +13,15 @@ it is tagged.
   schema.org tags, and the post or article itself as text a search engine can
   index. Everyone else gets the page as published. This replaces routing
   crawlers to a separate server from the proxy.
+- Every kind of event Ditto shows has a preview of its own, about a hundred
+  of them: pictures, videos, music and podcasts (with `og:audio`), voice
+  messages, articles, listings, calendar events, polls, highlights, zaps
+  credited to their sender, reposts shown as the post they carry, follow packs,
+  badges, git repositories and patches, apps, themes, and Ditto's own kinds.
+  Content that isn't for reading — JSON, ciphertext, a memory card's hex —
+  never reaches a preview, and an event behind a content warning shows none of
+  what it warns of. An event of any other kind gets no preview: its page is
+  served exactly as published.
 - Lookups run on a thread of their own and never slow a site down: a preview
   that can't be had within a couple of seconds sends the page as published,
   never an error. Lookups are cached in `DATA_DIR/previews.sqlite3`, batched

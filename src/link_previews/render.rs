@@ -41,26 +41,57 @@ pub fn safe_url(raw: &str) -> Option<String> {
 pub enum MediaKind {
     Image,
     Video,
+    Audio,
 }
 
 pub fn media_kind(url: &str) -> Option<MediaKind> {
-    let path = url::Url::parse(url).ok()?.path().to_ascii_lowercase();
-    let extension = path.rsplit_once('.')?.1;
-    match extension {
+    match extension(url)?.as_str() {
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "avif" | "svg" => Some(MediaKind::Image),
         "mp4" | "webm" | "mov" | "m4v" | "ogv" => Some(MediaKind::Video),
+        "mp3" | "m4a" | "aac" | "ogg" | "oga" | "opus" | "wav" | "flac" => Some(MediaKind::Audio),
         _ => None,
     }
 }
 
+/// What a MIME type says a file is, where it says.
+pub fn mime_kind(mime: &str) -> Option<MediaKind> {
+    let mime = mime.trim().to_ascii_lowercase();
+    if mime.starts_with("image/") {
+        Some(MediaKind::Image)
+    } else if mime.starts_with("video/") {
+        Some(MediaKind::Video)
+    } else if mime.starts_with("audio/") {
+        Some(MediaKind::Audio)
+    } else {
+        None
+    }
+}
+
+fn extension(url: &str) -> Option<String> {
+    let path = url::Url::parse(url).ok()?.path().to_ascii_lowercase();
+    Some(path.rsplit_once('.')?.1.to_string())
+}
+
 /// The MIME type of a video URL, by its extension, for `og:video:type`.
 pub fn video_type(url: &str) -> &'static str {
-    let path = url::Url::parse(url).map(|u| u.path().to_ascii_lowercase()).unwrap_or_default();
-    match path.rsplit_once('.').map(|(_, extension)| extension) {
+    match extension(url).as_deref() {
         Some("webm") => "video/webm",
         Some("mov") => "video/quicktime",
         Some("ogv") => "video/ogg",
         _ => "video/mp4",
+    }
+}
+
+/// The MIME type of an audio URL, by its extension, for `og:audio:type`.
+pub fn audio_type(url: &str) -> &'static str {
+    match extension(url).as_deref() {
+        Some("mp3") => "audio/mpeg",
+        Some("aac") => "audio/aac",
+        Some("ogg" | "oga" | "opus") => "audio/ogg",
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        Some("webm") => "audio/webm",
+        _ => "audio/mp4",
     }
 }
 
@@ -131,6 +162,7 @@ fn reference(token: &str) -> String {
     match media_kind(&url) {
         Some(MediaKind::Image) => format!(r#"<img src="{}" alt="" loading="lazy">"#, escape(&url)),
         Some(MediaKind::Video) => format!(r#"<video src="{}" controls preload="none"></video>"#, escape(&url)),
+        Some(MediaKind::Audio) => format!(r#"<audio src="{}" controls preload="none"></audio>"#, escape(&url)),
         None => format!(r#"<a href="{}" rel="nofollow ugc">{}</a>"#, escape(&url), escape(token)),
     }
 }
@@ -244,19 +276,16 @@ fn link_mentions<'a>(text: CowStr<'a>, events: &mut Vec<Md<'a>>) {
     }
 }
 
-/// An article's words, without its markup, for a description.
+/// An article's words, without its markup, for a description. Blocks and
+/// line breaks part words; the end of an emphasis or a link doesn't, so a
+/// sentence's punctuation stays where it was.
 pub fn markdown_text(content: &str) -> String {
     let mut words = String::new();
     for event in Parser::new(content) {
         match event {
-            Md::Text(text) | Md::Code(text) => {
-                words.push_str(&text);
-                words.push(' ');
-            }
-            Md::Html(html) => {
-                words.push_str(&strip_tags(&html));
-                words.push(' ');
-            }
+            Md::Text(text) | Md::Code(text) => words.push_str(&text),
+            Md::Html(html) | Md::InlineHtml(html) => words.push_str(&strip_tags(&html)),
+            Md::End(TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link | TagEnd::Image) => {}
             Md::SoftBreak | Md::HardBreak | Md::End(_) => words.push(' '),
             _ => {}
         }
@@ -354,6 +383,6 @@ mod tests {
 
     #[test]
     fn reads_articles_as_text() {
-        assert_eq!(markdown_text("# Head\n\nSome *em* `code`.").split_whitespace().collect::<Vec<_>>().join(" "), "Head Some em code .");
+        assert_eq!(markdown_text("# Head\n\nSome *em* `code`, [a link](https://x.example).").split_whitespace().collect::<Vec<_>>().join(" "), "Head Some em code, a link.");
     }
 }
