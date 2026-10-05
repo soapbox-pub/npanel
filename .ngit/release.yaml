@@ -3,6 +3,9 @@
 # .ngit/act/workflows/release.yml once the files below are built.
 schema: 1
 application: npanel
+# Every release of an application has to come from the key that published the
+# first, so publishing fails before anything is uploaded under another one.
+pubkey: npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj
 name: npanel
 summary: Self-hostable nsite gateway with a team dashboard
 description: |
@@ -25,8 +28,11 @@ publication:
     - wss://relay.dreamith.to
     - wss://relay.primal.net
 assets:
-  - file: target/x86_64-unknown-linux-musl/dist/npanel
-    filename: npanel-{version}-linux-x86_64
+  - file: dist/npanel-{version}-linux-x86_64
     platforms: [linux-x86_64]
+  - file: dist/npanel-{version}-linux-aarch64
+    platforms: [linux-aarch64]
+  - file: dist/SHA256SUMS
+    platform_agnostic: true
   - file: contrib/npanel.service
     platform_agnostic: true

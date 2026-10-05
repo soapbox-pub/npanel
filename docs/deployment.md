@@ -141,8 +141,9 @@ docker run --rm -v npanel_npanel-data:/data -v "$PWD:/backup" alpine:3 sh -c \
 ## 2. Install
 
 npanel is one static binary, with the dashboard compiled in. Each release
-publishes one for x86_64 Linux, which runs on any distribution, alongside a
-sample systemd unit. Find them under the repository's releases on
+publishes one for x86_64 Linux and one for aarch64, which run on any
+distribution, alongside their `SHA256SUMS` and a sample systemd unit. Find them
+under the repository's releases on
 [gitworkshop.dev](https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel),
 or with [ngit](https://ngit.dev) from a clone:
 
@@ -152,7 +153,7 @@ ngit release view npanel@0.2.0 --verify
 
 The release is signed, and every file in it is addressed by its SHA-256, so any
 Blossom server holding a copy serves the same bytes. Download
-`npanel-<version>-linux-x86_64` and `npanel.service`, then:
+`npanel-<version>-linux-x86_64` (or `-aarch64`) and `npanel.service`, then:
 
 ```sh
 sudo install -m 755 npanel-0.2.0-linux-x86_64 /usr/local/bin/npanel

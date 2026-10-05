@@ -2,22 +2,27 @@ name: Release
 
 # A version tag (vX.Y.Z) publishes:
 #
-#   - a static x86_64 Linux binary with the dashboard compiled in, and the
-#     sample systemd unit, as a NIP-82 release (.ngit/release.yaml, notes from
-#     CHANGELOG.md);
+#   - static Linux binaries for x86_64 and aarch64 with the dashboard compiled
+#     in, their SHA256SUMS, and the sample systemd unit, as a NIP-82 release
+#     (.ngit/release.yaml, notes from CHANGELOG.md);
 #   - the same dashboard build as the named nsite "npanel" (.nsite/config.json),
 #     which manages any npanel server across origins.
 #
 # One job, in order, so nothing is handed between containers and the nsite only
 # moves once the release it belongs to is out. The nsite follows tags rather
 # than main because servers lag behind it: a dashboard built from main could
-# lean on API nobody has deployed yet.
+# lean on API nobody has deployed yet. The binaries are also uploaded as run
+# artifacts before anything is published, so a failed publish still leaves
+# them on the CI result.
 #
 # ── Secrets ──────────────────────────────────────────────────────────────────
-#   NSYTE_BUNKER   nbunksec1... — a pre-established NIP-46 session, the same
-#                  secret Armada's nsite deploys use. Its key owns the npanel
-#                  application (every later release must be signed by it) and
-#                  is the nsite's address.
+#   NSYTE_BUNKER   nbunksec1... — a remote signer session on the Soapbox key
+#                  (npub10qdp2…), the same one armada-stack's releases and
+#                  Armada's nsite use. That key owns the npanel application
+#                  (`pubkey` in .ngit/release.yaml refuses any other) and is
+#                  the nsite's address. The coordinator's #SOAPBOX alias only
+#                  covers the Soapbox key's own repositories, so this one needs
+#                  it provisioned separately.
 #
 # act enforces a step's `timeout-minutes` but not a job's, so the steps that
 # talk to the network carry their own.
@@ -30,12 +35,20 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # Pinned with their checksums: these run with the release signer in the
+      # environment.
+      ZIG_VERSION: 0.16.0
+      ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
+      ZIGBUILD_VERSION: 0.23.4
+      ZIGBUILD_SHA256: 9e3cf73485edbd45905c8aadbc0fdf869c7ddc3848f0c898229f2680db52e44b
     steps:
       - uses: actions/checkout@v4
 
       # Before any building, so a forgotten bump or changelog entry costs
       # seconds rather than a whole build.
       - name: Check the tag against Cargo.toml and CHANGELOG.md
+        id: version
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -49,14 +62,16 @@ jobs:
             echo "CHANGELOG.md has no section for $version. Add one and tag again." >&2
             exit 1
           fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.12
 
-      # rust-toolchain.toml says which Rust; rustup installs it, and the musl
-      # target with it.
-      - name: Install Rust
+      # rust-toolchain.toml says which Rust; rustup installs it, and both musl
+      # targets with it. zig is the C compiler and linker for both, since ring,
+      # the bundled SQLite and QuickJS are C.
+      - name: Install Rust, zig and cargo-zigbuild
         run: |
           set -eu
           if ! command -v rustup >/dev/null; then
@@ -66,13 +81,17 @@ jobs:
           fi
           rustup toolchain install
 
-      # ring and the bundled SQLite are C, so the musl target needs musl's C
-      # compiler as well as Rust's.
-      - name: Install musl-tools
-        run: |
-          set -eu
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends musl-tools >/dev/null
+          tools="$RUNNER_TEMP/tools"
+          mkdir -p "$tools"
+          cd "$tools"
+          curl -fsSL -o zig.tar.xz "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  zig.tar.xz" | sha256sum -c -
+          tar -xJf zig.tar.xz
+          curl -fsSL -o zigbuild.tar.xz "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
+          echo "$ZIGBUILD_SHA256  zigbuild.tar.xz" | sha256sum -c -
+          tar -xJf zigbuild.tar.xz
+          echo "$tools/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
+          echo "$tools/cargo-zigbuild-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
 
       - name: Restore the Rust build cache
         continue-on-error: true
@@ -82,8 +101,11 @@ jobs:
             ~/.cargo/git
             ~/.cargo/registry
             target
-          key: release-musl-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: release-musl-
+          key: release-zig-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: release-zig-
+
+      - name: Test
+        run: cargo test --locked
 
       - name: Build the dashboard
         working-directory: dashboard
@@ -94,20 +116,37 @@ jobs:
 
       # The dist profile (Cargo.toml): fat LTO and one codegen unit, for the
       # smallest binary, which is worth the extra minutes here and nowhere else.
-      - name: Build the binary
-        run: cargo build --profile dist --locked --target x86_64-unknown-linux-musl --features embedded-dashboard
-
-      # A musl binary that still asks for a dynamic loader fails on glibc hosts
-      # with a misleading "No such file or directory"; refuse to publish one.
-      - name: Check the binary is static
+      - name: Build the binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -eu
-          bin=target/x86_64-unknown-linux-musl/dist/npanel
-          if readelf -l "$bin" | grep -q 'program interpreter'; then
-            echo "$bin is dynamically linked." >&2
-            exit 1
-          fi
-          ls -lh "$bin"
+          # zig's linker holds every object file open at once, and there are
+          # more than the default soft limit since Arti.
+          ulimit -n "$(ulimit -Hn)"
+          mkdir -p dist
+          for arch in x86_64 aarch64; do
+            cargo zigbuild --profile dist --locked --target "$arch-unknown-linux-musl" --features embedded-dashboard
+            cp "target/$arch-unknown-linux-musl/dist/npanel" "dist/npanel-$VERSION-linux-$arch"
+          done
+          # A musl binary that still asks for a dynamic loader fails on glibc
+          # hosts with a misleading "No such file or directory"; refuse to
+          # publish one.
+          for bin in dist/npanel-*; do
+            if readelf -l "$bin" | grep -q 'program interpreter'; then
+              echo "$bin is dynamically linked." >&2
+              exit 1
+            fi
+          done
+          ls -lh dist
+          (cd dist && sha256sum npanel-* > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npanel-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
 
       - uses: danconwaydev/setup-ngit@v3
         with:
@@ -122,23 +161,24 @@ jobs:
           set -eu
           # No apostrophes in that message: bash reads one inside ${var:?word}
           # as opening a quoted section, even within double quotes.
-          : "${NSYTE_BUNKER:?NSYTE_BUNKER is not set. Provision it for this repository.}"
+          : "${NSYTE_BUNKER:?NSYTE_BUNKER is not set. Ask the ngit-ci operator to provision the Soapbox session for this repository.}"
           umask 077
           printf '%s' "$NSYTE_BUNKER" > "$RUNNER_TEMP/nbunksec"
 
-      # A tag with a suffix (v0.3.0-rc.1) is a pre-release, on its own channel
-      # so that clients following main never offer it.
+      # The checkout has the tagged commit but not the tag itself, so the
+      # version and commit are given rather than found. A version with a suffix
+      # (0.3.0-rc.1) is a pre-release, on its own channel so that clients
+      # following main never offer it.
       - name: Publish the release
         timeout-minutes: 20
         env:
-          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -eu
           channel=main
-          case "$TAG" in *-*) channel=beta ;; esac
-          ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" release publish \
+          case "$VERSION" in *-*) channel=beta ;; esac
+          ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" release publish "$VERSION" \
             --repo nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel \
-            --tag "$TAG" \
             --commit "$GITHUB_SHA" \
             --channel "$channel" \
             --defaults

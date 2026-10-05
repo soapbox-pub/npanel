@@ -90,6 +90,8 @@ it is tagged.
   rustup installs on its own. Production builds use `--profile dist`; plain
   `--release` now rebuilds in seconds rather than minutes.
 - The release binary is stripped and built with full LTO: 29 MB, down from 42.
+- Releases include a static `aarch64` Linux binary as well as the `x86_64` one,
+  and a `SHA256SUMS` for both.
 - The dashboard loads in a fraction of the bytes. npanel serves its files
   brotli- or gzip-compressed itself, with `ETag`s so a reload revalidates
   rather than downloads, and each page is its own chunk: opening the site list

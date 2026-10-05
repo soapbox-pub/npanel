@@ -4,3 +4,5 @@ target/
 .env
 dashboard/node_modules/
 dashboard/dist/
+# What the release workflow publishes.
+/dist/

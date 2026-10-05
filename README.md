@@ -48,9 +48,10 @@ in well under a millisecond.
 
 ## Requirements
 
-- Linux. Releases are a static x86_64 binary with the dashboard inside, which
-  runs on any distribution. Elsewhere, build it: [rustup](https://rustup.rs) for the server and
-  [Bun](https://bun.sh) 1.3+ for the dashboard.
+- Linux. Releases are static x86_64 and aarch64 binaries with the dashboard
+  inside, which run on any distribution. Elsewhere, build it:
+  [rustup](https://rustup.rs) for the server and [Bun](https://bun.sh) 1.3+ for
+  the dashboard.
 - A reverse proxy for TLS — [Caddy](https://caddyserver.com) is the easy path,
   and a sample `Caddyfile` is included.
 
@@ -73,8 +74,9 @@ Point DNS at the box first — certificates are issued on the first visit.
 
 ## Quick start from a release
 
-Releases are published over Nostr with [ngit](https://ngit.dev): the binary,
-`npanel-<version>-linux-x86_64`, and a systemd unit.
+Releases are published over Nostr with [ngit](https://ngit.dev): the binaries,
+`npanel-<version>-linux-x86_64` and `npanel-<version>-linux-aarch64`, their
+`SHA256SUMS`, and a systemd unit.
 
 ```sh
 chmod +x npanel-0.2.0-linux-x86_64

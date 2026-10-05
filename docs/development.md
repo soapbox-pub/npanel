@@ -193,10 +193,11 @@ dashboard's Content Security Policy admits `http://localhost:*` and
 
 ## Releasing
 
-A tag `vX.Y.Z` runs `.ngit/act/workflows/release.yml`, which builds the static
-binary, publishes it as a NIP-82 release with `ngit release publish` (what to
-publish is in `.ngit/release.yaml`), and publishes the dashboard nsite with
-`ngit nsite publish` (`.nsite/config.json`). Before tagging:
+A tag `vX.Y.Z` runs `.ngit/act/workflows/release.yml`, which tests, builds
+static binaries for x86_64 and aarch64, publishes them and their `SHA256SUMS`
+as a NIP-82 release with `ngit release publish` (what to publish is in
+`.ngit/release.yaml`), and publishes the dashboard nsite with `ngit nsite
+publish` (`.nsite/config.json`). Before tagging:
 
 1. Bump `version` in `Cargo.toml`. The workflow refuses a tag that disagrees
    with it, and the dashboard stamps it in at build time to compare with the
@@ -207,14 +208,20 @@ publish is in `.ngit/release.yaml`), and publishes the dashboard nsite with
 
 A tag with a suffix, like `v0.3.0-rc.1`, publishes to the `beta` channel rather
 than `main`. Both are signed by the `NSYTE_BUNKER` session provisioned for the
-repository, and that key owns the application: every release after the first
-has to be signed by it.
+repository, on the Soapbox key that owns the application: every release has to
+be signed by it, and `pubkey` in `.ngit/release.yaml` refuses any other. The
+binaries are uploaded as the run's artifacts before anything is published, so a
+failed publish still leaves them on the CI result.
 
-To build the release binary locally, which needs `musl-tools` (for `musl-gcc`):
+To build the release binaries locally, which needs [zig](https://ziglang.org)
+and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (the
+workflow pins both):
 
 ```sh
 (cd dashboard && bun run build)
-cargo build --profile dist --target x86_64-unknown-linux-musl --features embedded-dashboard
+ulimit -n "$(ulimit -Hn)"   # zig's linker holds every object file open at once
+cargo zigbuild --profile dist --target x86_64-unknown-linux-musl --features embedded-dashboard
+cargo zigbuild --profile dist --target aarch64-unknown-linux-musl --features embedded-dashboard
 ```
 
 `dist` is `release` with fat LTO and one codegen unit (see `Cargo.toml`): a
