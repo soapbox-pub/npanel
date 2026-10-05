@@ -26,6 +26,15 @@ it is tagged.
   that can't be had within a couple of seconds sends the page as published,
   never an error. Lookups are cached in `DATA_DIR/previews.sqlite3`, batched
   into one query per relay, and capped per minute.
+- A site can design its own previews. Templates published as
+  `/.npanel/<kind>.jinja` name the events they need as Nostr filters, set the
+  page's title, description and article, and can draw an image as SVG, which
+  npanel serves as a 1200×630 JPEG at `/_npanel/preview/<nip19>.jpg` and names
+  as the page's `og:image`. Fonts in `/.npanel/` draw their text and emoji,
+  cutting an avatar to the shape of an emoji included. A deploy's log says
+  which templates it found and what was wrong with any. Nothing under
+  `/.npanel/` is ever served. See "A site's own previews" in
+  `docs/architecture.md`.
 - **Settings → Link Previews** shows what is cached and how lookups have gone,
   refreshes one preview from a pasted npub, nevent, NIP-05 name or URL, clears
   the cache, and sets which User-Agents count as crawlers.

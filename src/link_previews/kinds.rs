@@ -1445,7 +1445,7 @@ mod tests {
         let card = event_card(&sign(6, &[&["e", &original.id]], &forged.to_json()), None).unwrap();
         assert_eq!(card.description.as_deref(), Some("Reposted a post"));
         assert!(!card.body.contains("never wrote"), "{}", card.body);
-        assert_eq!(card.author.pubkey, crate::nostr::event::public_key(SECRET));
+        assert_eq!(card.author.unwrap().pubkey, crate::nostr::event::public_key(SECRET));
 
         // Nor is a repost of an event with no preview.
         let unknown = signed(OTHER, 31337, &[], "Mystery");
@@ -1470,7 +1470,7 @@ mod tests {
         let card = event_card(&receipt, None).unwrap();
         assert_eq!(card.title.as_deref(), Some("Zapped 100 sats"));
         assert_eq!(card.description, None);
-        assert_eq!(card.author.pubkey, crate::nostr::event::public_key(SECRET));
+        assert_eq!(card.author.unwrap().pubkey, crate::nostr::event::public_key(SECRET));
     }
 
     #[test]

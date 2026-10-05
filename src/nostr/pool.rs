@@ -11,7 +11,7 @@
 //! the addresses the connection is then opened to, not on a lookup of its own
 //! that a rebinding name could answer differently.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -55,32 +55,41 @@ pub struct Filter {
     pub authors: Vec<String>,
     /// `#d` values.
     pub d: Vec<String>,
+    /// Values of other single-letter tags, by letter: `e` for `#e`.
+    pub tags: BTreeMap<char, Vec<String>>,
     pub since: Option<i64>,
+    pub until: Option<i64>,
     pub limit: Option<u64>,
 }
 
 impl Filter {
     pub fn to_json(&self) -> Value {
-        // A filter by id needs nothing else, and an empty list of kinds or
-        // authors beside it would match nothing at all. Without ids they are
-        // always sent, so a filter missing them matches nothing rather than
-        // every event a relay has.
+        // A filter by id or by a tag other than `d` is narrow enough, and an
+        // empty list of kinds or authors beside it would match nothing at
+        // all. Otherwise they are always sent, so a filter missing them
+        // matches nothing rather than every event a relay has.
         let mut filter = serde_json::Map::new();
-        let by_id = !self.ids.is_empty();
-        if by_id {
+        let narrow = !self.ids.is_empty() || !self.tags.is_empty();
+        if !self.ids.is_empty() {
             filter.insert("ids".into(), json!(self.ids));
         }
-        if !by_id || !self.kinds.is_empty() {
+        if !narrow || !self.kinds.is_empty() {
             filter.insert("kinds".into(), json!(self.kinds));
         }
-        if !by_id || !self.authors.is_empty() {
+        if !narrow || !self.authors.is_empty() {
             filter.insert("authors".into(), json!(self.authors));
         }
         if !self.d.is_empty() {
             filter.insert("#d".into(), json!(self.d));
         }
+        for (letter, values) in &self.tags {
+            filter.insert(format!("#{letter}"), json!(values));
+        }
         if let Some(since) = self.since {
             filter.insert("since".into(), json!(since));
+        }
+        if let Some(until) = self.until {
+            filter.insert("until".into(), json!(until));
         }
         if let Some(limit) = self.limit {
             filter.insert("limit".into(), json!(limit));
@@ -95,7 +104,12 @@ impl Filter {
             && (self.kinds.is_empty() || self.kinds.contains(&event.kind))
             && (self.authors.is_empty() || self.authors.contains(&event.pubkey))
             && (self.d.is_empty() || event.tag("d").is_some_and(|d| self.d.iter().any(|want| want == d)))
+            && self.tags.iter().all(|(letter, values)| {
+                let name = letter.to_string();
+                event.tags.iter().any(|tag| tag.first() == Some(&name) && tag.get(1).is_some_and(|value| values.contains(value)))
+            })
             && self.since.is_none_or(|since| event.created_at >= since)
+            && self.until.is_none_or(|until| event.created_at <= until)
     }
 }
 
@@ -522,6 +536,13 @@ mod tests {
         assert!(by_id.matches(&event));
         assert!(!Filter { ids: vec!["0".repeat(64)], ..Default::default() }.matches(&event));
         assert_eq!(by_id.to_json(), json!({ "ids": [event.id] }));
+
+        let tagged = Event::sign(secret, 100, 7, vec![vec!["e".into(), "a".repeat(64)]], "+");
+        let reactions = Filter { kinds: vec![7], tags: BTreeMap::from([('e', vec!["a".repeat(64)])]), until: Some(100), ..Default::default() };
+        assert!(reactions.matches(&tagged));
+        assert!(!reactions.matches(&event));
+        assert!(!Filter { until: Some(99), ..reactions.clone() }.matches(&tagged));
+        assert_eq!(reactions.to_json(), json!({ "kinds": [7], "#e": ["a".repeat(64)], "until": 100 }));
     }
 
     #[test]

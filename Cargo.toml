@@ -28,7 +28,8 @@ flate2 = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 hex = "0.4"
 idna = "1"
-indexmap = "2"
+imagesize = "0.15"
+indexmap = { version = "2", features = ["serde"] }
 hmac = "0.12"
 http = "1"
 http-body-util = "0.1"
@@ -37,9 +38,13 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful"
 # ACME, for HTTPS_PORT. Its own HTTP client is left out: requests go through
 # reqwest, so the CA is trusted by the same compiled-in roots as everything else.
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen"] }
+jpeg-encoder = "0.7"
 lru = "0.12"
 maxminddb = { version = "0.26", features = ["mmap"] }
 memmap2 = "0.9"
+# The link-preview templates a site publishes. Fuel bounds how long one may
+# run, whoever wrote it.
+minijinja = { version = "2", features = ["fuel", "json"] }
 parking_lot = "0.12"
 # Articles, rendered for crawlers: the HTML writer, without the command-line
 # tool's dependencies.
@@ -47,6 +52,9 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["html
 rand = "0.8"
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "crypto"] }
 regex = "1"
+# Those templates' images, drawn with the site's own fonts and none of the
+# system's, so a render comes out the same on every gateway.
+resvg = { version = "0.48", default-features = false, features = ["text", "raster-images"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

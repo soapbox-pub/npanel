@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::kinds::{truncate, Content, Parts, MAX_CONTENT};
 use super::render::{escape, render_markdown, render_text, safe_url};
+use super::templates::Fields;
 use crate::nostr::nip19;
 use crate::nostr::Event;
 use crate::site_preview::clamp;
@@ -57,6 +58,13 @@ pub struct Audio {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct ImageMeta {
+    pub mime: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Card {
     pub kind: CardKind,
     /// The kind of the event it is of: 0 for a profile.
@@ -69,7 +77,12 @@ pub struct Card {
     pub image: Option<String>,
     pub video: Option<Video>,
     pub audio: Option<Audio>,
-    pub author: Author,
+    /// The size and type of `image`, where npanel drew it and so knows them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_meta: Option<ImageMeta>,
+    /// Whoever it is attributed to: `None` for a card a site's template
+    /// made, which knows only what its queries found.
+    pub author: Option<Author>,
     pub published: Option<i64>,
     /// The `<article>` a crawler finds at the top of the page's body.
     pub body: String,
@@ -136,7 +149,8 @@ pub fn profile_card(event: &Event) -> Card {
         image: None,
         video: None,
         audio: None,
-        author,
+        image_meta: None,
+        author: Some(author),
         published: None,
         body,
     }
@@ -214,9 +228,28 @@ pub fn card(event_kind: i64, parts: Parts, author: Option<&Event>) -> Card {
         image: parts.image,
         video: parts.video,
         audio: parts.audio,
-        author,
+        image_meta: None,
+        author: Some(author),
         published: Some(parts.published),
         body,
+    }
+}
+
+/// A card from what a site's template set. Its body is the template's own
+/// markup; everything else is held to what npanel's cards are.
+pub fn template_card(event_kind: i64, fields: Fields, image: Option<String>, image_meta: Option<ImageMeta>) -> Card {
+    Card {
+        kind: if event_kind == 0 { CardKind::Profile } else { CardKind::Post },
+        event_kind,
+        title: fields.title.flatten().map(|t| clamp(&t, MAX_TITLE)).filter(|t| !t.is_empty()),
+        description: fields.description.flatten().map(|d| describe(&d)).filter(|d| !d.is_empty()),
+        image,
+        video: None,
+        audio: None,
+        image_meta,
+        author: None,
+        published: None,
+        body: fields.body.flatten().unwrap_or_default(),
     }
 }
 
@@ -259,15 +292,15 @@ mod tests {
         let event = sign(0, vec![], r#"{"name":"alex","display_name":"Alex <G>","about":"Hi\n\nthere","picture":"https://x.example/a.png","website":"javascript:alert(1)","nip05":"_@alex.example"}"#);
         let card = profile_card(&event);
         assert_eq!(card.kind, CardKind::Profile);
-        assert_eq!(card.author.name.as_deref(), Some("Alex <G>"));
-        assert_eq!(card.author.picture.as_deref(), Some("https://x.example/a.png"));
+        assert_eq!(card.author.as_ref().unwrap().name.as_deref(), Some("Alex <G>"));
+        assert_eq!(card.author.as_ref().unwrap().picture.as_deref(), Some("https://x.example/a.png"));
         assert_eq!(card.description.as_deref(), Some("Hi there"));
         assert!(card.body.contains("<h1>Alex &lt;G&gt;</h1>"), "{}", card.body);
         assert!(card.body.contains("<p>alex.example</p>"), "{}", card.body);
         assert!(!card.body.contains("javascript"), "{}", card.body);
 
         let nameless = profile_card(&sign(0, vec![], "not json"));
-        assert!(nameless.author.display().starts_with("npub1"));
+        assert!(nameless.author.unwrap().display().starts_with("npub1"));
     }
 
     #[test]
@@ -279,14 +312,14 @@ mod tests {
         assert_eq!(card.title, None);
         assert_eq!(card.description.as_deref(), Some("Look at this and"));
         assert_eq!(card.image.as_deref(), Some("https://cdn.example/cat.png"));
-        assert_eq!(card.author.display(), "alex");
+        assert_eq!(card.author.unwrap().display(), "alex");
         assert!(card.body.contains("<time datetime=\"2023-11-14T22:13:20Z\">November 14, 2023</time>"), "{}", card.body);
         // The image is shown where the text names it, and only there.
         assert_eq!(card.body.matches("cat.png").count(), 1, "{}", card.body);
 
         // Someone else's profile is not the author's.
         let other = Event::sign("0000000000000000000000000000000000000000000000000000000000000004", 1, 0, vec![], r#"{"name":"mallory"}"#);
-        assert_ne!(event_card(&event, Some(&other)).unwrap().author.name.as_deref(), Some("mallory"));
+        assert_ne!(event_card(&event, Some(&other)).unwrap().author.unwrap().name.as_deref(), Some("mallory"));
     }
 
     #[test]

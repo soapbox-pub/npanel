@@ -14,8 +14,8 @@ const MAX_SEGMENT: usize = 2000;
 pub enum Entity {
     /// An npub or nprofile.
     Profile { pubkey: String, relays: Vec<String> },
-    /// A note or nevent.
-    Event { id: String, author: Option<String>, relays: Vec<String> },
+    /// A note or nevent, with the kind an nevent may say.
+    Event { id: String, author: Option<String>, kind: Option<u32>, relays: Vec<String> },
     /// An naddr.
     Address { kind: u32, pubkey: String, identifier: String, relays: Vec<String> },
     /// A NIP-05 name, which stands for a profile once it is looked up.
@@ -34,11 +34,20 @@ impl Entity {
         }
     }
 
+    /// The kind of event it is of, where that is known without a lookup.
+    pub fn kind(&self) -> Option<i64> {
+        match self {
+            Entity::Profile { .. } | Entity::Nip05 { .. } => Some(0),
+            Entity::Event { kind, .. } => kind.map(i64::from),
+            Entity::Address { kind, .. } => Some(i64::from(*kind)),
+        }
+    }
+
     /// The entity a page's path names, the way Nostr web clients route them:
     /// `/<nip19>` or `/<name@domain>`, either with an `@` in front, and
     /// nothing after but a trailing slash. Anything else names nothing, so
-    /// the page is served as published — as does one that names its event's
-    /// kind, when that kind isn't previewed, which costs no lookup at all.
+    /// the page is served as published. Whether the kind it names has a
+    /// preview depends on the site, and is the caller's to ask.
     pub fn from_path(path: &str) -> Option<Entity> {
         let segment = path.strip_prefix('/')?;
         let segment = segment.strip_suffix('/').unwrap_or(segment);
@@ -62,7 +71,7 @@ impl Entity {
             let url = url::Url::parse(value).map_err(|_| format!("Not a valid URL: {value}"))?;
             let last = url.path_segments().and_then(|mut segments| segments.rfind(|s| !s.is_empty())).unwrap_or("");
             let segment = crate::util::decode_uri_component(last).unwrap_or_else(|| last.to_string());
-            return from_segment(&segment).map_err(|error| match error {
+            return from_segment(&segment).and_then(previewed).map_err(|error| match error {
                 SegmentError::Unsupported(kind) => unsupported(kind),
                 _ => format!("{value} doesn't end in an npub, a note, an naddr, or a NIP-05 name."),
             });
@@ -73,7 +82,7 @@ impl Entity {
         if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("A hex key could be a pubkey or an event id. Paste it as an npub or a note instead.".into());
         }
-        from_segment(value).map_err(|error| match error {
+        from_segment(value).and_then(previewed).map_err(|error| match error {
             SegmentError::Secret => "That's a private key. Never paste an nsec anywhere.".into(),
             SegmentError::Unsupported(kind) => unsupported(kind),
             SegmentError::Unknown => format!("Not an npub, a note, an naddr, or a NIP-05 name: {value}"),
@@ -100,6 +109,14 @@ enum SegmentError {
 
 fn unsupported(kind: u32) -> String {
     format!("Kind {kind} events have no link preview, so crawlers get the page as published. There's nothing to refresh.")
+}
+
+/// An entity npanel's own cards preview, which is all an admin refreshes.
+fn previewed(entity: Entity) -> Result<Entity, SegmentError> {
+    match entity.kind() {
+        Some(kind) if !kinds::supported(kind) => Err(SegmentError::Unsupported(kind as u32)),
+        _ => Ok(entity),
+    }
 }
 
 fn from_segment(segment: &str) -> Result<Entity, SegmentError> {
@@ -129,11 +146,8 @@ fn from_segment(segment: &str) -> Result<Entity, SegmentError> {
     match nip19::decode(segment).map_err(|_| SegmentError::Unknown)? {
         Decoded::Npub(pubkey) => Ok(Entity::Profile { pubkey, relays: Vec::new() }),
         Decoded::Nprofile { pubkey, relays } => Ok(Entity::Profile { pubkey, relays }),
-        Decoded::Note(id) => Ok(Entity::Event { id, author: None, relays: Vec::new() }),
-        Decoded::Nevent { kind: Some(kind), .. } | Decoded::Naddr { kind, .. } if !kinds::supported(i64::from(kind)) => {
-            Err(SegmentError::Unsupported(kind))
-        }
-        Decoded::Nevent { id, relays, author, .. } => Ok(Entity::Event { id, author, relays }),
+        Decoded::Note(id) => Ok(Entity::Event { id, author: None, kind: None, relays: Vec::new() }),
+        Decoded::Nevent { id, relays, author, kind } => Ok(Entity::Event { id, author, kind, relays }),
         Decoded::Naddr { pubkey, kind, identifier, relays } => Ok(Entity::Address { kind, pubkey, identifier, relays }),
         Decoded::Nsec(_) => Err(SegmentError::Secret),
     }
@@ -161,17 +175,18 @@ mod tests {
         let nevent = nip19::nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY), None);
         assert_eq!(
             Entity::from_path(&format!("/{nevent}")),
-            Some(Entity::Event { id: id.clone(), author: Some(PUBKEY.into()), relays: vec!["wss://r.example.com".into()] })
+            Some(Entity::Event { id: id.clone(), author: Some(PUBKEY.into()), kind: None, relays: vec!["wss://r.example.com".into()] })
         );
         assert_eq!(Entity::from_path(&format!("/{}", nip19::note_encode(&id))).unwrap().key(), format!("e:{id}"));
 
         let naddr = nip19::naddr_encode(PUBKEY, 30023, "my-post", &[]);
         assert_eq!(Entity::from_path(&format!("/{naddr}")).unwrap().key(), format!("a:30023:{PUBKEY}:my-post"));
 
-        // A kind with no preview names nothing, when the path says the kind.
-        assert_eq!(Entity::from_path(&format!("/{}", nip19::naddr_encode(PUBKEY, 31337, "x", &[]))), None);
-        assert_eq!(Entity::from_path(&format!("/{}", nip19::nevent_encode(&id, &[], None, Some(31337)))), None);
-        assert!(Entity::from_path(&format!("/{}", nip19::nevent_encode(&id, &[], None, Some(1)))).is_some());
+        // A path says the kind where it can, whether npanel previews it or not.
+        assert_eq!(Entity::from_path(&format!("/{}", nip19::naddr_encode(PUBKEY, 31337, "x", &[]))).unwrap().kind(), Some(31337));
+        assert_eq!(Entity::from_path(&format!("/{}", nip19::nevent_encode(&id, &[], None, Some(31337)))).unwrap().kind(), Some(31337));
+        assert_eq!(Entity::from_path(&format!("/{}", nip19::note_encode(&id))).unwrap().kind(), None);
+        assert_eq!(Entity::from_path("/@alex@example.com").unwrap().kind(), Some(0));
 
         assert_eq!(Entity::from_path("/@Alex@Example.com"), Some(Entity::Nip05 { name: "alex".into(), domain: "example.com".into() }));
         assert_eq!(Entity::from_path("/alex@localhost"), None);

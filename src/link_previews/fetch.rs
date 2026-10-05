@@ -1,11 +1,12 @@
 //! Getting what a card is made of: events from relays, batched, and the
 //! pubkey a NIP-05 name stands for.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::future::BoxFuture;
+use futures_util::future::{join_all, BoxFuture};
+use indexmap::IndexMap;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -13,7 +14,8 @@ use tokio_util::sync::CancellationToken;
 use super::card::{card, profile_card};
 use super::entity::Entity;
 use super::kinds;
-use super::store::Outcome;
+use super::store::{Found, Outcome};
+use super::templates::{SiteQueries, Subject, MAX_RESULTS};
 use crate::db::Db;
 use crate::manifest::relay_list_tags;
 use crate::net::PublicResolver;
@@ -31,6 +33,9 @@ const MAX_BATCH: usize = 200;
 const MAX_HINTED_RELAYS: usize = 16;
 /// How long one query waits on relays.
 const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+/// The most of sites' filters one query carries. Relays cap the filters in a
+/// subscription, and a crawl of a site with queries brings hundreds.
+const MAX_SITE_FILTERS: usize = 16;
 
 /// How long a NIP-05 document may take, and how large it may be.
 const NIP05_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,12 +72,22 @@ impl Want {
 pub trait EventSource: Send + Sync {
     /// The newest event `want` names, from the configured relays and `relays`.
     fn get(&self, want: Want, relays: Vec<String>) -> BoxFuture<'_, Option<Event>>;
+    /// Every event matching any of `filters`, from the configured relays and
+    /// `relays`: of a replaceable or addressable event, only the newest.
+    fn query(&self, filters: Vec<Filter>, relays: Vec<String>) -> BoxFuture<'_, Vec<Event>>;
 }
 
-struct Ask {
-    want: Want,
-    relays: Vec<String>,
-    reply: oneshot::Sender<Option<Event>>,
+enum Ask {
+    Want { want: Want, relays: Vec<String>, reply: oneshot::Sender<Option<Event>> },
+    Filters { filters: Vec<Filter>, relays: Vec<String>, reply: oneshot::Sender<Vec<Event>> },
+}
+
+impl Ask {
+    fn relays(&self) -> &[String] {
+        match self {
+            Ask::Want { relays, .. } | Ask::Filters { relays, .. } => relays,
+        }
+    }
 }
 
 /// Lookups that arrive within [`BATCH_WINDOW`] of each other share one query
@@ -108,23 +123,47 @@ impl EventSource for Batcher {
     fn get(&self, want: Want, relays: Vec<String>) -> BoxFuture<'_, Option<Event>> {
         Box::pin(async move {
             let (reply, answer) = oneshot::channel();
-            self.asks.send(Ask { want, relays, reply }).await.ok()?;
+            self.asks.send(Ask::Want { want, relays, reply }).await.ok()?;
             answer.await.ok().flatten()
+        })
+    }
+
+    fn query(&self, filters: Vec<Filter>, relays: Vec<String>) -> BoxFuture<'_, Vec<Event>> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            if self.asks.send(Ask::Filters { filters, relays, reply }).await.is_err() {
+                return Vec::new();
+            }
+            answer.await.unwrap_or_default()
         })
     }
 }
 
 /// One query for a whole batch, answered lookup by lookup.
 async fn query(pool: Pool, configured: Vec<String>, batch: Vec<Ask>) {
-    let hinted = dedupe(batch.iter().flat_map(|ask| ask.relays.iter().cloned())).into_iter().take(MAX_HINTED_RELAYS);
+    let hinted = dedupe(batch.iter().flat_map(|ask| ask.relays().iter().cloned())).into_iter().take(MAX_HINTED_RELAYS);
     let relays = dedupe(configured.into_iter().chain(hinted));
 
     let mut profiles = BTreeSet::new();
     let mut relay_lists = BTreeSet::new();
     let mut ids = BTreeSet::new();
     let mut addresses: BTreeMap<u32, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+    // Sites' own filters, each once however many lookups asked it.
+    let mut site_filters: Vec<Filter> = Vec::new();
+    let mut seen = HashSet::new();
     for ask in &batch {
-        match &ask.want {
+        let want = match ask {
+            Ask::Want { want, .. } => want,
+            Ask::Filters { filters, .. } => {
+                for filter in filters {
+                    if seen.insert(filter.to_json().to_string()) {
+                        site_filters.push(filter.clone());
+                    }
+                }
+                continue;
+            }
+        };
+        match want {
             Want::Profile(pubkey) => {
                 profiles.insert(pubkey.clone());
             }
@@ -161,10 +200,28 @@ async fn query(pool: Pool, configured: Vec<String>, batch: Vec<Ask>) {
         filters.push(Filter { kinds: vec![i64::from(kind)], authors: authors.into_iter().collect(), d, ..Default::default() });
     }
 
-    let events = if relays.is_empty() { Vec::new() } else { pool.query(filters, &relays, QUERY_TIMEOUT, &CancellationToken::new()).await };
+    let mut queries = Vec::new();
+    if !filters.is_empty() {
+        queries.push(filters);
+    }
+    queries.extend(site_filters.chunks(MAX_SITE_FILTERS).map(<[Filter]>::to_vec));
+    let events: Vec<Event> = if relays.is_empty() {
+        Vec::new()
+    } else {
+        let cancel = CancellationToken::new();
+        join_all(queries.into_iter().map(|filters| pool.query(filters, &relays, QUERY_TIMEOUT, &cancel))).await.into_iter().flatten().collect()
+    };
     for ask in batch {
-        let found = events.iter().filter(|event| ask.want.matches(event)).max_by_key(|event| event.created_at).cloned();
-        let _ = ask.reply.send(found);
+        match ask {
+            Ask::Want { want, reply, .. } => {
+                let _ = reply.send(events.iter().filter(|event| want.matches(event)).max_by_key(|event| event.created_at).cloned());
+            }
+            Ask::Filters { filters, reply, .. } => {
+                let mut ids = HashSet::new();
+                let found = events.iter().filter(|event| filters.iter().any(|f| f.matches(event)) && ids.insert(&event.id)).cloned().collect();
+                let _ = reply.send(found);
+            }
+        }
     }
 }
 
@@ -267,7 +324,7 @@ pub async fn fetch(source: &dyn EventSource, names: &Names, entity: &Entity) -> 
             Some((pubkey, relays)) => profile(source, &pubkey, &relays).await,
             None => Outcome::NotFound,
         },
-        Entity::Event { id, author, relays } => {
+        Entity::Event { id, author, relays, .. } => {
             let hints = vet_relay_hints(relays).await;
             let want = Want::Event(id.clone());
             let (event, profile) = match author {
@@ -298,6 +355,101 @@ pub async fn fetch(source: &dyn EventSource, names: &Names, entity: &Entity) -> 
             }
         }
     }
+}
+
+/// What a site's templates are given for an entity: whatever their queries
+/// for its kind find, and nothing else.
+///
+/// The event itself is only fetched when it has to be: when its kind isn't
+/// known from the path, which decides which template applies, or when a
+/// query names something about it the path doesn't say. A query asking for
+/// it by id is then answered from that, with no second round trip. An event
+/// of a kind the site has no template for gets npanel's own card.
+pub async fn templated(source: &dyn EventSource, names: &Names, entity: &Entity, site: &SiteQueries) -> Outcome {
+    let (mut subject, kind, relays) = match entity {
+        Entity::Profile { pubkey, relays } => (Subject { kind: 0, pubkey: Some(pubkey.clone()), ..Default::default() }, Some(0), relays.clone()),
+        Entity::Nip05 { name, domain } => match names.resolve(name, domain).await {
+            Some((pubkey, relays)) => (Subject { kind: 0, pubkey: Some(pubkey), ..Default::default() }, Some(0), relays),
+            None => return Outcome::NotFound,
+        },
+        Entity::Address { kind, pubkey, identifier, relays } => {
+            let subject = Subject { kind: i64::from(*kind), pubkey: Some(pubkey.clone()), id: None, d: Some(identifier.clone()) };
+            (subject, Some(i64::from(*kind)), relays.clone())
+        }
+        Entity::Event { id, author, kind, relays } => {
+            let kind = kind.map(i64::from);
+            (Subject { kind: kind.unwrap_or(-1), pubkey: author.clone(), id: Some(id.clone()), d: None }, kind, relays.clone())
+        }
+    };
+    let hints = vet_relay_hints(&relays).await;
+
+    let unknown = |subject: &Subject, kind: i64| site.kinds.get(&kind).is_some_and(|queries| queries.iter().flat_map(|q| q.vars()).any(|var| subject.get(var).is_none()));
+    let event = if kind.is_none_or(|kind| unknown(&subject, kind)) {
+        let want = match entity {
+            Entity::Event { id, .. } => Want::Event(id.clone()),
+            Entity::Address { kind, pubkey, identifier, .. } => Want::Address { kind: *kind, pubkey: pubkey.clone(), identifier: identifier.clone() },
+            Entity::Profile { .. } | Entity::Nip05 { .. } => Want::Profile(subject.pubkey.clone().unwrap_or_default()),
+        };
+        let found = match source.get(want.clone(), hints.clone()).await {
+            Some(event) => Some(event),
+            None => match subject.pubkey.clone() {
+                Some(pubkey) => source.get(want, outbox(source, &pubkey).await).await,
+                None => None,
+            },
+        };
+        let Some(event) = found else { return Outcome::NotFound };
+        subject = Subject {
+            kind: event.kind,
+            pubkey: Some(event.pubkey.clone()),
+            id: Some(event.id.clone()),
+            d: if (30_000..40_000).contains(&event.kind) { Some(event.tag("d").unwrap_or("").to_string()) } else { subject.d },
+        };
+        Some(event)
+    } else {
+        None
+    };
+
+    let Some(queries) = site.kinds.get(&subject.kind) else {
+        return match &event {
+            Some(event) => finish(source, event, None, hints).await,
+            None => Outcome::Unsupported(subject.kind),
+        };
+    };
+
+    // Each query is sent asking for no more than all a template gets, and
+    // its answer is cut to what it asked for and what is left, in order.
+    let mut local = Vec::new();
+    let mut sent = Vec::new();
+    for query in queries {
+        let Some(filter) = query.resolve(&subject, query.limit.unwrap_or(MAX_RESULTS).min(MAX_RESULTS)) else { continue };
+        match &event {
+            Some(event) if filter.ids == [event.id.clone()] && filter.matches(event) => local.push(event.clone()),
+            _ => sent.push(filter),
+        }
+    }
+    let mut events = if sent.is_empty() { Vec::new() } else { source.query(sent, hints).await };
+    events.extend(local);
+
+    let mut left = MAX_RESULTS;
+    let mut results = IndexMap::new();
+    for query in queries {
+        let mut matched: Vec<Event> = match query.resolve(&subject, MAX_RESULTS) {
+            Some(filter) => events.iter().filter(|e| filter.matches(e)).cloned().collect(),
+            None => Vec::new(),
+        };
+        matched.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| a.id.cmp(&b.id)));
+        matched.dedup_by(|a, b| a.id == b.id);
+        matched.truncate(query.limit.unwrap_or(MAX_RESULTS).min(left));
+        left -= matched.len();
+        results.insert(query.name.clone(), matched);
+    }
+
+    // Nothing at all is as good as not found, and is looked for again as
+    // soon as that would be.
+    if event.is_none() && !queries.is_empty() && results.values().all(Vec::is_empty) {
+        return Outcome::NotFound;
+    }
+    Outcome::Results(Arc::new(Found { subject, results }))
 }
 
 /// An event's card, with the profile of whoever it is attributed to: the

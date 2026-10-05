@@ -35,6 +35,7 @@ use crate::db::{BuildKind, Db, Host, HostBuild, SiteEvent, HOST_BUILD_COLUMNS};
 use crate::fields;
 use crate::hash::BlobHash;
 use crate::inject::{inject_script, versioned_src, Placement, Script, MAX_INJECT_BYTES};
+use crate::link_previews::templates;
 use crate::log::{with_err, Logger};
 use crate::mime::{is_compressible, is_html};
 use crate::nsite_address::NsiteAddress;
@@ -613,12 +614,54 @@ fn assemble(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, log: &Lo
         .map(|(path, (_, sha256, event_id))| (path, BuildFile { sha256, event_id: Some(event_id), source_sha256: None }))
         .collect();
 
+    // Once per version: the onion's build has the same templates.
+    if target.kind == BuildKind::Clearnet {
+        check_templates(conn, blobs, target, &files)?;
+    }
     if target.host.seo {
         seo(conn, blobs, target, &mut files, log)?;
     }
     scripts(conn, blobs, target, &mut files, log)?;
 
     Ok(files)
+}
+
+/// The site's own link-preview templates, checked, and what's wrong with
+/// them said in its deploy log. A template that fails is left out of the
+/// site's previews and nothing else: the build goes on.
+fn check_templates(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &IndexMap<String, BuildFile>) -> Result<()> {
+    let ours: Vec<(String, BlobHash)> = files.iter().filter(|(path, _)| path.starts_with(templates::DIR)).map(|(path, file)| (path.clone(), file.sha256)).collect();
+    if ours.is_empty() {
+        return Ok(());
+    }
+    let compiled = templates::compile(&ours, blobs);
+    let (event_id, hostname) = (&target.event.event_id, target.origin.hostname.as_str());
+    for problem in &compiled.problems {
+        write_deploy_log(
+            conn,
+            event_id,
+            "warn",
+            "preview_template_problem",
+            fields! { "hostname" => hostname, "path" => problem.path.as_str(), "err_msg" => problem.message.as_str() },
+        )?;
+    }
+    if let Some(compiled) = &compiled.templates {
+        let kinds: Vec<i64> = compiled.queries.kinds.keys().copied().collect();
+        write_deploy_log(conn, event_id, "info", "preview_templates_found", fields! { "hostname" => hostname, "kinds" => kinds })?;
+        if !target.host.link_previews {
+            write_deploy_log(
+                conn,
+                event_id,
+                "warn",
+                "preview_templates_unused",
+                fields! {
+                    "hostname" => hostname,
+                    "err_msg" => "Link previews are off for this site, so its templates aren't used. Turn them on in the site's SEO settings.",
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// A script npanel adds to every page of a build, and the file it loads.

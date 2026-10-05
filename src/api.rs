@@ -1606,7 +1606,9 @@ async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Exte
     let (card, unsupported) = match &refreshed.outcome {
         Outcome::Card(card) => (Some(card_json(card)), None),
         Outcome::Unsupported(kind) => (None, Some(*kind)),
-        Outcome::NotFound => (None, None),
+        // Only a site's templates are given results, and a refresh is of
+        // npanel's own card.
+        Outcome::NotFound | Outcome::Results(_) => (None, None),
     };
     let (actor, target) = (user.pubkey.clone(), refreshed.entity.clone());
     let after = json!({ "found": card.is_some(), "unsupported": unsupported });
@@ -1635,12 +1637,12 @@ fn card_json(card: &Card) -> Value {
         "image": card.image,
         "video": card.video.as_ref().map(|video| &video.url),
         "audio": card.audio.as_ref().map(|audio| &audio.url),
-        "author": {
-            "pubkey": card.author.pubkey,
-            "npub": nip19::npub_encode(&card.author.pubkey),
-            "name": card.author.name,
-            "picture": card.author.picture,
-        },
+        "author": card.author.as_ref().map(|author| json!({
+            "pubkey": author.pubkey,
+            "npub": nip19::npub_encode(&author.pubkey),
+            "name": author.name,
+            "picture": author.picture,
+        })),
         "published": card.published,
     })
 }

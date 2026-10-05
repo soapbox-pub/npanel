@@ -116,15 +116,20 @@ pub fn splice(html: &[u8], card: &Card, page: &Page) -> Option<Vec<u8>> {
 /// Everything the head says about the page: its title, its description, and
 /// the Open Graph, Twitter and schema.org versions of both.
 fn head(card: &Card, page: &Page, site: &Site) -> String {
-    let author = card.author.display();
-    let title = card.title.clone().unwrap_or_else(|| match &site.name {
-        Some(site) => format!("{author} on {site}"),
-        None => author.clone(),
+    let author = card.author.as_ref().map(|author| author.display());
+    // A card with no author is a site's own, and wanting for a title is
+    // titled as the site.
+    let title = card.title.clone().or_else(|| match (&author, &site.name) {
+        (Some(author), Some(site)) => Some(format!("{author} on {site}")),
+        (Some(author), None) => Some(author.clone()),
+        (None, site) => site.clone(),
     });
+    let title = title.unwrap_or_default();
 
     // The event's own image is drawn large; an avatar standing in for one is
     // a square, and drawn small beside the text.
-    let (image, large) = match (&card.image, &card.author.picture, &site.image) {
+    let avatar = card.author.as_ref().and_then(|author| author.picture.as_ref());
+    let (image, large) = match (&card.image, avatar, &site.image) {
         (Some(image), _, _) => (Some(image), true),
         (None, Some(avatar), _) => (Some(avatar), false),
         (None, None, image) => (image.as_ref(), true),
@@ -155,6 +160,11 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
     }
     if let Some(image) = image {
         meta("property", "og:image", image);
+        if let Some(drawn) = card.image_meta.as_ref().filter(|_| card.image.is_some()) {
+            meta("property", "og:image:type", &drawn.mime);
+            meta("property", "og:image:width", &drawn.width.to_string());
+            meta("property", "og:image:height", &drawn.height.to_string());
+        }
         meta("name", "twitter:image", image);
     }
     if let Some(video) = &card.video {
@@ -190,23 +200,31 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
 /// The page as schema.org describes it, written so nothing in it can close
 /// the script element it sits in.
 fn linked_data(card: &Card, page: &Page, title: &str, image: Option<&String>) -> String {
-    let npub = nip19::npub_encode(&card.author.pubkey);
-    let person = json!({
-        "@type": "Person",
-        "name": card.author.display(),
-        "identifier": npub,
-        "url": format!("{}/{npub}", page.origin),
-        "image": card.author.picture,
+    let person = card.author.as_ref().map(|author| {
+        let npub = nip19::npub_encode(&author.pubkey);
+        json!({
+            "@type": "Person",
+            "name": author.display(),
+            "identifier": npub,
+            "url": format!("{}/{npub}", page.origin),
+            "image": author.picture,
+        })
     });
 
     let data = match card.kind {
         CardKind::Profile => {
-            let mut entity = as_object(person);
-            entity.insert("description".into(), json!(card.description));
+            let entity = person.map(|person| {
+                let mut entity = as_object(person);
+                entity.insert("description".into(), json!(card.description));
+                entity
+            });
             json!({
                 "@context": "https://schema.org",
                 "@type": "ProfilePage",
                 "url": page.url,
+                "name": if entity.is_none() { Some(title) } else { None },
+                "description": if entity.is_none() { card.description.as_deref() } else { None },
+                "image": if entity.is_none() { image } else { None },
                 "mainEntity": entity,
             })
         }

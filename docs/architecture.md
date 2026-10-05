@@ -931,9 +931,8 @@ site's — its styles, its icon, its scripts. The image is the event's own, else
 the author's avatar (drawn as a small card), else the site's own `og:image`.
 Wording that names the site — "Alex on Ditto" — comes from the page's
 `og:site_name`, or its title up to the first separator, so one cached preview
-serves every site. Sites with their own idea of how a preview should look were
-considered and left out: the fields are the same everywhere, and a site that
-wants more can publish pages of its own.
+serves every site. A site with its own idea of how a preview should look
+publishes templates for it, below.
 
 **Which events.** Only the kinds Ditto renders, each read the way its NIP or
 its app writes it (`kinds.rs`): which tag is a music track's title and which
@@ -1003,6 +1002,93 @@ Past `link_preview_max_entries`, the least recently fetched rows go.
 **Settings → Link Previews** shows what is cached and how lookups have gone,
 refreshes one entity's card from whatever names it — an npub, a nevent, a NIP-05
 name, or the URL of a page — and clears the lot.
+
+### A site's own previews
+
+A site can draw its previews itself, images included
+(`src/link_previews/templates.rs`). It publishes them in `/.npanel/`:
+`<kind>.jinja`, one template per kind of event, and the fonts its images use,
+as `.ttf` or `.otf` files. Nothing else belongs there, and npanel never serves
+anything under `/.npanel/` — a request for it is a `404`. A deploy compiles the
+templates and says in the version's deploy log which kinds it found and what
+was wrong with any file; a template that doesn't compile is left out, and the
+build goes on. nsyte skips dotfiles unless told otherwise, so a site published
+with it needs `!dist/.npanel/**` (for its own output directory) in
+`.nsyte-ignore`.
+
+A template is [MiniJinja](https://docs.rs/minijinja) with up to three parts:
+
+```jinja
+---
+{
+  "profile": { "kinds": [0], "authors": ["$pubkey"], "limit": 1 },
+  "theme": { "kinds": [16767], "authors": ["$pubkey"], "limit": 1 }
+}
+---
+{%- set p = (results.profile | first).content | fromjson -%}
+{%- set title = (p.name or "Someone") ~ " on Ditto" -%}
+{%- set description = p.about[:200] -%}
+{% block image -%}
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">…</svg>
+{%- endblock %}
+```
+
+- **Front matter: what to fetch.** A JSON object of named NIP-01 filters —
+  `ids`, `authors`, `kinds`, `#<letter>`, `since`, `until`, `limit` — four at
+  most, each naming `ids`, `authors` or a tag. A value that is exactly
+  `$pubkey`, `$id`, `$d` or `$a` is the page's event's. The template is given
+  what these find and nothing more: npanel fetches the event itself only when
+  it must, to learn the kind of a `note1` or to fill in a variable the path
+  doesn't say, and a query for it by `$id` is then answered with no second
+  round trip. All of a template's queries get ten events between them, in the
+  order they're written; `limit` is a request, cut to that. Each query's
+  events are newest first, and a replaceable or addressable event is only its
+  newest version, however many a relay sends. Queries go to the configured
+  relays and the path's hints, batched with every other lookup.
+- **The top level: what the page says.** `title`, `description`, `image` and
+  `body`, as `{% set %}`s. Whatever isn't set is empty — a template's preview
+  has no fallback to npanel's — except that a missing title is the site's name,
+  and `image` is the template's own drawing unless it is set: to a URL, taken
+  relative to the page, or to `none`, for the site's own `og:image`. `body` is
+  the `<article>` a crawler reads, as markup when it is set with
+  `{% set body %}…{% endset %}`, as text otherwise.
+- **`{% block image %}`: the picture.** An SVG, drawn at 1200×630 and served
+  as a JPEG at `/_npanel/preview/<nip19>.jpg?v=…`, which the page names as its
+  `og:image`. The version is a hash of the build, the template and when the
+  results were fetched, so a platform that caches images by URL sees a new one
+  when any of them changes, and one at its version is cached for a week. Any
+  client may fetch it: the services that fetch a preview's image seldom say
+  they're the crawler that read the page.
+
+A template is given `entity` (the event's `nip19`, `kind`, `pubkey`, `id` and
+`d`, as far as they're known), `results`, a list per query, `url` and
+`origin`. Beyond Jinja's own, it has `tags(event, name)`, `tag(event, name)`,
+`imeta(tag)`, `| fromjson`, colours (`| lighten(n)`, `| darken(n)`,
+`| is_dark`, `| hsl`, `hsl_color(h, s, l)`, in `#rrggbb`), `sin`, `cos` and
+`pi`, and `glyph_mask(text, size)`: the text drawn in the site's fonts, cropped
+to a square around it and made a luminance mask, as a `data:` PNG for an SVG
+`<mask>` — how Ditto cuts an avatar to the shape of an emoji. None of these
+fail on something missing; undefined reads as undefined however deep it goes,
+so a template copes with whatever came back.
+
+Templates are the site's, but what they're given is anyone's, so the limits
+are npanel's. Every `{{ }}` is escaped for HTML, which is also what an SVG
+attribute needs. A render has a fixed budget of MiniJinja fuel, a body 256 KB
+and an SVG 4 MB at most. Drawing reads no file and opens no connection: the
+images an SVG names are fetched first — `https://` URLs through the
+public-addresses-only resolver, sixteen at most, 8 MB each, five seconds in
+all, and paths of the site's own from its build — and anything else is left
+out. Only PNG, JPEG, GIF and WebP are drawn, and none over 4096 pixels a side.
+Text is set only in the site's fonts. Rendering runs on the blocking pool, as
+many at once as there are cores, and drawn images are kept in memory, 64 MB
+of them, by everything they're drawn from.
+
+A site's lookups are cached like npanel's cards, keyed by a hash of every
+template's front matter, so two sites asking the same share them. A page whose
+path names a kind neither npanel nor the site previews is served as published
+without a lookup; one whose kind only the event can say is looked up through
+the site's templates, and gets npanel's card when it turns out to be a kind the
+site has none for.
 
 ## Authentication
 

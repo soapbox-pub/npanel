@@ -21,10 +21,13 @@
 pub mod card;
 pub mod entity;
 pub mod fetch;
+mod helpers;
+pub mod image;
 pub mod kinds;
 mod render;
 pub mod splice;
 mod store;
+pub mod templates;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -41,8 +44,9 @@ use tokio_util::sync::CancellationToken;
 use self::card::Card;
 use self::entity::Entity;
 use self::fetch::{Batcher, EventSource, Names};
-pub use self::store::Outcome;
 use self::store::Cached;
+pub use self::store::{Found, Outcome};
+use self::templates::SiteQueries;
 use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
@@ -63,7 +67,11 @@ pleroma|akkoma|misskey|rocket\\.chat|cardyb|w3c_validator|rogerbot";
 const MAX_USER_AGENT: usize = 512;
 
 /// How long a request waits for a lookup before sending the page as it is.
-const WAIT: Duration = Duration::from_millis(2500);
+pub const WAIT: Duration = Duration::from_millis(2500);
+/// How long a request for a preview's image waits for one. Longer, since
+/// the alternative is no image rather than a page, and it usually follows
+/// the page's own lookup.
+pub const IMAGE_WAIT: Duration = Duration::from_secs(8);
 /// How long a refresh an admin asked for may take.
 const REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -264,7 +272,21 @@ impl LinkPreviews {
     /// The card for a page a crawler asked for, if one can be had in time.
     /// `None` sends the page as published.
     pub async fn card(&self, entity: &Entity) -> Option<Arc<Card>> {
-        let key = entity.key();
+        self.find(Job::Card(entity.clone()), WAIT).await.and_then(|(outcome, _)| match outcome {
+            Outcome::Card(card) => Some(card),
+            _ => None,
+        })
+    }
+
+    /// What a site's queries find for an entity, if it can be had within
+    /// `wait`, and when it was fetched — or npanel's own card, for an event
+    /// of a kind the site has no template for.
+    pub async fn templated(&self, entity: &Entity, queries: Arc<SiteQueries>, wait: Duration) -> Option<(Outcome, i64)> {
+        self.find(Job::Templated(entity.clone(), queries), wait).await
+    }
+
+    async fn find(&self, job: Job, wait: Duration) -> Option<(Outcome, i64)> {
+        let key = job.key();
         let ttl = self.shared.settings.get().link_preview_ttl;
 
         let remembered = self.shared.memory.lock().get(&key);
@@ -272,17 +294,17 @@ impl LinkPreviews {
             self.shared.stats.hits.fetch_add(1, Ordering::Relaxed);
             if !cached.fresh(ttl, crate::util::now()) {
                 // Nobody waits on this one: the stale card goes out now.
-                drop(self.begin(entity, &key));
+                drop(self.begin(&job, &key));
             }
-            return cached.card();
+            return Some((cached.outcome, cached.fetched_at));
         }
 
-        let Some(answer) = self.begin(entity, &key) else {
+        let Some(answer) = self.begin(&job, &key) else {
             self.shared.stats.busy.fetch_add(1, Ordering::Relaxed);
             return None;
         };
-        match tokio::time::timeout(WAIT, answer).await {
-            Ok(Ok(cached)) => cached.and_then(|cached| cached.card()),
+        match tokio::time::timeout(wait, answer).await {
+            Ok(Ok(cached)) => cached.map(|cached| (cached.outcome, cached.fetched_at)),
             Ok(Err(_)) => None,
             Err(_) => {
                 self.shared.stats.timeouts.fetch_add(1, Ordering::Relaxed);
@@ -293,7 +315,7 @@ impl LinkPreviews {
 
     /// Wait on the lookup for `key`, starting one if none is under way and
     /// one may start. `None` when one may not.
-    fn begin(&self, entity: &Entity, key: &str) -> Option<oneshot::Receiver<Option<Cached>>> {
+    fn begin(&self, job: &Job, key: &str) -> Option<oneshot::Receiver<Option<Cached>>> {
         let (tx, rx) = oneshot::channel();
         let mut flights = self.shared.flights.lock();
         if let Some(waiting) = flights.get_mut(key) {
@@ -308,7 +330,7 @@ impl LinkPreviews {
 
         self.shared.stats.lookups.fetch_add(1, Ordering::Relaxed);
         let flight = Flight { shared: self.shared.clone(), key: key.to_string() };
-        worker.runtime.spawn(lookup(self.shared.clone(), worker.clone(), entity.clone(), flight, permit));
+        worker.runtime.spawn(lookup(self.shared.clone(), worker.clone(), job.clone(), flight, permit));
         Some(rx)
     }
 
@@ -425,9 +447,34 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     Ok(())
 }
 
+/// What a lookup is for: npanel's own card, or what a site's queries find.
+#[derive(Clone)]
+enum Job {
+    Card(Entity),
+    Templated(Entity, Arc<SiteQueries>),
+}
+
+impl Job {
+    /// What it is cached under. A site's lookups are kept apart by what its
+    /// queries ask, and shared with any other site asking the same.
+    fn key(&self) -> String {
+        match self {
+            Job::Card(entity) => entity.key(),
+            Job::Templated(entity, queries) => format!("t:{}:{}", queries.digest, entity.key()),
+        }
+    }
+
+    async fn fetch(&self, worker: &Worker) -> Outcome {
+        match self {
+            Job::Card(entity) => fetch::fetch(worker.source.as_ref(), &worker.names, entity).await,
+            Job::Templated(entity, queries) => fetch::templated(worker.source.as_ref(), &worker.names, entity, queries).await,
+        }
+    }
+}
+
 /// Find a card: in the database, then on relays. Whoever is waiting is
 /// answered as soon as there is anything to answer with.
-async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, entity: Entity, flight: Flight, _permit: Permit) {
+async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, job: Job, flight: Flight, _permit: Permit) {
     let key = flight.key.clone();
     let settings = shared.settings.get();
 
@@ -458,7 +505,7 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, entity: Entity, flight
 
     shared.stats.fetches.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
-    let outcome = fetch::fetch(worker.source.as_ref(), &worker.names, &entity).await;
+    let outcome = job.fetch(&worker).await;
     let now = crate::util::now();
     shared.log.debug("link_preview_fetched", fields! { "key" => key.as_str(), "outcome" => describe(&outcome), "ms" => started.elapsed().as_millis() as u64 });
 
@@ -466,8 +513,8 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, entity: Entity, flight
         // Finding nothing where a card was found before more likely means the
         // relays were slow than that the event is gone. The card stays, and
         // is tried again as soon as a page that found nothing would be.
-        (Outcome::NotFound, Some(Cached { outcome: Outcome::Card(card), .. })) => {
-            Cached { outcome: Outcome::Card(card), fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
+        (Outcome::NotFound, Some(Cached { outcome: found @ (Outcome::Card(_) | Outcome::Results(_)), .. })) => {
+            Cached { outcome: found, fetched_at: now - settings.link_preview_ttl + store::NOT_FOUND_TTL.min(settings.link_preview_ttl) }
         }
         (outcome, _) => Cached { outcome, fetched_at: now },
     };
@@ -481,6 +528,7 @@ async fn lookup(shared: Arc<Shared>, worker: Arc<Worker>, entity: Entity, flight
 fn describe(outcome: &Outcome) -> &'static str {
     match outcome {
         Outcome::Card(_) => "card",
+        Outcome::Results(_) => "results",
         Outcome::Unsupported(_) => "unsupported",
         Outcome::NotFound => "not_found",
     }
