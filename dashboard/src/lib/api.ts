@@ -240,8 +240,8 @@ export class ApiClient {
   }
 
   /** Fetch one preview again, by anything that names its entity. */
-  refreshLinkPreview(entity: string): Promise<RefreshedLinkPreview> {
-    return this.request('POST', '/api/link-previews/refresh', { entity });
+  refreshLinkPreview(url: string): Promise<RefreshedLinkPreview> {
+    return this.request('POST', '/api/link-previews/refresh', { url });
   }
 
   clearLinkPreviews(): Promise<{ cleared: number }> {

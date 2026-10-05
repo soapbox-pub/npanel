@@ -24,7 +24,7 @@ its own, it keeps local storage in sync with Nostr.
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
-   a crawler on /<nip19> ──► previews thread ──► relays ──► previews.sqlite3
+   a crawler on /<nip19> ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
    with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
@@ -909,111 +909,44 @@ A Nostr web client is usually a static app: one `index.html` that reads the
 path — `/npub1…`, `/nevent1…`, `/naddr1…` — and fetches the event from relays
 in the browser. A crawler doesn't run it, so every link to a post unfurls as
 the app's own name, and search engines index the same empty shell under every
-URL. A site with `link_previews` on has those pages answered for crawlers with
-the event itself (`src/link_previews/`).
+URL. A site with `link_previews` on that publishes a preview script has those
+pages answered for crawlers with whatever its script makes of them
+(`src/link_previews/`). npanel has no idea of its own what a page about a Nostr
+event should say: the site does, and a site without a script gets nothing.
 
 **What qualifies.** A `GET` for a path of one segment that is a NIP-19 entity —
 npub, nprofile, note, nevent, naddr — or a NIP-05 name, with or without an `@`
 in front, where the site's answer is an HTML page under a `200`, from a
-User-Agent matching `link_preview_crawler_pattern`. With the `spa` flag that is
-the shell; without it, a site that publishes a page at that path. Everything
-else is served exactly as it would be, and every response on such a path
-carries `Vary: User-Agent`, so a shared cache doesn't hand one audience's page
-to the other.
+User-Agent matching `link_preview_crawler_pattern`, on a site with
+`link_previews` on and a script. With the `spa` flag that is the shell; without
+it, a site that publishes a page at that path. Everything else is served
+exactly as it would be, and every response on such a path carries
+`Vary: User-Agent` — with whatever request headers the script reads — so a
+shared cache doesn't hand one audience's page to the other.
 
 **What a crawler gets.** The site's own page, with what its head says about the
 page — its title, description, Open Graph and Twitter tags, canonical link —
-replaced by what the event says, as the same tags and as schema.org JSON-LD, and
-the event as an `<article>` at the top of the body: a note's text with its
-links, images and mentions, an article's Markdown rendered, a profile's name,
-picture and about, a track's audio, a poll's options, a follow pack's people. The page is otherwise as published, so it is still the
-site's — its styles, its icon, its scripts. The image is the event's own, else
-the author's avatar (drawn as a small card), else the site's own `og:image`.
-Wording that names the site — "Alex on Ditto" — comes from the page's
-`og:site_name`, or its title up to the first separator, so one cached preview
-serves every site. A site with its own idea of how a preview should look
-publishes a script for it, below.
-
-**Which events.** Only the kinds Ditto renders, each read the way its NIP or
-its app writes it (`kinds.rs`): which tag is a music track's title and which
-its cover, that a poll's options are `option` tags, that a 31990's content is a
-profile's JSON. Content that isn't for reading — JSON, ciphertext, a memory
-card's hex — is left out of the description and the page, and an event with a
-NIP-36 content warning shows the warning and none of its media. An event is
-credited to whoever it is from: a repost to the author of the event it carries,
-when that event's signature holds, and a zap to the sender who signed its
-request rather than the wallet that signed its receipt. Any other kind gets no
-card at all, and its page is served as published: a guess at what an unknown
-event means is worse than the site's own preview. An naddr names its kind, as
-an nevent may, so a path naming a kind with no preview costs no lookup.
+replaced by what the script returned, and its article at the top of the body.
+The page is otherwise as published, so it is still the site's — its styles, its
+icon, its scripts. A preview with no title is titled as the site — the page's
+`og:site_name`, or its title up to the first separator — and one with no image
+shows the site's own `og:image`. A page the script has nothing for, returning
+`null` or throwing, is served as published.
 
 The article is visible, not hidden. A search engine reads text it can see, and
 treats text it can't as an attempt to deceive it. It goes before whatever the
 app renders into, so a crawler that runs scripts sees both.
 
-**Escaping is the security boundary.** Anyone can send a crawler's User-Agent,
-so the page is served on the site's origin to whoever asks. Nothing an author
-wrote reaches it as markup: text and attributes are escaped, URLs are kept only
-when they are `http(s)` (`javascript:` and `data:` are dropped, not
-neutralized), HTML embedded in an article is read as text, and the JSON-LD
-escapes `<`, `>` and `&` so no value can close its script element. A `nostr:`
-mention becomes a link to the site's own page for it; an `nsec` never becomes
-anything. The page goes out under the site's Content Security Policy like any
-other, and nothing npanel adds is a script that runs.
+### The script
 
-**Serving never waits long.** Lookups happen on a runtime and a thread of their
-own, with a relay pool of their own, restarted with backoff like the analytics
-runtime. A request asks memory first; a card there is sent at once, and a stale
-one is sent while a fresh one is fetched behind it. Otherwise it hands the
-lookup across and waits two and a half seconds at most. A lookup that can't
-start — `link_preview_concurrency` are running, or the runtime is starting —
-or doesn't finish in time sends the page as published. Neither is ever an
-error: the worst a visitor sees is the site. A lookup that outlives its
-request goes on, and fills the cache for the next.
-
-**Relays are spared too.** A crawl asks for hundreds of entities at once, and
-npanel's deploys depend on the same relays, so lookups that arrive within fifty
-milliseconds of each other share one query per relay — one filter by id, one by
-author for profiles, one per kind for addresses — and are sorted out from the
-answer. Every lookup of one entity at once is the same lookup. Lookups that go
-to relays are metered by `link_preview_misses_per_minute`; cached cards never
-count, so the meter is exactly what a stranger requesting made-up ids can cost.
-A lookup over it is answered from whatever is cached. An entity's own relay
-hints are asked as well, and an author not found on any of those is looked for
-on the relays their kind 10002 says they write to. Every relay an author names
-is held to the rule deploys follow: `wss://`, public addresses, five at most.
-
-A NIP-05 name one of the gateway's hosts answers for is read from its database;
-any other is fetched from its domain, through the same public-addresses-only
-resolver blob downloads use, following no redirects, a 64 KB document at most.
-
-**Storage.** Cards are kept in memory, up to 32 MB of them, and in
-`DATA_DIR/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from
-the gateway's database, so clearing it and `VACUUM`ing it touch nothing else,
-and what it takes up is its size. A row is a card: its fields, and its article
-already rendered, so a cache hit costs a splice of the page and nothing more.
-An event of a kind with no preview is remembered as that for as long as a card
-would be, since an event's kind never changes. Finding nothing is remembered
-too, for ten minutes at most, since nothing found
-may only mean the relays were slow; for the same reason a refetch that finds
-nothing where a card was found keeps the card and tries again in ten minutes.
-Past `link_preview_max_entries`, the least recently fetched rows go.
-
-**Settings → Link Previews** shows what is cached and how lookups have gone,
-refreshes one entity's card from whatever names it — an npub, a nevent, a NIP-05
-name, or the URL of a page — and clears the lot.
-
-### A site's own previews
-
-A site can draw its previews itself, images included, with a script
-(`src/link_previews/script/`). It publishes `/.npanel/preview.js`, the modules
-that imports by relative path, and the fonts its drawing uses, as `.ttf` or
-`.otf` files, all in `/.npanel/`. Nothing else belongs there, and npanel never
-serves anything under `/.npanel/` — a request for it is a `404`. A deploy loads
-the script as a run would and says in the version's deploy log that it found
-it, or why it doesn't load, and what in the directory it ignored; a script that
-fails leaves the site with npanel's own previews, and the build goes on. nsyte
-skips dotfiles unless told otherwise, so a site published with it needs
+A site publishes `/.npanel/preview.js`, the modules that imports by relative
+path, and the fonts its drawing uses, as `.ttf` or `.otf` files, all in
+`/.npanel/` (`src/link_previews/script/`). Nothing else belongs there, and
+npanel never serves anything under `/.npanel/` — a request for it is a `404`. A
+deploy loads the script as a run would and says in the version's deploy log
+that it found it, or why it doesn't load, and what in the directory it ignored;
+a script that fails leaves the site without previews, and the build goes on.
+nsyte skips dotfiles unless told otherwise, so a site published with it needs
 `!dist/.npanel/**` (for its own output directory) in `.nsyte-ignore`.
 
 ```js
@@ -1031,19 +964,25 @@ export default {
 page's URL without the query a crawler adds — and an object shaped like
 Nostrify's `NRelay`: `query(filters)`, `req(filters)` (the stored events, then
 `EOSE`), and an `event()` that refuses, since a preview publishes nothing. It
-runs for exactly the pages a crawler gets npanel's preview on — one segment
-naming a NIP-19 entity or NIP-05 name — but whatever kind that names: the
-script decodes the path itself. Credentials and what the proxy says about the
+runs for every qualifying page, whatever it names: the script decodes the path
+itself, NIP-05 names included. Credentials and what the proxy says about the
 visitor (`Cookie`, `Authorization`, `X-Forwarded-*`, …) aren't passed on.
 
-**What it returns.** `title`, `description`, `body` — the article a crawler
-reads, as markup, cleaned by an HTML sanitizer of anything that runs — and
-`image`: a URL, taken relative to the page; a PNG, JPEG, GIF or WebP as a
-`Uint8Array`, `ArrayBuffer` or `Blob`; or a promise of one. Or `null`, for
-npanel's own preview, which is also what a page gets when the script throws.
-Whatever isn't returned is empty: a script's preview has no fallback to
-npanel's, except that a missing title is the site's name and a missing image is
-the site's own `og:image`.
+**What it returns.** Any of:
+
+| Field | What npanel writes |
+|---|---|
+| `title` | `<title>`, `og:title`, `twitter:title` |
+| `description` | `description`, `og:description`, `twitter:description` |
+| `body` | the `<article>` a crawler reads, as markup, cleaned by an HTML sanitizer of anything that runs |
+| `image` | `og:image`, `twitter:image`: a URL, taken relative to the page; a PNG, JPEG, GIF or WebP as a `Uint8Array`, `ArrayBuffer` or `Blob`; or a promise of one |
+| `type` | `og:type`, `website` when it's missing |
+| `twitter` | `twitter:card`: `summary` for an image shown small, `summary_large_image` (the default) for one shown large |
+| `video`, `audio` | `og:video`, `og:audio`, from `{ url, type, width, height }` |
+| `published` | `article:published_time`, from seconds or a `Date` |
+| `jsonLd` | a schema.org object, written so no value can close its script element |
+
+Or `null`, for nothing. npanel writes only what's returned, and never a guess.
 
 **The image is drawn behind the page.** A promise isn't waited for: the page
 goes out as soon as the handler returns, naming its image as
@@ -1073,25 +1012,68 @@ elsewhere, as in a browser: a script fetches what it draws. `Date` stands still
 at when the run started, and `Math.random` is seeded by the URL, so one input
 gives one image.
 
-**Limits are npanel's.** Each run gets a QuickJS runtime of its own on a thread
-of its own, as many at once as there are cores: 64 MB of memory, ten seconds to
-return and ten more to draw, past which it is interrupted wherever it is. It
-may query relays eight times, for fifty events in all — each filter naming
-ids, authors or a tag, and its `limit` honoured however many a relay sends —
-on the configured relays, the path's hints, and, when they have nothing, the
-outboxes of the authors it names, batched with every other lookup. It may
-fetch sixteen `https://` URLs, through the public-addresses-only resolver,
-following redirects only to `https://`, 8 MB each and 32 MB in all; it reads no
-file. Its canvases and decoded images may hold 16 million pixels between them,
-none over 2400 pixels a side for a canvas or 4096 for a picture. A module may
-be 4 MB and all of them 8 MB; a site may have eight fonts of up to 32 MB.
+### Limits
 
-**Caching.** A script's previews are cached as npanel's cards are, in memory
-and `previews.sqlite3`, keyed by the script, the URL, and the values of the
-request headers it read — which are remembered, and named in the page's
-`Vary`. Two builds with the same script share them. Drawn images are kept by
-version, 64 MB of them in memory and 512 MB in `DATA_DIR/preview-images/`.
-Clearing link previews clears both.
+**Escaping is the security boundary.** Anyone can send a crawler's User-Agent,
+so the page is served on the site's origin to whoever asks, and what a script
+writes is made of what anyone can publish to a relay. So the article is
+sanitized, every other field is escaped where it's written, URLs are kept only
+when they're `http(s)`, and the JSON-LD escapes `<`, `>` and `&`. The page goes
+out under the site's Content Security Policy like any other, and nothing npanel
+adds to it is a script that runs.
+
+**A script is held to npanel's limits.** Each run gets a QuickJS runtime of its
+own on a thread of its own, as many at once as there are cores: 64 MB of memory,
+ten seconds to return and ten more to draw, past which it is interrupted
+wherever it is. It may query relays eight times, for fifty events in all — each
+filter naming ids, authors or a tag, and its `limit` honoured however many a
+relay sends. It may fetch sixteen `https://` URLs, through the
+public-addresses-only resolver blob downloads use, following redirects only to
+`https://`, 8 MB each and 32 MB in all; it reads no file. Its canvases and
+decoded images may hold 16 million pixels between them, none over 2400 pixels a
+side for a canvas or 4096 for a picture. A module may be 4 MB and all of them
+8 MB; a site may have eight fonts of up to 32 MB.
+
+**Serving never waits long.** Scripts run on a runtime and a thread of their
+own, with a relay pool of their own, restarted with backoff like the analytics
+runtime. A request asks memory first; a preview there is sent at once, and a
+stale one is sent while a fresh one is made behind it. Otherwise it hands the
+lookup across and waits two and a half seconds at most. A lookup that can't
+start — `link_preview_concurrency` are running, or the runtime is starting — or
+doesn't finish in time sends the page as published. Neither is ever an error:
+the worst a visitor sees is the site. A lookup that outlives its request goes
+on, and fills the cache for the next.
+
+**Relays are spared too.** A crawl asks for hundreds of pages at once, and
+npanel's deploys depend on the same relays, so scripts' queries that arrive
+within fifty milliseconds of each other share one subscription per relay, and
+are sorted out from the answer: identical filters are sent once, and filters
+for authors' newest replaceable or addressable events of the same kinds become
+one filter. Every lookup of one page at once is the same lookup. Runs are
+metered by `link_preview_misses_per_minute`; cached previews never count, so
+the meter is exactly what a stranger requesting made-up ids can cost. A lookup
+over it is answered from whatever is cached. Queries go to the configured
+relays and the path's own hints and, when those have nothing, to the outboxes
+of the authors the filters name. Every relay an author names is held to the
+rule deploys follow: `wss://`, public addresses, five at most.
+
+**Storage.** Previews are kept in memory, up to 32 MB of them, and in
+`DATA_DIR/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from
+the gateway's database, so clearing it and `VACUUM`ing it touch nothing else,
+and what it takes up is its size. It's a cache, so its layout is versioned as a
+whole, and one an older npanel left is thrown away. A preview is kept by the
+script, the URL, and the values of the request headers the script read, which
+are remembered too; two builds with the same script share them. A script having
+nothing for a page is remembered for ten minutes at most, since it may only
+mean the relays were slow; for the same reason, a run that has nothing where it
+had something keeps what it had and tries again in ten minutes, as does a run
+that fails. Past `link_preview_max_entries`, the least recently made rows go.
+Drawn images are kept by version, 64 MB of them in memory and 512 MB in
+`DATA_DIR/preview-images/`.
+
+**Settings → Link Previews** shows what is cached and how lookups have gone,
+runs one page's script again from its URL, and clears the lot, images
+included.
 
 ## Authentication
 

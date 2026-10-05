@@ -4,7 +4,7 @@
 //! `default { preview(request, ctx) }`: given the crawler's request and a
 //! read-only Nostr relay, it returns the page's title, description and
 //! article, and its image — a URL, or bytes it drew on an `OffscreenCanvas`,
-//! or a promise of them — or `null` for npanel's own preview. Modules it
+//! or a promise of them — or `null`, which leaves the page as published. Modules it
 //! imports, and the fonts it draws text in, sit beside it in `/.npanel/`.
 //!
 //! Each run gets a QuickJS runtime of its own, on a thread of its own, with a
@@ -41,7 +41,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{oneshot, OwnedSemaphorePermit};
 
 use self::canvas::{Font, Fonts, Line, State, Style, Surfaces, Text};
-use super::fetch::{outbox, EventSource};
+use super::preview::Extras;
+use super::relays::{outbox, EventSource};
 use crate::blobs::BlobStore;
 use crate::db::Db;
 use crate::fields;
@@ -240,21 +241,22 @@ pub struct Env {
 /// What a run came to.
 #[derive(Debug)]
 pub struct Ran {
-    /// What the handler returned, or `None` for npanel's own preview.
-    pub preview: Option<Preview>,
+    /// What the handler returned, or `None` for nothing: the page as published.
+    pub preview: Option<Returned>,
     /// The request headers it read, by name, which the preview varies by.
     pub vary: Vec<String>,
     /// What names this preview's image.
     pub version: String,
 }
 
+/// What a handler returned, as it wrote it: not yet held to anything.
 #[derive(Debug)]
-pub struct Preview {
+pub struct Returned {
     pub title: Option<String>,
     pub description: Option<String>,
-    /// Markup, as the script wrote it: not yet cleaned.
     pub body: Option<String>,
     pub image: Image,
+    pub extras: Extras,
 }
 
 #[derive(Debug)]
@@ -421,7 +423,11 @@ async fn execute(script: Arc<Script>, job: Option<(Page, Env)>, done: oneshot::S
                 } else {
                     Image::None
                 };
-                let preview = Preview { title: out.get("title")?, description: out.get("description")?, body: out.get("body")?, image };
+                let extras: String = out.get("extras")?;
+                let Ok(extras) = serde_json::from_str::<Extras>(&extras) else {
+                    return Err(Exception::throw_type(&ctx, "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read."));
+                };
+                let preview = Returned { title: out.get("title")?, description: out.get("description")?, body: out.get("body")?, image, extras };
                 Ok((Ran { preview: Some(preview), vary, version }, pending))
             };
             let (mut ran, pending) = match read.await {

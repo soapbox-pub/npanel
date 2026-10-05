@@ -95,7 +95,7 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   link_preview_crawler_pattern: { label: 'Link preview crawlers' },
   link_preview_ttl: { label: 'Link previews kept for', format: (value) => `${value} seconds` },
   link_preview_concurrency: { label: 'Link preview lookups at once' },
-  link_preview_misses_per_minute: { label: 'Link preview relay lookups', format: (value) => `${value} a minute` },
+  link_preview_misses_per_minute: { label: 'Link preview script runs', format: (value) => `${value} a minute` },
   link_preview_max_entries: { label: 'Link previews kept' },
 };
 
@@ -216,12 +216,7 @@ export function describe(entry: AuditEntry): Activity {
       return {
         kind: 'settings',
         sentence: ['refreshed the link preview for', { strong: target }],
-        details:
-          typeof after.unsupported === 'number'
-            ? [{ type: 'value', label: 'Found', value: `A kind ${after.unsupported} event, which has no preview` }]
-            : after.found === false
-              ? [{ type: 'value', label: 'Found', value: 'Nothing' }]
-              : [],
+        details: after.found === false ? [{ type: 'value', label: 'Found', value: 'Nothing' }] : [],
       };
 
     case 'link_preview.clear':

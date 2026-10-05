@@ -31,10 +31,10 @@ use crate::fields;
 use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
 use crate::identifiers::{parse_relay_list, NIP05_PATH};
-use crate::link_previews::entity::Entity;
+use crate::link_previews::page::NostrPage;
 use crate::link_previews::script::{self, Script, Scripts};
 use crate::link_previews::splice::{splice, Page};
-use crate::link_previews::{kinds, LinkPreviews, ScriptPage, IMAGE_WAIT, PREVIEW_PATH, WAIT};
+use crate::link_previews::{Answer, LinkPreviews, ScriptPage, IMAGE_WAIT, PREVIEW_PATH, WAIT};
 use crate::log::{with_err, Logger};
 use crate::mime::content_type;
 use crate::nsite_address::encode_naddr;
@@ -353,23 +353,21 @@ impl SiteServer {
             return Ok(text(StatusCode::INTERNAL_SERVER_ERROR, "This file is missing from local storage."));
         };
 
-        // A page whose path names a Nostr event answers crawlers with that
-        // event's preview, and everyone else as published — so a cache in
+        // A page whose path names something on Nostr, on a site with link
+        // previews on and a script to draw them, answers crawlers with the
+        // script's preview and everyone else as published — so a cache in
         // between has to keep the two apart.
         let previewed = site.host.host.link_previews && file.status == 200 && content_type(&file.path).starts_with("text/html");
-        let entity = if previewed { Entity::from_path(path) } else { None };
-        let script = match &entity {
+        let nostr = if previewed { NostrPage::from_path(path) } else { None };
+        let script = match &nostr {
             Some(_) => self.deps.scripts.for_build(version.build_id).await?,
             None => None,
         };
-        // A path naming a kind npanel has no preview of, on a site with no
-        // script of its own, is no different from any other, and costs no
-        // lookup.
-        let entity = entity.filter(|entity| script.is_some() || entity.kind().is_none_or(kinds::supported));
-        if let Some(entity) = &entity {
+        let previewable = nostr.zip(script);
+        if let Some((nostr, script)) = &previewable {
             let crawler = request.method == Method::GET && self.deps.link_previews.is_crawler(header_str(&request.headers, header::USER_AGENT));
             if crawler && variants.identity <= MAX_PREVIEW_PAGE {
-                if let Some(reply) = self.link_preview(request, origin, site, &file, entity, script).await {
+                if let Some(reply) = self.link_preview(request, origin, site, &file, nostr, script).await {
                     return Ok(reply);
                 }
             }
@@ -394,7 +392,7 @@ impl SiteServer {
         if let Some(encoding) = encoding {
             builder = builder.header(header::CONTENT_ENCODING, encoding.as_str());
         }
-        if entity.is_some() {
+        if previewable.is_some() {
             builder = builder.header(header::VARY, "user-agent");
         }
 
@@ -488,36 +486,22 @@ impl SiteServer {
         Ok(builder.status(status).body(Body::from(body)).expect("response"))
     }
 
-    /// The page about the Nostr event `entity` names, for a crawler: the
-    /// site's own document, with the event's preview in its head and the
-    /// event itself at the top of its body. `None` sends the page as
-    /// published, whatever the reason — this is never worth an error.
-    async fn link_preview(
-        &self,
-        request: &Parts,
-        origin: &RequestOrigin,
-        site: &CachedSite,
-        file: &ResolvedFile,
-        entity: &Entity,
-        script: Option<Arc<Script>>,
-    ) -> Option<Reply> {
+    /// A page about something on Nostr, for a crawler: the site's own
+    /// document, with its script's preview in its head and its article at the
+    /// top of its body. `None` sends the page as published, whatever the
+    /// reason — this is never worth an error.
+    async fn link_preview(&self, request: &Parts, origin: &RequestOrigin, site: &CachedSite, file: &ResolvedFile, nostr: &NostrPage, script: &Arc<Script>) -> Option<Reply> {
         let site_origin = format!("{}://{}", origin.scheme, origin.hostname);
         let path = request.uri.path();
         let url = page_url(&site_origin, path);
 
-        // The site's own script, where it has one; npanel's card otherwise.
-        let (card, vary) = match script {
-            Some(script) => {
-                let page = Arc::new(ScriptPage { script, page: script_page(request, &url), entity: entity.clone() });
-                let card = self.deps.link_previews.scripted(page.clone(), WAIT).await?;
-                (card, self.deps.link_previews.vary(&page))
-            }
-            None => (self.deps.link_previews.card(entity).await?, Vec::new()),
-        };
+        let page = Arc::new(ScriptPage { script: script.clone(), page: script_page(request, &url), nostr: nostr.clone() });
+        let Answer::Preview(preview) = self.deps.link_previews.preview(page.clone(), WAIT).await else { return None };
+        let vary = self.deps.link_previews.vary(&page);
         let document = self.open(file.sha256, None).await.ok()?;
-        let body = splice(&document, &card, &Page { url: &url, origin: &site_origin })?;
+        let body = splice(&document, &preview, &Page { url: &url, origin: &site_origin })?;
 
-        // Made per request, so its tag is its own hash: a card refreshed
+        // Made per request, so its tag is its own hash: a preview refreshed
         // behind a crawler's back is a different page.
         let etag = format!("\"{}\"", &hex::encode(Sha256::digest(&body))[..32]);
         let builder = Response::builder()
@@ -529,7 +513,7 @@ impl SiteServer {
         // The preview depends on whatever the script read, too.
         let builder = vary.iter().filter(|name| *name != "user-agent").fold(builder, |builder, name| builder.header(header::VARY, name.as_str()));
 
-        self.deps.log.debug("site_link_preview", fields! { "hostname" => origin.hostname.as_str(), "path" => path, "key" => entity.key() });
+        self.deps.log.debug("site_link_preview", fields! { "hostname" => origin.hostname.as_str(), "path" => path });
 
         if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
             return Some(builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response"));
@@ -554,7 +538,7 @@ impl SiteServer {
         if !site.host.host.link_previews {
             return not_found();
         }
-        let Some(entity) = Entity::from_path(page) else { return not_found() };
+        let Some(nostr) = NostrPage::from_path(page) else { return not_found() };
         let Some(script) = self.deps.scripts.for_build(build_id).await? else { return not_found() };
         let previews = &self.deps.link_previews;
 
@@ -566,15 +550,23 @@ impl SiteServer {
         }
 
         let url = page_url(&format!("{}://{}", origin.scheme, origin.hostname), page);
-        let page = Arc::new(ScriptPage { script, page: script_page(request, &url), entity });
-        let Some(card) = previews.scripted(page.clone(), IMAGE_WAIT).await else { return busy() };
-        let Some(version) = card.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
+        let page = Arc::new(ScriptPage { script, page: script_page(request, &url), nostr });
+        let preview = match previews.preview(page.clone(), IMAGE_WAIT).await {
+            Answer::Preview(preview) => preview,
+            Answer::Nothing => return not_found(),
+            Answer::Unanswered => return busy(),
+        };
+        let Some(version) = preview.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
         if let Some(image) = previews.image(&version, IMAGE_WAIT).await {
             return Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version)));
         }
         // Drawn once and let go since, or never finished: draw it again.
-        let Some(card) = previews.redraw(page, IMAGE_WAIT).await else { return busy() };
-        let Some(version) = card.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
+        let preview = match previews.redraw(page, IMAGE_WAIT).await {
+            Answer::Preview(preview) => preview,
+            Answer::Nothing => return not_found(),
+            Answer::Unanswered => return busy(),
+        };
+        let Some(version) = preview.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
         match previews.image(&version, IMAGE_WAIT).await {
             Some(image) => Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version))),
             None => not_found(),
@@ -699,7 +691,7 @@ impl SiteServer {
 }
 
 /// A page's URL, as its preview names it: no query, no trailing slash.
-fn page_url(origin: &str, path: &str) -> String {
+pub fn page_url(origin: &str, path: &str) -> String {
     format!("{origin}{}", path.strip_suffix('/').filter(|p| !p.is_empty()).unwrap_or(path))
 }
 

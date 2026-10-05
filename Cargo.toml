@@ -45,9 +45,6 @@ lru = "0.12"
 maxminddb = { version = "0.26", features = ["mmap"] }
 memmap2 = "0.9"
 parking_lot = "0.12"
-# Articles, rendered for crawlers: the HTML writer, without the command-line
-# tool's dependencies.
-pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rand = "0.8"
 # The script a site publishes to draw its own link previews: QuickJS, with a
 # memory limit and an interrupt for its deadline.

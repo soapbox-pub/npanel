@@ -22,7 +22,7 @@ use crate::auth::sign_nip98;
 use crate::blobs::BlobStore;
 use crate::db::Db;
 use crate::deploy::{Deployer, DeployerDeps, Deployments};
-use crate::link_previews::fetch::{EventSource, Want};
+use crate::link_previews::relays::EventSource;
 use crate::link_previews::{LinkPreviews, LinkPreviewsConfig};
 use crate::log::{LogLevel, Logger};
 use crate::nostr::pool::Filter;
@@ -86,15 +86,6 @@ struct FakeEvents {
 }
 
 impl EventSource for FakeEvents {
-    fn get(&self, want: Want, _: Vec<String>) -> BoxFuture<'_, Option<Event>> {
-        Box::pin(async move {
-            if self.hang.load(std::sync::atomic::Ordering::SeqCst) {
-                std::future::pending::<()>().await;
-            }
-            self.events.lock().iter().filter(|e| want.matches(e)).max_by_key(|e| e.created_at).cloned()
-        })
-    }
-
     fn query(&self, filters: Vec<Filter>, _: Vec<String>) -> BoxFuture<'_, Vec<Event>> {
         Box::pin(async move {
             if self.hang.load(std::sync::atomic::Ordering::SeqCst) {
@@ -184,11 +175,11 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     ));
     let events = Arc::new(FakeEvents::default());
     let link_previews = Arc::new(LinkPreviews::start(
-        db.clone(),
         settings.clone(),
         log,
         LinkPreviewsConfig { data_dir: dir.path().to_path_buf(), source: Some(events.clone()) },
     ));
+    let scripts = Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone()));
     let site_csp = Arc::new(crate::site_csp::SiteCsp::new(db.clone(), blobs.clone(), log));
     let site = Arc::new(SiteServer::new(SiteServerDeps {
         db: db.clone(),
@@ -197,7 +188,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
         link_previews: link_previews.clone(),
-        scripts: Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone())),
+        scripts: scripts.clone(),
         log,
     }));
     let deployments: Arc<dyn Deployments> = Arc::new(deployer.clone());
@@ -229,6 +220,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         site_csp,
         previews: Arc::new(crate::site_preview::SitePreviews::new(blobs.clone())),
         link_previews,
+        scripts,
         serve_cache,
         last_prune,
         dashboard_host: "panel.example.com".into(),
@@ -590,153 +582,13 @@ async fn a_site_is_served_at_its_onion_and_only_there() {
     gw.deployer.stop().await;
 }
 
-/// A crawler asking for a page whose path names a Nostr event gets the
-/// site's page about that event; everyone else gets the page as published.
-#[tokio::test(flavor = "multi_thread")]
-async fn crawlers_get_a_preview_of_the_event_a_path_names() {
-    let page = r#"<!doctype html><html><head><title>Ditto — Social</title><meta property="og:title" content="Ditto"></head><body><div id="root"></div></body></html>"#;
-    let server = blossom([(sha(page.as_bytes()), page.as_bytes().to_vec())].into()).await;
-    let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, vec![vec!["path".into(), "/index.html".into(), sha(page.as_bytes())]], "");
-    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
-    let gw = gateway(nostr).await;
-    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
-    let host = serde_json::json!({ "hostname": "social.example.com", "address": npub, "spa": true, "link_previews": true });
-    let (status, body) = gw.api("POST", "/api/hosts", Some(host)).await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["host"]["link_previews"], true);
-    eventually("the site going live", async || gw.request("GET", "social.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
-
-    let note = Event::sign(AUTHOR, crate::util::now() - 30, 1, vec![], "Hello from <Nostr>");
-    let profile = Event::sign(AUTHOR, crate::util::now() - 30, 0, vec![], r#"{"name":"Author"}"#);
-    gw.events.events.lock().extend([note.clone(), profile]);
-    let path = format!("/{}", crate::nostr::nip19::nevent_encode(&note.id, &[], Some(&note.pubkey), None));
-    let bot = ("user-agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
-    let browser = ("user-agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
-    let varies = |headers: &http::HeaderMap| headers.get_all("vary").iter().any(|v| v == "user-agent");
-
-    // A browser gets the app, told that crawlers get something else.
-    let (status, headers, body) = gw.request("GET", "social.example.com", &path, &[browser], None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, page.as_bytes());
-    assert!(varies(&headers));
-
-    let (status, headers, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
-    let body = String::from_utf8(body).unwrap();
-    assert_eq!(status, StatusCode::OK);
-    assert!(varies(&headers));
-    assert_eq!(headers["content-type"], "text/html; charset=utf-8");
-    assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);
-    assert!(body.contains("<title>Author on Ditto</title>"), "{body}");
-    assert!(body.contains(r#"<meta property="og:description" content="Hello from &lt;Nostr&gt;">"#), "{body}");
-    assert!(body.contains(&format!(r#"<link rel="canonical" href="https://social.example.com{path}">"#)), "{body}");
-    assert!(body.contains("<p>Hello from &lt;Nostr&gt;</p>"), "{body}");
-    assert!(!body.contains(r#"<meta property="og:title" content="Ditto">"#), "{body}");
-
-    let etag = headers["etag"].to_str().unwrap().to_string();
-    let (status, ..) = gw.request("GET", "social.example.com", &path, &[bot, ("if-none-match", &etag)], None).await;
-    assert_eq!(status, StatusCode::NOT_MODIFIED);
-
-    // A path that names nothing is the page as published, for anyone.
-    let (_, headers, body) = gw.request("GET", "social.example.com", "/about", &[bot], None).await;
-    assert_eq!(body, page.as_bytes());
-    assert!(!varies(&headers));
-
-    // So is one naming an event nobody has.
-    let missing = format!("/{}", crate::nostr::nip19::note_encode(&"c".repeat(64)));
-    let (status, _, body) = gw.request("GET", "social.example.com", &missing, &[bot], None).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
-
-    // A repost is the post it carries, under its own author's name.
-    let original = Event::sign(ADMIN, crate::util::now() - 60, 1, vec![], "Worth sharing");
-    let original_author = Event::sign(ADMIN, crate::util::now() - 60, 0, vec![], r#"{"name":"Original"}"#);
-    let repost = Event::sign(AUTHOR, crate::util::now() - 30, 6, vec![vec!["e".into(), original.id.clone()]], &serde_json::to_string(&original).unwrap());
-    gw.events.events.lock().extend([repost.clone(), original_author]);
-    let reposted = format!("/{}", crate::nostr::nip19::nevent_encode(&repost.id, &[], Some(&repost.pubkey), None));
-    let (_, _, body) = gw.request("GET", "social.example.com", &reposted, &[bot], None).await;
-    let body = String::from_utf8(body).unwrap();
-    assert!(body.contains("<title>Original on Ditto</title>"), "{body}");
-    assert!(body.contains(r#"<meta property="og:description" content="Worth sharing">"#), "{body}");
-
-    // An event of a kind with no preview is the page as published. One a
-    // path names the kind of is that without a lookup.
-    let custom = Event::sign(AUTHOR, crate::util::now() - 30, 1337, vec![vec!["alt".into(), "Something new".into()]], "Something new");
-    gw.events.events.lock().push(custom.clone());
-    let unknown = format!("/{}", crate::nostr::nip19::note_encode(&custom.id));
-    let (status, headers, body) = gw.request("GET", "social.example.com", &unknown, &[bot], None).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
-    assert!(varies(&headers));
-    let (_, before) = gw.api("GET", "/api/link-previews", None).await;
-    let named = format!("/{}", crate::nostr::nip19::naddr_encode(&custom.pubkey, 31337, "x", &[]));
-    let (status, headers, body) = gw.request("GET", "social.example.com", &named, &[bot], None).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
-    assert!(!varies(&headers));
-    let (_, after) = gw.api("GET", "/api/link-previews", None).await;
-    assert_eq!(before["stats"]["lookups"], after["stats"]["lookups"]);
-
-    let (status, previews) = gw.api("GET", "/api/link-previews", None).await;
-    assert_eq!(status, StatusCode::OK, "{previews}");
-    assert_eq!(
-        (previews["found"].as_i64(), previews["unsupported"].as_i64(), previews["not_found"].as_i64()),
-        (Some(2), Some(1), Some(1)),
-        "{previews}"
-    );
-    assert!(previews["bytes"].as_u64().unwrap() > 0);
-    assert!(previews["stats"]["hits"].as_u64().unwrap() >= 1, "{previews}");
-
-    // An admin can fetch one again, by any name for it.
-    let edited = Event::sign(AUTHOR, crate::util::now() - 30, 0, vec![], r#"{"name":"Renamed"}"#);
-    gw.events.events.lock().push(edited);
-    let (status, refreshed) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "entity": format!("https://elsewhere.example{path}") }))).await;
-    assert_eq!(status, StatusCode::OK, "{refreshed}");
-    assert_eq!(refreshed["key"], format!("e:{}", note.id));
-    assert_eq!(refreshed["card"]["author"]["name"], "Renamed");
-    let (_, _, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
-    assert!(String::from_utf8(body).unwrap().contains("<title>Renamed on Ditto</title>"));
-    let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "entity": "nonsense" }))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
-    let (status, refreshed) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "entity": &unknown[1..] }))).await;
-    assert_eq!(status, StatusCode::OK, "{refreshed}");
-    assert_eq!((refreshed["card"].is_null(), refreshed["unsupported"].as_i64()), (true, Some(1337)), "{refreshed}");
-
-    let (status, cleared) = gw.api("DELETE", "/api/link-previews", None).await;
-    assert_eq!((status, cleared["cleared"].as_u64()), (StatusCode::OK, Some(4)), "{cleared}");
-    let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
-    assert_eq!((previews["found"].as_i64(), previews["unsupported"].as_i64(), previews["not_found"].as_i64()), (Some(0), Some(0), Some(0)), "{previews}");
-
-    // Relays that never answer cost a crawler a short wait and the page as
-    // published, and a lookup past the limit costs it no wait at all.
-    let (status, _) = gw.api("PUT", "/api/settings", Some(serde_json::json!({ "link_preview_concurrency": 1 }))).await;
-    assert_eq!(status, StatusCode::OK);
-    gw.events.hang.store(true, std::sync::atomic::Ordering::SeqCst);
-    let (status, _, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
-    let started = std::time::Instant::now();
-    let other = format!("/{}", crate::nostr::nip19::note_encode(&"d".repeat(64)));
-    let (status, _, body) = gw.request("GET", "social.example.com", &other, &[bot], None).await;
-    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
-    assert!(started.elapsed() < Duration::from_secs(1));
-    let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
-    assert_eq!((previews["stats"]["timeouts"].as_u64(), previews["stats"]["busy"].as_u64()), (Some(1), Some(1)), "{previews}");
-
-    // A site with previews off is the page as published, crawler or not.
-    let (status, _) = gw.api("PATCH", "/api/hosts/social.example.com", Some(serde_json::json!({ "link_previews": false }))).await;
-    assert_eq!(status, StatusCode::OK);
-    let (_, headers, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
-    assert_eq!(body, page.as_bytes());
-    assert!(!varies(&headers));
-
-    let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
-    let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
-    assert!(actions.contains(&"link_preview.refresh") && actions.contains(&"link_preview.clear"), "{actions:?}");
-
-    gw.deployer.stop().await;
-}
-
-/// A site that publishes its own preview script gets previews of its own
-/// design, with images it draws, from exactly the events it asks for.
+/// A site with link previews on that publishes a preview script gets
+/// previews of its own design, with images it draws, from exactly the events
+/// it asks for; everyone else, and every page it has nothing for, gets the
+/// page as published.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sites_script_draws_its_previews() {
-    let page = r#"<!doctype html><html><head><title>Ditto — Social</title></head><body><div id="root"></div></body></html>"#;
+    let page = r#"<!doctype html><html><head><title>Ditto — Social</title><meta property="og:title" content="Ditto"></head><body><div id="root"></div></body></html>"#;
     let author = crate::nostr::event::public_key(AUTHOR);
     let npub = crate::nostr::nip19::npub_encode(&author);
     let script = format!(
@@ -746,10 +598,18 @@ export default {{
   async preview(request, {{ nostr }}) {{
     if (new URL(request.url).pathname !== "/{npub}") return null;
     const [profile] = await nostr.query([{{ kinds: [0], authors: ["{author}"], limit: 1 }}]);
+    if (!profile) return null;
     const [theme] = await nostr.query([{{ kinds: [16767], authors: ["{author}"], limit: 1 }}]);
     const name = JSON.parse(profile.content).name;
     const title = theme?.tags.find(([n]) => n === "title")?.[1] ?? "none";
-    return {{ title: `${{name}} on Ditto`, description: `Theme: ${{title}}`, body: `<p onclick="steal()">${{name}}</p>`, image: draw(theme) }};
+    return {{
+      title: `${{name}} on Ditto`,
+      description: `Theme: ${{title}}`,
+      body: `<article><p onclick="steal()">${{name}}</p></article>`,
+      type: "profile",
+      jsonLd: {{ "@type": "ProfilePage", name: `</script>${{name}}` }},
+      image: draw(theme),
+    }};
   }},
 }};
 
@@ -777,6 +637,7 @@ async function draw(theme) {{
     let host = serde_json::json!({ "hostname": "social.example.com", "address": npub, "spa": true, "link_previews": true });
     let (status, body) = gw.api("POST", "/api/hosts", Some(host)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["host"]["link_previews"], true);
     eventually("the site going live", async || gw.request("GET", "social.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
 
     // The script is npanel's to run, and nobody's to fetch.
@@ -805,21 +666,40 @@ async function draw(theme) {{
         "",
     );
     let profile = Event::sign(AUTHOR, crate::util::now() - 30, 0, vec![], r#"{"name":"Author"}"#);
-    let note = Event::sign(AUTHOR, crate::util::now() - 30, 1, vec![], "Just a note");
-    gw.events.events.lock().extend([theme, profile, note.clone()]);
+    gw.events.events.lock().extend([theme, profile]);
     let bot = ("user-agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)");
+    let browser = ("user-agent", "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
+    let varies = |headers: &http::HeaderMap| headers.get_all("vary").iter().any(|v| v == "user-agent");
+    let path = format!("/{npub}");
 
-    let (status, _, body) = gw.request("GET", "social.example.com", &format!("/{npub}"), &[bot], None).await;
+    // A browser gets the app, told that crawlers get something else.
+    let (status, headers, body) = gw.request("GET", "social.example.com", &path, &[browser], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(varies(&headers));
+
+    let (status, headers, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
     let body = String::from_utf8(body).unwrap();
     assert_eq!(status, StatusCode::OK);
+    assert!(varies(&headers));
+    assert_eq!(headers["content-type"], "text/html; charset=utf-8");
+    assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);
     assert!(body.contains("<title>Author on Ditto</title>"), "{body}");
+    assert!(body.contains(r#"<meta property="og:type" content="profile">"#), "{body}");
     assert!(body.contains(r#"<meta property="og:description" content="Theme: Midnight">"#), "{body}");
     assert!(body.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "{body}");
-    // What the script writes is cleaned of anything that runs.
-    assert!(body.contains("<p>Author</p>") && !body.contains("steal()"), "{body}");
+    assert!(body.contains(&format!(r#"<link rel="canonical" href="https://social.example.com{path}">"#)), "{body}");
+    assert!(!body.contains(r#"<meta property="og:title" content="Ditto">"#), "{body}");
+    // What the script writes is cleaned of anything that runs, and can't
+    // close the element it's in.
+    assert!(body.contains("<article><p>Author</p></article>") && !body.contains("steal()"), "{body}");
+    assert!(body.contains("\\u003c/script\\u003eAuthor"), "{body}");
     let image = body.split(r#"<meta property="og:image" content=""#).nth(1).unwrap().split('"').next().unwrap();
     let image_path = image.strip_prefix("https://social.example.com").unwrap().to_string();
     assert!(image_path.starts_with(&format!("/_npanel/preview/{npub}?v=")), "{image}");
+
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    let (status, ..) = gw.request("GET", "social.example.com", &path, &[bot, ("if-none-match", &etag)], None).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
 
     // The image is for anyone, and lasts as long as its version does.
     let (status, headers, jpeg) = gw.request("GET", "social.example.com", &image_path, &[], None).await;
@@ -834,17 +714,103 @@ async function draw(theme) {{
     let (status, headers, _) = gw.request("GET", "social.example.com", &format!("/_npanel/preview/{npub}"), &[bot], None).await;
     assert_eq!((status, headers["cache-control"].to_str().unwrap()), (StatusCode::OK, "public, max-age=300"));
 
-    // A page the script has nothing for gets npanel's own card.
-    let note_path = format!("/{}", crate::nostr::nip19::note_encode(&note.id));
-    let (_, _, body) = gw.request("GET", "social.example.com", &note_path, &[bot], None).await;
-    let body = String::from_utf8(body).unwrap();
-    assert!(body.contains(r#"<meta property="og:description" content="Just a note">"#), "{body}");
-    assert_eq!(gw.request("GET", "social.example.com", &format!("/_npanel/preview{note_path}"), &[], None).await.0, StatusCode::NOT_FOUND);
+    // A path that names nothing on Nostr is the page as published, for anyone.
+    let (_, headers, body) = gw.request("GET", "social.example.com", "/about", &[bot], None).await;
+    assert_eq!(body, page.as_bytes());
+    assert!(!varies(&headers));
 
-    // With previews off, there is no image either.
+    // So is a page the script has nothing for, and it has no image.
+    let note = format!("/{}", crate::nostr::nip19::note_encode(&"c".repeat(64)));
+    let (status, headers, body) = gw.request("GET", "social.example.com", &note, &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(varies(&headers));
+    assert_eq!(gw.request("GET", "social.example.com", &format!("/_npanel/preview{note}"), &[], None).await.0, StatusCode::NOT_FOUND);
+
+    let (status, previews) = gw.api("GET", "/api/link-previews", None).await;
+    assert_eq!(status, StatusCode::OK, "{previews}");
+    assert_eq!((previews["found"].as_i64(), previews["empty"].as_i64()), (Some(1), Some(1)), "{previews}");
+    assert!(previews["bytes"].as_u64().unwrap() > 0);
+    assert!(previews["stats"]["hits"].as_u64().unwrap() >= 1, "{previews}");
+
+    // An admin can run a page's script again, by its URL.
+    let renamed = Event::sign(AUTHOR, crate::util::now() - 20, 0, vec![], r#"{"name":"Renamed"}"#);
+    gw.events.events.lock().push(renamed);
+    let refresh = |url: &str| serde_json::json!({ "url": url });
+    let (status, refreshed) = gw.api("POST", "/api/link-previews/refresh", Some(refresh(&format!("https://social.example.com{path}/")))).await;
+    assert_eq!(status, StatusCode::OK, "{refreshed}");
+    assert_eq!(refreshed["url"], format!("https://social.example.com{path}"));
+    assert_eq!(refreshed["preview"]["title"], "Renamed on Ditto");
+    let (_, _, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
+    assert!(String::from_utf8(body).unwrap().contains("<title>Renamed on Ditto</title>"));
+    let (status, refreshed) = gw.api("POST", "/api/link-previews/refresh", Some(refresh(&format!("https://social.example.com{note}")))).await;
+    assert_eq!((status, refreshed["preview"].is_null()), (StatusCode::OK, true), "{refreshed}");
+    for (url, error) in [
+        ("nonsense", "Paste the URL"),
+        ("https://social.example.com/about", "npub"),
+        (&format!("https://elsewhere.example.com{path}"), "No site"),
+    ] {
+        let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(refresh(url))).await;
+        assert!(status.is_client_error() && refused["error"].as_str().unwrap().contains(error), "{url}: {refused}");
+    }
+
+    let (status, cleared) = gw.api("DELETE", "/api/link-previews", None).await;
+    assert_eq!((status, cleared["cleared"].as_u64()), (StatusCode::OK, Some(2)), "{cleared}");
+    let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
+    assert_eq!((previews["found"].as_i64(), previews["empty"].as_i64()), (Some(0), Some(0)), "{previews}");
+
+    // Relays that never answer cost a crawler a short wait and the page as
+    // published, and a run past the limit costs it no wait at all.
+    let (status, _) = gw.api("PUT", "/api/settings", Some(serde_json::json!({ "link_preview_concurrency": 1 }))).await;
+    assert_eq!(status, StatusCode::OK);
+    gw.events.hang.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, _, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    let started = std::time::Instant::now();
+    let other = format!("/{}", crate::nostr::nip19::note_encode(&"d".repeat(64)));
+    let (status, _, body) = gw.request("GET", "social.example.com", &other, &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
+    assert_eq!((previews["stats"]["timeouts"].as_u64(), previews["stats"]["busy"].as_u64()), (Some(1), Some(1)), "{previews}");
+    gw.events.hang.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // A site with previews off is the page as published, crawler or not, and
+    // has no images.
     let (status, _) = gw.api("PATCH", "/api/hosts/social.example.com", Some(serde_json::json!({ "link_previews": false }))).await;
     assert_eq!(status, StatusCode::OK);
+    let (_, headers, body) = gw.request("GET", "social.example.com", &path, &[bot], None).await;
+    assert_eq!(body, page.as_bytes());
+    assert!(!varies(&headers));
     assert_eq!(gw.request("GET", "social.example.com", &image_path, &[], None).await.0, StatusCode::NOT_FOUND);
+
+    let (_, audit) = gw.api("GET", "/api/audit-log", None).await;
+    let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
+    assert!(actions.contains(&"link_preview.refresh") && actions.contains(&"link_preview.clear"), "{actions:?}");
+
+    gw.deployer.stop().await;
+}
+
+/// A site without a script gets no previews, link previews on or not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_without_a_script_has_no_previews() {
+    let page = r#"<!doctype html><html><head><title>Docs</title></head><body></body></html>"#;
+    let server = blossom([(sha(page.as_bytes()), page.as_bytes().to_vec())].into()).await;
+    let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, vec![vec!["path".into(), "/index.html".into(), sha(page.as_bytes())]], "");
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let host = serde_json::json!({ "hostname": "docs.example.com", "address": npub, "spa": true, "link_previews": true });
+    assert_eq!(gw.api("POST", "/api/hosts", Some(host)).await.0, StatusCode::CREATED);
+    eventually("the site going live", async || gw.request("GET", "docs.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
+
+    let bot = ("user-agent", "Twitterbot/1.0");
+    let (status, headers, body) = gw.request("GET", "docs.example.com", &format!("/{npub}"), &[bot], None).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, page.as_bytes()));
+    assert!(!headers.get_all("vary").iter().any(|v| v == "user-agent"));
+    let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
+    assert_eq!(previews["stats"]["lookups"], 0, "{previews}");
+    let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "url": format!("https://docs.example.com/{npub}") }))).await;
+    assert!(status.is_client_error() && refused["error"].as_str().unwrap().contains("preview.js"), "{refused}");
 
     gw.deployer.stop().await;
 }

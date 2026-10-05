@@ -120,8 +120,8 @@ Default `./data`, resolved to an absolute path. Contains:
 - `analytics.sqlite3` — visits and pageviews, for the sites that count them
 - `geo/` — the location database, downloaded once a site counts visits
 - `tor/` — Tor's directory cache and state, once Tor is turned on
-- `previews.sqlite3` — link previews of Nostr events, a cache that can be
-  deleted at any time
+- `previews.sqlite3` and `preview-images/` — link previews sites' scripts made,
+  and the images they drew, a cache that can be deleted at any time
 
 Each is created when first needed. This directory is the entire state of the
 system; see [deployment](deployment.md#backups) for backups.
@@ -469,33 +469,33 @@ saved.
 
 ### `link_preview_ttl`
 
-Default `3600`. Seconds a preview is served before it is looked up again. A
-stale preview is still served while the new one is fetched behind it, so this
-decides how soon an edited post shows, not how often a crawler waits. A lookup
-that found nothing is believed for ten minutes at most, since nothing found may
-only mean the relays were slow.
+Default `3600`. Seconds a preview is served before its site's script runs for
+it again. A stale preview is still served while the new one is made behind it,
+so this decides how soon an edited post shows, not how often a crawler waits.
+A script having nothing for a page is believed for ten minutes at most, since
+it may only mean the relays were slow.
 
 ### `link_preview_concurrency`
 
 Default `256`. How many lookups may run at once. Past it, a crawler that asks
 for a preview nobody has cached gets the page as published straight away rather
-than waiting in line. A lookup spends nearly all its time waiting on relays, so
-this bounds open subscriptions rather than CPU: lookups run on a thread of their
-own, and never on the ones serving sites.
+than waiting in line. Lookups run on a thread of their own, and never on the
+ones serving sites; the scripts themselves run as many at once as there are
+cores, and the rest wait their turn.
 
 ### `link_preview_misses_per_minute`
 
-Default `600`. How many lookups may go to relays in a minute. Previews already
-cached don't count, stale ones included, so this is the most that someone
-requesting made-up event ids can make npanel ask relays for — which matters
-because those are the relays its deploys depend on too. A lookup over it is
-answered from what is cached, if anything.
+Default `600`. How many times a minute sites' preview scripts may run.
+Previews already cached don't count, stale ones included, so this is the most
+that someone requesting made-up event ids can make the scripts ask relays and
+fetch for — which matters because those are the relays npanel's deploys
+depend on too. A lookup over it is answered from what is cached, if anything.
 
 ### `link_preview_max_entries`
 
 Default `100000`. How many previews are kept on disk, in
-`DATA_DIR/previews.sqlite3`. Past it, the least recently fetched go first. A
-preview is a few kilobytes, an article's up to a few hundred.
+`DATA_DIR/previews.sqlite3`. Past it, the least recently made go first. A
+preview is a few kilobytes, one with an article up to a few hundred.
 
 ## Not a setting: the Content Security Policy
 

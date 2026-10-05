@@ -417,19 +417,20 @@ directives govern loading a script and `fetch`ing — and the header follows
 the page. A site that publishes files under `/_npanel/` has
 `/_npanel/script.js` shadowed while this is on.
 
-`link_previews` gives crawlers a preview of the Nostr event a page's path
-names, and defaults to `false`. It is for sites that show Nostr content under
+`link_previews` runs the site's preview script, `/.npanel/preview.js`, for
+crawlers, and defaults to `false`. It is for sites that show Nostr content under
 the paths Nostr web clients use — `/<npub>`, `/<nprofile>`, `/<note>`,
 `/<nevent>`, `/<naddr>`, and `/<name@domain>`, each with or without an `@` in
 front. A `GET` from a User-Agent matching
 [`link_preview_crawler_pattern`](configuration.md#link_preview_crawler_pattern),
 for one of those paths, where the site's answer is an HTML page with a `200`,
-gets that page with the event's title, description, image and video in its
-head — as Open Graph, Twitter and schema.org JSON-LD — and the event itself,
-escaped and rendered, as an `<article>` at the top of its body. Everyone else
-gets the page as published, and responses on those paths carry
-`Vary: User-Agent`. It is off by default because it changes what a page says
-depending on who asks, and only a site that routes those paths means them. See
+gets that page with what the script made of it: its title, description, image
+and the rest in its head — as Open Graph, Twitter and schema.org JSON-LD — and
+its article at the top of its body. Everyone else, and a page the script has
+nothing for, gets the page as published; on a site with a script, responses on
+those paths carry `Vary: User-Agent`. A site with no script gets nothing from
+it. It is off by default because it changes what a page says depending on who
+asks, and runs code the site wrote. See
 [link previews](architecture.md#link-previews).
 
 `hostname` is validated exactly as on create: `409` if it's already configured
@@ -841,67 +842,60 @@ Newest first. `limit` is clamped to 1–500. Actions are `host.create`,
 ```json
 {
   "found": 1520,
-  "unsupported": 7,
-  "not_found": 41,
+  "empty": 41,
   "bytes": 9437184,
   "in_memory": 830,
   "running": 2,
-  "stats": { "hits": 20410, "lookups": 1930, "fetches": 1602, "busy": 0, "timeouts": 12, "over_budget": 0 }
+  "stats": { "hits": 20410, "lookups": 1930, "runs": 1602, "failures": 3, "busy": 0, "timeouts": 12, "over_budget": 0 }
 }
 ```
 
-What the cache holds: entities with a preview, events of a kind with no
-preview, entities a lookup found nothing for (remembered for ten minutes at
-most), and what `previews.sqlite3` takes up
+What the cache holds: pages with a preview, pages a site's script had nothing
+for (remembered for ten minutes at most), and what `previews.sqlite3` takes up
 on disk. `stats` count since the server started: answers from memory, lookups
-handed to the previews runtime, lookups that went to relays, pages sent without
-a preview because as many lookups were running as may (`busy`) or the lookup
-took too long (`timeouts`), and lookups that didn't go to relays because the
-minute's were spent. `503` while the previews runtime is starting.
+handed to the previews runtime, lookups that ran a site's script, runs whose
+script threw or ran out of time, pages sent without a preview because as many
+lookups were running as may (`busy`) or the lookup took too long (`timeouts`),
+and lookups that didn't run a script because the minute's runs were spent.
+`503` while the previews runtime is starting.
 
 ### `POST /api/link-previews/refresh`
 
 ```json
-{ "entity": "nevent1..." }
+{ "url": "https://ditto.pub/npub1..." }
 ```
 
-Fetches one entity's preview again, whatever is cached, and keeps what it
-finds. `entity` is anything that names one: an npub, nprofile, note, nevent,
-naddr, or NIP-05 name, as a `nostr:` URI or not, or the URL of a page whose last
-path segment is one. Not held to the concurrency limit or the relay budget,
+Runs a page's preview script again, whatever is cached, waits for the image it
+draws, and keeps what it made. The page is asked for as a crawler sending no
+headers would ask for it. Not held to the concurrency limit or the run budget,
 which are for crawlers.
 
 ```json
 {
-  "key": "e:<hex>",
-  "entity": "note1...",
-  "card": {
-    "kind": "post",
-    "event_kind": 1,
-    "title": null,
-    "description": "Hello from Nostr",
-    "image": "https://cdn.example.com/cat.png",
+  "url": "https://ditto.pub/npub1...",
+  "preview": {
+    "title": "Alex on Ditto",
+    "description": "Builds things.",
+    "image": "https://ditto.pub/_npanel/preview/npub1...?v=...",
+    "type": "profile",
     "video": null,
     "audio": null,
-    "author": { "pubkey": "<hex>", "npub": "npub1...", "name": "Alex", "picture": "https://..." },
-    "published": 1754000000
-  },
-  "unsupported": null
+    "published": null,
+    "article": true
+  }
 }
 ```
 
-`card` is `null` when nothing was found, and when the event is of a kind with no
-preview; `unsupported` is then that kind. `kind` is `profile`, `article`,
-`post`, `video`, or `audio`; `event_kind` is the event's Nostr kind, `0` for a
-profile. `author` is whoever the event is from: for a repost, the reposted
-event's author, and for a zap, its sender. `400` for an entity that names
-nothing, or an naddr (or an nevent that says its kind) of a kind with no
-preview; `503` if the relays take longer than thirty seconds.
+`preview` is `null` when the script had nothing for the page. `400` for a URL
+that isn't a page about something on Nostr on one of the gateway's sites, for a
+site with link previews off or no script, and for a script that throws, saying
+what it threw; `503` if it takes longer than thirty seconds.
 
 ### `DELETE /api/link-previews`
 
-`{ "cleared": 1561 }`. Forgets every preview, in memory and on disk, and gives
-the space back. Each is looked up again the next time a crawler asks.
+`{ "cleared": 1561 }`. Forgets every preview and every image drawn, in memory
+and on disk, and gives the space back. Each is made again the next time a
+crawler asks.
 
 ## Status
 

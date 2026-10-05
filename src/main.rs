@@ -133,12 +133,12 @@ async fn run(config: Config, log: Logger) -> Result<()> {
 
     // Link previews for crawlers, looked up on a thread of their own.
     let link_previews = Arc::new(link_previews::LinkPreviews::start(
-        db.clone(),
         settings.clone(),
         log,
         link_previews::LinkPreviewsConfig { data_dir: config.data_dir.clone(), source: None },
     ));
 
+    let scripts = Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone()));
     let site_csp = Arc::new(site_csp::SiteCsp::new(db.clone(), blobs.clone(), log));
     let previews = Arc::new(site_preview::SitePreviews::new(blobs.clone()));
     let site = Arc::new(SiteServer::new(SiteServerDeps {
@@ -148,7 +148,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
         link_previews: link_previews.clone(),
-        scripts: Arc::new(crate::link_previews::script::Scripts::new(db.clone(), blobs.clone())),
+        scripts: scripts.clone(),
         log,
     }));
 
@@ -205,6 +205,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         site_csp,
         previews,
         link_previews: link_previews.clone(),
+        scripts,
         serve_cache,
         last_prune,
         dashboard_host: config.dashboard_host.clone(),

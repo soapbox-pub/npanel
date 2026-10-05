@@ -109,16 +109,16 @@ settings! {
     analytics_timezone: String,
     /// Which User-Agents get a link preview, as a case-insensitive pattern.
     link_preview_crawler_pattern: String,
-    /// Seconds a fetched link preview is served before it is fetched again.
+    /// Seconds a link preview is served before its site's script runs again.
     link_preview_ttl: i64,
     /// Link preview lookups that may run at once. Past it, a crawler gets
     /// the page as published.
     link_preview_concurrency: i64,
-    /// Link preview lookups that may go to relays in a minute. Cached
-    /// previews don't count, so this is what a stranger making up event ids
-    /// can make npanel ask relays for.
+    /// Sites' preview scripts that may run in a minute. Cached previews don't
+    /// count, so this is what a stranger making up event ids can make them
+    /// do.
     link_preview_misses_per_minute: i64,
-    /// Link previews kept on disk. The least recently fetched go first.
+    /// Link previews kept on disk. The least recently made go first.
     link_preview_max_entries: i64,
 }
 

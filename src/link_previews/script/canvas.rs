@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use crate::blobs::BlobStore;
 use crate::hash::BlobHash;
-use crate::link_previews::render::escape;
+use crate::html::escape;
 
 /// The largest canvas a script may make, a side.
 pub const MAX_CANVAS: u32 = 2400;

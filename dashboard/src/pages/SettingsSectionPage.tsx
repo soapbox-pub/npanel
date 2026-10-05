@@ -435,12 +435,12 @@ export function SettingsSectionPage() {
           <LinkPreviewCache />
           <RefreshLinkPreview />
           <Section
-            title="Lookups"
-            footer="Previews are looked up on a thread of their own, so a crawl never slows a site down. When a lookup can't start or takes too long, the crawler gets the page as it was published."
+            title="Scripts"
+            footer="Sites' preview scripts run on a thread of their own, so a crawl never slows a site down. When a script can't start or takes too long, the crawler gets the page as it was published."
           >
             <NumberRow
               id="link-preview-ttl"
-              label="Look up again after"
+              label="Run again after"
               unit="seconds"
               min={60}
               value={linkPreviewTtl}
@@ -448,7 +448,7 @@ export function SettingsSectionPage() {
             />
             <NumberRow
               id="link-preview-concurrency"
-              label="Lookups at once"
+              label="Pages looked up at once"
               min={1}
               max={4096}
               value={linkPreviewConcurrency}
@@ -456,8 +456,8 @@ export function SettingsSectionPage() {
             />
             <NumberRow
               id="link-preview-misses"
-              label="Relay lookups"
-              description="Previews already cached don't count. This caps what someone making up links can make npanel ask relays for."
+              label="Script runs"
+              description="Previews already cached don't count. This caps what someone making up links can make sites' scripts do."
               unit="a minute"
               min={1}
               value={linkPreviewMissesPerMinute}
@@ -466,7 +466,7 @@ export function SettingsSectionPage() {
             <NumberRow
               id="link-preview-max-entries"
               label="Previews kept"
-              description="The least recently looked up go first."
+              description="The least recently made go first."
               min={100}
               value={linkPreviewMaxEntries}
               onChange={(value) => setDraft({ ...draft, linkPreviewMaxEntries: value })}
@@ -528,7 +528,7 @@ function LinkPreviewCache() {
   const clearAll = async () => {
     try {
       const { cleared } = await clear.mutateAsync();
-      toast({ title: 'Link previews cleared', description: `${cleared} ${cleared === 1 ? 'preview' : 'previews'} will be looked up again.` });
+      toast({ title: 'Link previews cleared', description: `${cleared} ${cleared === 1 ? 'preview' : 'previews'} will be made again.` });
     } catch (error) {
       toast({
         title: "Couldn't clear link previews",
@@ -541,7 +541,7 @@ function LinkPreviewCache() {
   return (
     <Section
       title="Cache"
-      footer="Turn link previews on for each site under its settings. Counts are since the server started."
+      footer="A site has link previews when they're on in its settings and it publishes a preview script, /.npanel/preview.js. Counts are since the server started."
       action={
         <AlertDialog>
           <AlertDialogTrigger asChild>
@@ -553,7 +553,7 @@ function LinkPreviewCache() {
             <AlertDialogHeader>
               <AlertDialogTitle>Clear every link preview?</AlertDialogTitle>
               <AlertDialogDescription>
-                Each is looked up on relays again the next time a crawler asks for it.
+                Each is made again by its site's script the next time a crawler asks for it, and each image drawn again.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -588,29 +588,29 @@ function cacheRows(status: LinkPreviewStatus): [string, string][] {
   const count = (n: number) => n.toLocaleString();
   return [
     ['Previews', count(status.found)],
-    ['Kinds with no preview', count(status.unsupported)],
-    ['Found nothing', count(status.not_found)],
+    ['Pages with nothing to preview', count(status.empty)],
     ['Disk used', formatBytes(status.bytes)],
     ['Answered from memory', count(stats.hits)],
     ['Looked up', count(stats.lookups)],
-    ['Fetched from relays', count(stats.fetches)],
+    ['Scripts run', count(stats.runs)],
+    ['Scripts failed', count(stats.failures)],
     ['Sent without a preview', count(stats.busy + stats.timeouts)],
-    ['Relay lookups held back', count(stats.over_budget)],
+    ['Script runs held back', count(stats.over_budget)],
   ];
 }
 
-/** Look one entity up again, and show what crawlers will now be given. */
+/** Run one page's preview script again, and show what crawlers will now be given. */
 function RefreshLinkPreview() {
-  const [entity, setEntity] = useState('');
+  const [url, setUrl] = useState('');
   const [result, setResult] = useState<RefreshedLinkPreview>();
   const refresh = useRefreshLinkPreview();
   const { toast } = useToast();
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!entity.trim()) return;
+    if (!url.trim()) return;
     try {
-      setResult(await refresh.mutateAsync(entity.trim()));
+      setResult(await refresh.mutateAsync(url.trim()));
     } catch (error) {
       setResult(undefined);
       toast({
@@ -624,20 +624,20 @@ function RefreshLinkPreview() {
   return (
     <Section
       title="Refresh a preview"
-      footer="When a post or profile was edited and a crawler still shows the old version. Paste an npub, a note, an naddr, a NIP-05 name, or a link to a page."
+      footer="When a post or profile was edited and a crawler still shows the old version. Paste the link to a page on one of this server's sites."
     >
       <form onSubmit={submit} className="flex gap-2 py-3 pr-4 pl-4">
         <Input
-          aria-label="What to refresh"
-          value={entity}
-          onChange={(event) => setEntity(event.target.value)}
-          placeholder="nevent1…, alex@example.com, https://…"
+          aria-label="Page to refresh"
+          value={url}
+          onChange={(event) => setUrl(event.target.value)}
+          placeholder="https://example.com/npub1…"
           autoComplete="off"
           spellCheck={false}
           className="font-mono text-sm"
         />
-        <Button type="submit" disabled={!entity.trim() || refresh.isPending} className="shrink-0">
-          {refresh.isPending ? 'Looking up…' : 'Refresh'}
+        <Button type="submit" disabled={!url.trim() || refresh.isPending} className="shrink-0">
+          {refresh.isPending ? 'Running…' : 'Refresh'}
         </Button>
       </form>
       {result && <RefreshedPreview result={result} />}
@@ -647,42 +647,22 @@ function RefreshLinkPreview() {
 
 /** A refreshed preview, drawn roughly as a chat app would unfurl it. */
 function RefreshedPreview({ result }: { result: RefreshedLinkPreview }) {
-  const { card } = result;
+  const { preview } = result;
 
-  if (result.unsupported !== null) {
-    return (
-      <Row
-        label="No preview"
-        description={`${result.entity} is a kind ${result.unsupported} event, which has no link preview. Crawlers get the page as published.`}
-      />
-    );
+  if (!preview) {
+    return <Row label="No preview" description={`The site's script had nothing for ${result.url}. Crawlers get the page as published.`} />;
   }
-
-  if (!card) {
-    return (
-      <Row label="Nothing found" description={`No relay had ${result.entity}. Crawlers get the page as published.`} />
-    );
-  }
-
-  const author = card.author.name ?? `${card.author.npub.slice(0, 12)}…`;
-  const image = card.image ?? card.author.picture;
 
   return (
     <div className="pl-4">
       <div data-row className="flex gap-3 border-t py-3 pr-4">
-        {image && (
-          <img
-            src={image}
-            alt=""
-            className={cn('shrink-0 rounded-md bg-muted object-cover', card.image ? 'h-20 w-32' : 'size-12 rounded-full')}
-            referrerPolicy="no-referrer"
-          />
+        {preview.image && (
+          <img src={preview.image} alt="" className="h-20 w-32 shrink-0 rounded-md bg-muted object-cover" referrerPolicy="no-referrer" />
         )}
         <div className="min-w-0 space-y-1">
-          <p className="text-sm font-medium break-words">{card.title ?? author}</p>
-          {card.title && <p className="text-xs text-muted-foreground">{author}</p>}
-          {card.description && <p className="line-clamp-3 text-xs text-muted-foreground break-words">{card.description}</p>}
-          <p className="font-mono text-[11px] text-muted-foreground/80 break-all">{result.entity}</p>
+          {preview.title && <p className="text-sm font-medium break-words">{preview.title}</p>}
+          {preview.description && <p className="line-clamp-3 text-xs text-muted-foreground break-words">{preview.description}</p>}
+          <p className="font-mono text-[11px] text-muted-foreground/80 break-all">{result.url}</p>
         </div>
       </div>
     </div>

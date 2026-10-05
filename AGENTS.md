@@ -36,7 +36,7 @@ src/
   tls_check.rs          certificate authorization, on its own port
   tls/                  HTTPS without a proxy: ACME certificates, renewed
   analytics/            the Plausible-compatible analytics runtime
-  link_previews/        Nostr events previewed for crawlers, on a runtime of its own
+  link_previews/        sites' preview scripts, run for crawlers on a runtime of its own
   blobs.rs              content-addressed filesystem store
   hash.rs               BlobHash, a blob's name, parsed where it enters
   sites.rs              queries over stored versions, and the deploy log

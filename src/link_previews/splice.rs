@@ -1,17 +1,13 @@
-//! A site's page made into the page about one event: the title and preview
-//! tags in its head replaced with the event's, and the event's article added
-//! at the top of its body.
+//! A site's page made into the page its preview describes: the title and
+//! preview tags in its head replaced with the preview's, and the preview's
+//! article added at the top of its body.
 //!
 //! Edited as bytes, as `inject.rs` adds scripts, so everything the site wrote
 //! that isn't replaced comes back exactly as it was.
 
-use serde_json::{json, Map, Value};
-
-use super::card::{iso_date, Card, CardKind};
-use super::render::escape;
-use crate::html::decode_attribute;
+use super::preview::{iso_date, Preview};
+use crate::html::{decode_attribute, escape};
 use crate::inject::{attributes, head_end, tags, Token};
-use crate::nostr::nip19;
 
 /// Where the page is.
 pub struct Page<'a> {
@@ -28,9 +24,9 @@ struct Site {
     image: Option<String>,
 }
 
-/// The site's page about the card's event, or `None` for a page that isn't
-/// one npanel can edit: not UTF-8, or with no head to speak of.
-pub fn splice(html: &[u8], card: &Card, page: &Page) -> Option<Vec<u8>> {
+/// The site's page as its preview describes it, or `None` for a page that
+/// isn't one npanel can edit: not UTF-8, or with no head to speak of.
+pub fn splice(html: &[u8], preview: &Preview, page: &Page) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(html).ok()?;
     let lower = html.to_ascii_lowercase();
     let tags = tags(&lower);
@@ -92,13 +88,13 @@ pub fn splice(html: &[u8], card: &Card, page: &Page) -> Option<Vec<u8>> {
     });
     site.image = site.image.and_then(|image| url::Url::parse(page.origin).ok()?.join(&image).ok()).filter(|u| matches!(u.scheme(), "https" | "http")).map(|u| u.to_string());
 
-    let head = head(card, page, &site);
+    let head = head(preview, page, &site);
     let mut edits: Vec<(usize, usize, &str)> = cut.into_iter().map(|(start, end)| (start, end, "")).collect();
     edits.push((head_at, head_at, &head));
-    edits.push((body_at, body_at, &card.body));
+    edits.push((body_at, body_at, &preview.body));
     edits.sort_by_key(|(start, end, _)| (*start, *end));
 
-    let mut out = Vec::with_capacity(html.len() + head.len() + card.body.len());
+    let mut out = Vec::with_capacity(html.len() + head.len() + preview.body.len());
     let mut at = 0;
     for (start, end, replacement) in edits {
         // A tag inside one already cut — a meta inside an unclosed title.
@@ -113,54 +109,42 @@ pub fn splice(html: &[u8], card: &Card, page: &Page) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Everything the head says about the page: its title, its description, and
-/// the Open Graph, Twitter and schema.org versions of both.
-fn head(card: &Card, page: &Page, site: &Site) -> String {
-    let author = card.author.as_ref().map(|author| author.display());
-    // A card with no author is a site's own, and wanting for a title is
-    // titled as the site.
-    let title = card.title.clone().or_else(|| match (&author, &site.name) {
-        (Some(author), Some(site)) => Some(format!("{author} on {site}")),
-        (Some(author), None) => Some(author.clone()),
-        (None, site) => site.clone(),
-    });
-    let title = title.unwrap_or_default();
-
-    // The event's own image is drawn large; an avatar standing in for one is
-    // a square, and drawn small beside the text.
-    let avatar = card.author.as_ref().and_then(|author| author.picture.as_ref());
-    let (image, large) = match (&card.image, avatar, &site.image) {
-        (Some(image), _, _) => (Some(image), true),
-        (None, Some(avatar), _) => (Some(avatar), false),
-        (None, None, image) => (image.as_ref(), true),
-    };
-    let og_type = match card.kind {
-        CardKind::Profile => "profile",
-        CardKind::Video => "video.other",
-        // A music track is a song; other audio — a podcast, a voice
-        // message — has no type of its own.
-        CardKind::Audio if card.event_kind == 36787 => "music.song",
-        CardKind::Article | CardKind::Post | CardKind::Audio => "article",
+/// Everything the head says about the page: what the preview says, as the
+/// Open Graph, Twitter and schema.org tags that say it, and nothing else. A
+/// preview with no title is titled as the site, and one with no image shows
+/// the site's.
+fn head(preview: &Preview, page: &Page, site: &Site) -> String {
+    let title = preview.title.as_ref().or(site.name.as_ref());
+    let (image, large) = match (&preview.image, &site.image) {
+        (Some(image), _) => (Some(image), preview.large.unwrap_or(true)),
+        (None, image) => (image.as_ref(), true),
     };
 
     let mut out = String::new();
+    if let Some(title) = title {
+        out.push_str(&format!("<title>{}</title>\n", escape(title)));
+    }
+    out.push_str(&format!("<link rel=\"canonical\" href=\"{}\">\n", escape(page.url)));
     let mut meta = |attribute: &str, key: &str, value: &str| {
         out.push_str(&format!("<meta {attribute}=\"{key}\" content=\"{}\">\n", escape(value)));
     };
-    meta("property", "og:type", og_type);
+    meta("property", "og:type", preview.kind.as_deref().unwrap_or("website"));
     if let Some(name) = &site.name {
         meta("property", "og:site_name", name);
     }
-    meta("property", "og:title", &title);
+    if let Some(title) = title {
+        meta("property", "og:title", title);
+        meta("name", "twitter:title", title);
+    }
     meta("property", "og:url", page.url);
-    if let Some(description) = &card.description {
+    if let Some(description) = &preview.description {
         meta("name", "description", description);
         meta("property", "og:description", description);
         meta("name", "twitter:description", description);
     }
     if let Some(image) = image {
         meta("property", "og:image", image);
-        if let Some(drawn) = card.drawn.as_ref().filter(|_| card.image.is_some()) {
+        if let Some(drawn) = preview.drawn.as_ref().filter(|_| preview.image.is_some()) {
             if let Some(mime) = &drawn.mime {
                 meta("property", "og:image:type", mime);
             }
@@ -171,119 +155,35 @@ fn head(card: &Card, page: &Page, site: &Site) -> String {
         }
         meta("name", "twitter:image", image);
     }
-    if let Some(video) = &card.video {
-        meta("property", "og:video", &video.url);
-        meta("property", "og:video:secure_url", &video.url);
-        meta("property", "og:video:type", &video.mime);
-        if let (Some(width), Some(height)) = (video.width, video.height) {
-            meta("property", "og:video:width", &width.to_string());
-            meta("property", "og:video:height", &height.to_string());
+    for (name, media) in [("og:video", &preview.video), ("og:audio", &preview.audio)] {
+        let Some(media) = media else { continue };
+        meta("property", name, &media.url);
+        meta("property", &format!("{name}:secure_url"), &media.url);
+        if let Some(mime) = &media.mime {
+            meta("property", &format!("{name}:type"), mime);
+        }
+        if let (Some(width), Some(height)) = (media.width, media.height) {
+            meta("property", &format!("{name}:width"), &width.to_string());
+            meta("property", &format!("{name}:height"), &height.to_string());
         }
     }
-    if let Some(audio) = &card.audio {
-        meta("property", "og:audio", &audio.url);
-        meta("property", "og:audio:secure_url", &audio.url);
-        meta("property", "og:audio:type", &audio.mime);
-    }
-    if card.kind != CardKind::Profile {
-        if let Some(published) = card.published.and_then(iso_date) {
-            meta("property", "article:published_time", &published);
-        }
+    if let Some(published) = preview.published.and_then(iso_date) {
+        meta("property", "article:published_time", &published);
     }
     meta("name", "twitter:card", if image.is_some() && large { "summary_large_image" } else { "summary" });
-    meta("name", "twitter:title", &title);
-
-    format!(
-        "<title>{}</title>\n<link rel=\"canonical\" href=\"{}\">\n{out}<script type=\"application/ld+json\">{}</script>\n",
-        escape(&title),
-        escape(page.url),
-        linked_data(card, page, &title, image)
-    )
-}
-
-/// The page as schema.org describes it, written so nothing in it can close
-/// the script element it sits in.
-fn linked_data(card: &Card, page: &Page, title: &str, image: Option<&String>) -> String {
-    let person = card.author.as_ref().map(|author| {
-        let npub = nip19::npub_encode(&author.pubkey);
-        json!({
-            "@type": "Person",
-            "name": author.display(),
-            "identifier": npub,
-            "url": format!("{}/{npub}", page.origin),
-            "image": author.picture,
-        })
-    });
-
-    let data = match card.kind {
-        CardKind::Profile => {
-            let entity = person.map(|person| {
-                let mut entity = as_object(person);
-                entity.insert("description".into(), json!(card.description));
-                entity
-            });
-            json!({
-                "@context": "https://schema.org",
-                "@type": "ProfilePage",
-                "url": page.url,
-                "name": if entity.is_none() { Some(title) } else { None },
-                "description": if entity.is_none() { card.description.as_deref() } else { None },
-                "image": if entity.is_none() { image } else { None },
-                "mainEntity": entity,
-            })
-        }
-        kind => json!({
-            "@context": "https://schema.org",
-            "@type": if kind == CardKind::Article { "Article" } else { "SocialMediaPosting" },
-            "headline": card.title.as_deref().or(card.description.as_deref()).unwrap_or(title).chars().take(110).collect::<String>(),
-            "description": card.description,
-            "url": page.url,
-            "mainEntityOfPage": page.url,
-            "datePublished": card.published.and_then(iso_date),
-            "image": image,
-            "video": card.video.as_ref().map(|video| json!({
-                "@type": "VideoObject",
-                "name": title,
-                "contentUrl": video.url,
-                "encodingFormat": video.mime,
-                "thumbnailUrl": card.image,
-                "uploadDate": card.published.and_then(iso_date),
-            })),
-            "audio": card.audio.as_ref().map(|audio| json!({
-                "@type": "AudioObject",
-                "name": title,
-                "contentUrl": audio.url,
-                "encodingFormat": audio.mime,
-                "uploadDate": card.published.and_then(iso_date),
-            })),
-            "author": person,
-        }),
-    };
-
-    without_nulls(data).to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026")
-}
-
-fn as_object(value: Value) -> Map<String, Value> {
-    match value {
-        Value::Object(map) => map,
-        _ => Map::new(),
+    if let Some(data) = &preview.json_ld {
+        // Written so nothing in it can close the script element it sits in.
+        let data = data.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026");
+        out.push_str(&format!("<script type=\"application/ld+json\">{data}</script>\n"));
     }
-}
-
-fn without_nulls(value: Value) -> Value {
-    match value {
-        Value::Object(map) => Value::Object(map.into_iter().filter(|(_, v)| !v.is_null()).map(|(k, v)| (k, without_nulls(v))).collect()),
-        other => other,
-    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::link_previews::card::{event_card, profile_card};
-    use crate::nostr::Event;
+    use crate::link_previews::preview::{Drawn, Media};
 
-    const SECRET: &str = "0000000000000000000000000000000000000000000000000000000000000003";
     const PAGE: Page = Page { url: "https://ditto.example/nevent1abc", origin: "https://ditto.example" };
 
     const DITTO: &str = r#"<!doctype html>
@@ -304,19 +204,26 @@ mod tests {
   </body>
 </html>"#;
 
-    fn note(content: &str) -> Card {
-        let event = Event::sign(SECRET, 1_700_000_000, 1, vec![], content);
-        let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex","picture":"https://cdn.example/a.png"}"#);
-        event_card(&event, Some(&profile)).unwrap()
+    fn note() -> Preview {
+        Preview {
+            title: Some("Alex on Ditto".into()),
+            description: Some("Hello world".into()),
+            body: "<article><p>Hello world</p></article>\n".into(),
+            image: Some("https://cdn.example/a.png".into()),
+            large: Some(false),
+            kind: Some("article".into()),
+            published: Some(1_700_000_000),
+            ..Default::default()
+        }
     }
 
-    fn spliced(html: &str, card: &Card) -> String {
-        String::from_utf8(splice(html.as_bytes(), card, &PAGE).unwrap()).unwrap()
+    fn spliced(html: &str, preview: &Preview) -> String {
+        String::from_utf8(splice(html.as_bytes(), preview, &PAGE).unwrap()).unwrap()
     }
 
     #[test]
     fn replaces_what_the_page_says_about_itself() {
-        let out = spliced(DITTO, &note("Hello world"));
+        let out = spliced(DITTO, &note());
         assert!(out.contains("<title>Alex on Ditto</title>"), "{out}");
         assert_eq!(out.matches("<title>").count(), 1, "{out}");
         assert!(!out.contains("A social app."), "{out}");
@@ -324,65 +231,46 @@ mod tests {
         assert!(!out.contains("href=\"https://ditto.example/\""), "{out}");
         assert!(out.contains(r#"<link rel="icon" href="/favicon.ico" />"#), "{out}");
         assert!(out.contains(r#"<meta property="og:site_name" content="Ditto">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:type" content="article">"#), "{out}");
         assert!(out.contains(r#"<meta property="og:description" content="Hello world">"#), "{out}");
+        assert!(out.contains(r#"<meta property="article:published_time" content="2023-11-14T22:13:20Z">"#), "{out}");
         assert!(out.contains(r#"<link rel="canonical" href="https://ditto.example/nevent1abc">"#), "{out}");
-        // An avatar is a small picture beside the text.
         assert!(out.contains(r#"<meta property="og:image" content="https://cdn.example/a.png">"#), "{out}");
         assert!(out.contains(r#"<meta name="twitter:card" content="summary">"#), "{out}");
-        assert!(out.contains("\"@type\":\"SocialMediaPosting\""), "{out}");
+        assert!(!out.contains("ld+json"), "{out}");
         // The article opens the body, and the app's root is left alone.
         assert!(out.contains("<body class=\"x\"><article>"), "{out}");
         assert!(out.contains("<div id=\"root\"></div>"), "{out}");
-        assert!(out.contains("<p>Hello world</p>"), "{out}");
     }
 
     #[test]
-    fn falls_back_to_the_sites_image() {
-        let event = Event::sign(SECRET, 1, 1, vec![], "No picture anywhere");
-        let out = spliced(DITTO, &event_card(&event, None).unwrap());
+    fn falls_back_to_the_site() {
+        let out = spliced(DITTO, &Preview::default());
+        assert!(out.contains("<title>Ditto</title>"), "{out}");
+        assert!(out.contains(r#"<meta property="og:type" content="website">"#), "{out}");
         assert!(out.contains(r#"<meta property="og:image" content="https://ditto.example/og-image.jpg">"#), "{out}");
         assert!(out.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "{out}");
     }
 
     #[test]
-    fn describes_profiles() {
-        let profile = Event::sign(SECRET, 1, 0, vec![], r#"{"name":"Alex","about":"Builds things."}"#);
-        let out = spliced(DITTO, &profile_card(&profile));
-        assert!(out.contains(r#"<meta property="og:type" content="profile">"#), "{out}");
-        assert!(out.contains("\"@type\":\"ProfilePage\""), "{out}");
-        assert!(out.contains("\"description\":\"Builds things.\""), "{out}");
-    }
-
-    #[test]
-    fn describes_audio() {
-        let tags = vec![
-            vec!["d".into(), "song".into()],
-            vec!["title".into(), "A Song".into()],
-            vec!["imeta".into(), "url https://cdn.example/s.mp3".into(), "m audio/mpeg".into(), "image https://cdn.example/cover.jpg".into()],
-        ];
-        let track = Event::sign(SECRET, 1, 36787, tags, "");
-        let out = spliced(DITTO, &event_card(&track, None).unwrap());
-        assert!(out.contains(r#"<meta property="og:type" content="music.song">"#), "{out}");
-        assert!(out.contains(r#"<meta property="og:audio" content="https://cdn.example/s.mp3">"#), "{out}");
+    fn writes_media_and_drawn_images() {
+        let preview = Preview {
+            image: Some("https://ditto.example/_npanel/preview/x?v=1".into()),
+            drawn: Some(Drawn { version: "1".into(), mime: Some("image/jpeg".into()), width: Some(1200), height: Some(630) }),
+            audio: Some(Media { url: "https://cdn.example/s.mp3".into(), mime: Some("audio/mpeg".into()), ..Default::default() }),
+            ..Default::default()
+        };
+        let out = spliced(DITTO, &preview);
+        assert!(out.contains(r#"<meta property="og:image:width" content="1200">"#), "{out}");
         assert!(out.contains(r#"<meta property="og:audio:type" content="audio/mpeg">"#), "{out}");
-        assert!(out.contains(r#"<meta property="og:image" content="https://cdn.example/cover.jpg">"#), "{out}");
-        assert!(out.contains("\"@type\":\"AudioObject\""), "{out}");
-        assert!(out.contains(r#"<audio src="https://cdn.example/s.mp3" controls preload="none"></audio>"#), "{out}");
-
-        let voice = Event::sign(SECRET, 1, 1222, vec![], "https://cdn.example/v.m4a");
-        let out = spliced(DITTO, &event_card(&voice, None).unwrap());
-        assert!(out.contains(r#"<meta property="og:type" content="article">"#), "{out}");
-        assert!(out.contains(r#"<meta property="og:audio:type" content="audio/mp4">"#), "{out}");
     }
 
     #[test]
-    fn nothing_an_author_writes_escapes_its_element() {
+    fn nothing_a_script_writes_escapes_its_element() {
         let hostile = r#"</script><script>alert(1)</script>"><img src=x onerror=alert(1)>"#;
-        let event = Event::sign(SECRET, 1, 30023, vec![vec!["title".into(), hostile.into()], vec!["d".into(), "x".into()]], hostile);
-        let profile = Event::sign(SECRET, 1, 0, vec![], &serde_json::json!({ "name": hostile }).to_string());
-        let out = spliced(DITTO, &event_card(&event, Some(&profile)).unwrap());
+        let preview = Preview { title: Some(hostile.into()), json_ld: Some(serde_json::json!({ "name": hostile })), ..Default::default() };
+        let out = spliced(DITTO, &preview);
         assert!(!out.contains("<script>alert"), "{out}");
-        assert!(!out.contains("<img src=x"), "{out}");
         assert!(!out.contains("\"><img"), "{out}");
         assert_eq!(out.matches("</script>").count(), 1, "{out}");
         assert!(out.contains("\\u003c/script\\u003e"), "{out}");
@@ -390,16 +278,15 @@ mod tests {
 
     #[test]
     fn handles_pages_without_the_usual_parts() {
-        let card = note("hi");
-        let out = spliced("<html><head><title>Site</title></head><p>x</p></html>", &card);
+        let preview = note();
+        let out = spliced("<html><head><title>Site</title></head><p>x</p></html>", &preview);
         assert!(out.contains("</head><article>"), "{out}");
-        assert!(out.contains("<title>Alex on Site</title>"), "{out}");
-        let out = spliced("<html><head><meta name=description content=x></head><body>", &card);
+        let out = spliced("<html><head><meta name=description content=x></head><body>", &preview);
         assert!(out.contains("<body><article"), "{out}");
         assert!(!out.contains("content=x"), "{out}");
         // An unclosed title holds the rest of the document, a body included.
-        assert!(splice(b"<html><title>Unclosed<body>", &card, &PAGE).is_none());
-        assert!(splice(b"<div>fragment</div>", &card, &PAGE).is_none());
-        assert!(splice(b"<head>\xff</head><body>", &card, &PAGE).is_none());
+        assert!(splice(b"<html><title>Unclosed<body>", &preview, &PAGE).is_none());
+        assert!(splice(b"<div>fragment</div>", &preview, &PAGE).is_none());
+        assert!(splice(b"<head>\xff</head><body>", &preview, &PAGE).is_none());
     }
 }

@@ -6,38 +6,28 @@ it is tagged.
 
 ## [Unreleased]
 
-- Link previews for Nostr pages. A site that shows Nostr content at the paths
-  Nostr web clients use — `/npub1…`, `/nevent1…`, `/naddr1…`, `/name@domain` —
-  can turn on **Link previews for Nostr pages**, and crawlers then get the
-  event's own title, description and image, as Open Graph, Twitter and
-  schema.org tags, and the post or article itself as text a search engine can
-  index. Everyone else gets the page as published. This replaces routing
-  crawlers to a separate server from the proxy.
-- Every kind of event Ditto shows has a preview of its own, about a hundred
-  of them: pictures, videos, music and podcasts (with `og:audio`), voice
-  messages, articles, listings, calendar events, polls, highlights, zaps
-  credited to their sender, reposts shown as the post they carry, follow packs,
-  badges, git repositories and patches, apps, themes, and Ditto's own kinds.
-  Content that isn't for reading — JSON, ciphertext, a memory card's hex —
-  never reaches a preview, and an event behind a content warning shows none of
-  what it warns of. An event of any other kind gets no preview: its page is
-  served exactly as published.
-- Lookups run on a thread of their own and never slow a site down: a preview
-  that can't be had within a couple of seconds sends the page as published,
-  never an error. Lookups are cached in `DATA_DIR/previews.sqlite3`, batched
-  into one query per relay, and capped per minute.
-- A site can draw its own previews. A script published at
-  `/.npanel/preview.js` is handed the crawler's request and a read-only Nostr
-  relay, shaped like Nostrify's, and returns the page's title, description and
-  article, and its image: a URL, or one it draws on an `OffscreenCanvas` in the
-  site's own fonts, which npanel serves at `/_npanel/preview/…` and names as
-  the page's `og:image`. Each run is sandboxed, metered and given a deadline,
-  and the page never waits for its image. A deploy's log says whether the
-  script loads. Nothing under `/.npanel/` is ever served. See "A site's own
-  previews" in `docs/architecture.md`.
+- Link previews for Nostr pages, drawn by the site. A site that shows Nostr
+  content at the paths Nostr web clients use — `/npub1…`, `/nevent1…`,
+  `/naddr1…`, `/name@domain` — publishes a script at `/.npanel/preview.js` and
+  turns on **Link previews for Nostr pages**. Crawlers then get whatever the
+  script makes of the page: its title, description and image as Open Graph,
+  Twitter and schema.org tags, and an article a search engine can index.
+  Everyone else gets the page as published. This replaces routing crawlers to
+  a separate server from the proxy.
+- The script is handed the crawler's request and a read-only Nostr relay,
+  shaped like Nostrify's, and can draw its image on an `OffscreenCanvas` in the
+  site's own fonts, which npanel serves at `/_npanel/preview/…`. The page never
+  waits for its image. Each run is sandboxed, metered and given a deadline, and
+  runs on a thread of its own: a preview that can't be had within a couple of
+  seconds sends the page as published, never an error. A deploy's log says
+  whether the script loads, and nothing under `/.npanel/` is ever served. See
+  "Link previews" in `docs/architecture.md`.
+- Previews and their images are cached in `DATA_DIR/previews.sqlite3` and
+  `DATA_DIR/preview-images/`, scripts' queries are batched into one
+  subscription per relay, and runs are capped per minute.
 - **Settings → Link Previews** shows what is cached and how lookups have gone,
-  refreshes one preview from a pasted npub, nevent, NIP-05 name or URL, clears
-  the cache, and sets which User-Agents count as crawlers.
+  runs one page's script again from its URL, clears the cache, and sets which
+  User-Agents count as crawlers.
 - A single-page app now gets its shell for a path like `/@bob@example.com`,
   which was a `404` because `.com` read as a file extension.
 

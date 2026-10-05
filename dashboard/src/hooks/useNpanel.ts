@@ -373,7 +373,7 @@ export function useRefreshLinkPreview() {
   const invalidate = useInvalidate();
 
   return useMutation({
-    mutationFn: (entity: string) => api!.refreshLinkPreview(entity),
+    mutationFn: (url: string) => api!.refreshLinkPreview(url),
     onSuccess: invalidate,
   });
 }

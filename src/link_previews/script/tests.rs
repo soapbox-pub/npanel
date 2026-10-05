@@ -2,7 +2,6 @@ use futures_util::future::BoxFuture;
 use tokio::sync::Semaphore;
 
 use super::*;
-use crate::link_previews::fetch::Want;
 use crate::log::LogLevel;
 
 const SECRET: &str = "0000000000000000000000000000000000000000000000000000000000000003";
@@ -11,10 +10,6 @@ const SECRET: &str = "0000000000000000000000000000000000000000000000000000000000
 struct Relays(Vec<Event>);
 
 impl EventSource for Relays {
-    fn get(&self, want: Want, _: Vec<String>) -> BoxFuture<'_, Option<Event>> {
-        Box::pin(async move { self.0.iter().filter(|e| want.matches(e)).max_by_key(|e| e.created_at).cloned() })
-    }
-
     fn query(&self, filters: Vec<Filter>, _: Vec<String>) -> BoxFuture<'_, Vec<Event>> {
         Box::pin(async move { self.0.iter().filter(|e| filters.iter().any(|f| f.matches(e))).cloned().collect() })
     }
@@ -71,7 +66,7 @@ async fn run_page(script: &Arc<Script>, url: &str, events: Vec<Event>) -> Result
     run_with(script, page(url), events, DEADLINE).await
 }
 
-fn previewed(ran: Ran) -> Preview {
+fn previewed(ran: Ran) -> Returned {
     ran.preview.expect("a preview")
 }
 
@@ -108,7 +103,7 @@ async fn a_handler_previews_what_its_queries_find() {
     let renamed = Event::sign(SECRET, 2, 0, vec![], r#"{"name":"Alexander"}"#);
     assert_ne!(run_page(&script, &url, vec![profile, renamed]).await.unwrap().version, version);
 
-    // Nothing found is npanel's own preview.
+    // Nothing found leaves the page as published.
     let ran = run_page(&script, &url, vec![]).await.unwrap();
     assert!(ran.preview.is_none());
 }

@@ -17,7 +17,7 @@ pub enum Decoded {
     Nsec(String),
     Note(String),
     Nprofile { pubkey: String, relays: Vec<String> },
-    Nevent { id: String, relays: Vec<String>, author: Option<String>, kind: Option<u32> },
+    Nevent { id: String, relays: Vec<String> },
     Naddr { pubkey: String, kind: u32, identifier: String, relays: Vec<String> },
 }
 
@@ -65,10 +65,7 @@ pub fn decode(value: &str) -> Result<Decoded, Error> {
         "nevent" => {
             let tlv = parse_tlv(&data)?;
             let id = tlv.first(0).ok_or_else(|| error("missing TLV 0 for nevent"))?;
-            // The author is a hint, and one of the wrong length is no hint.
-            let author = tlv.first(2).and_then(|author| key(author).ok());
-            let kind = tlv.first(3).and_then(|kind| <[u8; 4]>::try_from(kind).ok()).map(u32::from_be_bytes);
-            Ok(Decoded::Nevent { id: key(id)?, relays: tlv.strings(1), author, kind })
+            Ok(Decoded::Nevent { id: key(id)?, relays: tlv.strings(1) })
         }
         "naddr" => {
             let tlv = parse_tlv(&data)?;
@@ -103,6 +100,7 @@ pub fn nsec_encode(secret_hex: &str) -> String {
 // that an entity npanel encodes is byte-identical to one the dashboard does.
 
 /// An event's note; empty for an id that isn't one, as [`npub_encode`].
+#[cfg(test)]
 pub fn note_encode(id_hex: &str) -> String {
     encode_key("note", id_hex)
 }
@@ -364,12 +362,9 @@ mod tests {
     fn nevent_round_trip() {
         let id = "a".repeat(64);
         let nevent = nevent_encode(&id, &["wss://r.example.com".into()], Some(PUBKEY), Some(30023));
-        assert_eq!(
-            decode(&nevent).unwrap(),
-            Decoded::Nevent { id: id.clone(), relays: vec!["wss://r.example.com".into()], author: Some(PUBKEY.into()), kind: Some(30023) }
-        );
+        assert_eq!(decode(&nevent).unwrap(), Decoded::Nevent { id: id.clone(), relays: vec!["wss://r.example.com".into()] });
         let bare = nevent_encode(&id, &[], None, None);
-        assert_eq!(decode(&bare).unwrap(), Decoded::Nevent { id: id.clone(), relays: vec![], author: None, kind: None });
+        assert_eq!(decode(&bare).unwrap(), Decoded::Nevent { id: id.clone(), relays: vec![] });
         assert_eq!(decode(&note_encode(&id)).unwrap(), Decoded::Note(id));
     }
 

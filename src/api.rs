@@ -30,11 +30,12 @@ use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, H
 use crate::deploy::Deployments;
 use crate::dns::DnsTargets;
 use crate::fields;
-use crate::hostname::parse_hostname;
+use crate::hostname::{is_onion_address, normalize_hostname, parse_hostname};
 use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse_relay_url};
-use crate::link_previews::card::Card;
-use crate::link_previews::entity::Entity;
-use crate::link_previews::{LinkPreviews, Outcome, PreviewError};
+use crate::link_previews::page::NostrPage;
+use crate::link_previews::preview::Preview;
+use crate::link_previews::script::{Page, Scripts};
+use crate::link_previews::{LinkPreviews, PreviewError, ScriptPage};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
 use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
@@ -44,7 +45,7 @@ use crate::settings::{Settings, SettingsValues, KEYS};
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
 use crate::site_env::{parse_env_name, parse_env_value, MAX_VARIABLES};
 use crate::site_preview::{SitePreview, SitePreviews};
-use crate::sites::{host_by_id, load_host, newest_event, site_event, site_key};
+use crate::sites::{find_host, host_by_id, load_host, newest_event, site_event, site_key};
 use crate::tls::{CertificateStatus, TlsService};
 use crate::tor::TorService;
 
@@ -72,6 +73,7 @@ pub struct ApiDeps {
     pub site_csp: Arc<SiteCsp>,
     pub previews: Arc<SitePreviews>,
     pub link_previews: Arc<LinkPreviews>,
+    pub scripts: Arc<Scripts>,
     pub serve_cache: Arc<ServeCache>,
     pub last_prune: LastPrune,
     pub dashboard_host: String,
@@ -1582,6 +1584,7 @@ impl From<PreviewError> for ApiError {
     fn from(error: PreviewError) -> Self {
         match error {
             PreviewError::Failed(error) => ApiError::Internal(error),
+            PreviewError::Script(error) => ApiError::BadRequest(format!("The site's preview script failed: {error}")),
             other => ApiError::Unavailable(other.message()),
         }
     }
@@ -1592,27 +1595,52 @@ async fn link_previews_status(State(deps): State<Deps>, _: Admin) -> ApiResult {
     ok(json!(deps.link_previews.status().await?))
 }
 
-/// Fetch one entity's preview again, whatever is cached, and show what
-/// crawlers will now be given.
+/// Run a page's preview script again, whatever is cached, and show what
+/// crawlers will now be given. The page is asked for as a crawler sending no
+/// headers would ask for it.
 async fn refresh_link_preview(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>) -> ApiResult {
     #[derive(Deserialize)]
     struct Refresh {
-        entity: String,
+        url: String,
     }
-    let Refresh { entity } = body.json("Expected a JSON body with an entity.")?;
-    let entity = Entity::parse(&entity).map_err(bad)?;
-    let refreshed = deps.link_previews.refresh(entity).await?;
-
-    let (card, unsupported) = match &refreshed.outcome {
-        Outcome::Card(card) => (Some(card_json(card)), None),
-        Outcome::Unsupported(kind) => (None, Some(*kind)),
-        Outcome::NotFound => (None, None),
+    let Refresh { url } = body.json("Expected a JSON body with a url.")?;
+    let example = "Paste the URL of a page on one of this gateway's sites, like https://example.com/npub1….";
+    let parsed = url::Url::parse(url.trim()).map_err(|_| bad(example))?;
+    let hostname = match (parsed.scheme(), parsed.host_str()) {
+        ("https" | "http", Some(host)) => normalize_hostname(host),
+        _ => return Err(bad(example)),
     };
-    let (actor, target) = (user.pubkey.clone(), refreshed.entity.clone());
-    let after = json!({ "found": card.is_some(), "unsupported": unsupported });
+    let nostr = NostrPage::from_path(parsed.path())
+        .ok_or_else(|| bad("Only a page whose path is an npub, a note, an nevent, an naddr or a NIP-05 name has a link preview."))?;
+
+    let name = hostname.clone();
+    let found = deps
+        .db
+        .call(move |conn| {
+            let Some(host) = find_host(conn, &name)? else { return Ok(None) };
+            let kind = if is_onion_address(&name) { BuildKind::Onion } else { BuildKind::Clearnet };
+            let build = current_build(conn, host.host.id, kind)?;
+            Ok(Some((host, build)))
+        })
+        .await?;
+    let Some((host, build)) = found else { return Err(ApiError::NotFound(format!("No site on this gateway is at {hostname}."))) };
+    if !host.host.enabled || !host.host.link_previews {
+        return Err(bad(format!("Link previews are off for {hostname}. Turn them on in its SEO settings first.")));
+    }
+    let Some(build) = build else { return Err(bad(format!("{hostname} hasn't finished deploying yet."))) };
+    let Some(script) = deps.scripts.for_build(build.id).await? else {
+        return Err(bad(format!("{hostname} publishes no /.npanel/preview.js, so its pages have no link previews.")));
+    };
+
+    let page_url = crate::serve::page_url(&format!("{}://{hostname}", parsed.scheme()), parsed.path());
+    let page = Page { url: page_url.clone(), method: "GET".into(), headers: Vec::new() };
+    let preview = deps.link_previews.refresh(Arc::new(ScriptPage { script, page, nostr })).await?;
+
+    let (actor, target) = (user.pubkey.clone(), page_url.clone());
+    let after = json!({ "found": preview.is_some() });
     deps.db.call(move |conn| Ok(audit(conn, &actor, "link_preview.refresh", Some(&target), None, Some(&after))?)).await?;
 
-    ok(json!({ "key": refreshed.key, "entity": refreshed.entity, "card": card, "unsupported": unsupported }))
+    ok(json!({ "url": page_url, "preview": preview.as_deref().map(preview_json) }))
 }
 
 /// Forget every preview, so each is fetched again the next time a crawler
@@ -1624,23 +1652,17 @@ async fn clear_link_previews(State(deps): State<Deps>, Admin(user): Admin) -> Ap
     ok(json!({ "cleared": cleared }))
 }
 
-/// A preview as the dashboard shows it: everything but the article, which a
-/// crawler reads and a person doesn't need to.
-fn card_json(card: &Card) -> Value {
+/// A preview as the dashboard shows it: everything but the article and the
+/// schema.org description, which a crawler reads and a person doesn't need to.
+fn preview_json(preview: &Preview) -> Value {
     json!({
-        "kind": card.kind,
-        "event_kind": card.event_kind,
-        "title": card.title,
-        "description": card.description,
-        "image": card.image,
-        "video": card.video.as_ref().map(|video| &video.url),
-        "audio": card.audio.as_ref().map(|audio| &audio.url),
-        "author": card.author.as_ref().map(|author| json!({
-            "pubkey": author.pubkey,
-            "npub": nip19::npub_encode(&author.pubkey),
-            "name": author.name,
-            "picture": author.picture,
-        })),
-        "published": card.published,
+        "title": preview.title,
+        "description": preview.description,
+        "image": preview.image,
+        "type": preview.kind,
+        "video": preview.video.as_ref().map(|video| &video.url),
+        "audio": preview.audio.as_ref().map(|audio| &audio.url),
+        "published": preview.published,
+        "article": !preview.body.is_empty(),
     })
 }

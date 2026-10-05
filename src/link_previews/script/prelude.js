@@ -1220,12 +1220,21 @@
       const request = new Request(url, { method, headers: new ReadHeaders(headers, read) });
       const result = await handler.preview(request, Object.freeze({ nostr, signal: AbortSignal.timeout(deadline) }));
       if (result == null) return { none: true, headers: [...read] };
-      if (typeof result !== "object") throw new TypeError("preview() must return an object, or null for npanel's own preview.");
+      if (typeof result !== "object") throw new TypeError("preview() must return an object, or null to leave the page as published.");
       const image = result.image;
       const out = { none: false, title: text(result.title), description: text(result.description), body: text(result.body), url: null, bytes: null, pending: null };
       if (typeof image === "string" || image instanceof URL) out.url = String(image);
       else if (image && typeof image.then === "function") out.pending = Promise.resolve(image).then(toBytes);
       else out.bytes = await toBytes(image);
+      const published = result.published instanceof Date ? result.published.getTime() / 1000 : result.published;
+      out.extras = JSON.stringify({
+        type: text(result.type),
+        twitter: text(result.twitter),
+        video: result.video ?? null,
+        audio: result.audio ?? null,
+        published: typeof published === "number" ? published : null,
+        jsonLd: result.jsonLd ?? null,
+      });
       out.headers = [...read];
       return out;
     },

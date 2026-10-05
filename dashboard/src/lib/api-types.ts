@@ -322,12 +322,10 @@ export interface Storage {
 
 /** What the link preview cache holds, and how lookups have gone since the server started. */
 export interface LinkPreviewStatus {
-  /** Entities with a preview. */
+  /** Pages with a preview. */
   found: number;
-  /** Events of a kind that has no preview. */
-  unsupported: number;
-  /** Entities a lookup found nothing for, remembered for a few minutes. */
-  not_found: number;
+  /** Pages a site's script had nothing for, remembered for a few minutes. */
+  empty: number;
   /** What the cache takes up on disk. */
   bytes: number;
   /** Previews held in memory. */
@@ -337,41 +335,38 @@ export interface LinkPreviewStatus {
   stats: {
     /** Answered from memory. */
     hits: number;
-    /** Handed to the lookup thread: the cache on disk, then relays. */
+    /** Handed to the preview thread: the cache on disk, then the site's script. */
     lookups: number;
-    /** Lookups that went to relays. */
-    fetches: number;
+    /** Lookups that ran a site's script. */
+    runs: number;
+    /** Runs whose script threw, or ran out of time. */
+    failures: number;
     /** Pages sent without a preview because as many lookups were running as may. */
     busy: number;
     /** Pages sent without a preview because the lookup took too long. */
     timeouts: number;
-    /** Lookups that didn't go to relays because the minute's were spent. */
+    /** Lookups that didn't run a script because the minute's runs were spent. */
     over_budget: number;
   };
 }
 
 /** A preview as crawlers will be shown it, less the article in the page's body. */
-export interface LinkPreviewCard {
-  kind: 'profile' | 'article' | 'post' | 'video' | 'audio';
-  /** The Nostr kind of the event it is of: 0 for a profile. */
-  event_kind: number;
-  /** The event's own title. A note has none, and its page is titled after its author. */
+export interface LinkPreview {
   title: string | null;
   description: string | null;
   image: string | null;
+  /** Its `og:type`. */
+  type: string | null;
   video: string | null;
   audio: string | null;
-  author: { pubkey: string; npub: string; name: string | null; picture: string | null };
   published: number | null;
+  /** Whether it has an article for crawlers to read. */
+  article: boolean;
 }
 
-/** What refreshing one preview found. */
+/** What running one page's preview script again made. */
 export interface RefreshedLinkPreview {
-  key: string;
-  /** The entity as a person writes it: its NIP-19 form, or a NIP-05 name. */
-  entity: string;
-  /** Null when nothing could be found for it, or it has no preview. */
-  card: LinkPreviewCard | null;
-  /** The event's kind, when it is one with no preview. */
-  unsupported: number | null;
+  url: string;
+  /** Null when the script had nothing for the page. */
+  preview: LinkPreview | null;
 }
