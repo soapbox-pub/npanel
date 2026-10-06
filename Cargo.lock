@@ -3056,7 +3056,7 @@ dependencies = [
 
 [[package]]
 name = "npanel"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "ammonia",
  "anyhow",

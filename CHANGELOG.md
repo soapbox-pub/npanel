@@ -4,6 +4,14 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [0.3.1]
+
+- A preview script can change a `URL`: its `href`, `pathname`, `search` and
+  the rest set as they do in a browser, and `url.searchParams.set`, `append`,
+  `delete` and `sort` change the URL they came from. Both threw before.
+  `URLSearchParams` also writes a space as `+` and reads a stray `%` as it is,
+  as a browser does.
+
 ## [0.3.0]
 
 - Link previews drawn by the site. A site whose pages a crawler can't read by
