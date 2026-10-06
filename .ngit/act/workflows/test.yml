@@ -60,6 +60,9 @@ jobs:
         working-directory: dashboard
         run: |
           set -eu
+          # A cache of this run's own: the runner shares its home between
+          # runs, and two installs at once into one cache can corrupt it.
+          export BUN_INSTALL_CACHE_DIR="$RUNNER_TEMP/bun-cache"
           bun install --frozen-lockfile
           bun run test
 
