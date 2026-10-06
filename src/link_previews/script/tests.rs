@@ -307,6 +307,7 @@ fn confinement_probe() {
         could |= 8;
     }
     if !unconfined.is_empty() {
+        eprintln!("unconfined: {}", unconfined.join("; "));
         could |= 16;
     }
     std::process::exit(64 + could);
@@ -315,15 +316,14 @@ fn confinement_probe() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_worker_is_confined() {
-    let status = std::process::Command::new(std::env::current_exe().unwrap())
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["link_previews::script::tests::confinement_probe", "--exact", "--nocapture", "--test-threads=1", "-q"])
         .env("NPANEL_CONFINEMENT_PROBE", "1")
-        .stdout(std::process::Stdio::null())
-        .status()
+        .output()
         .unwrap();
     // 1: opened a file, 2: made a socket, 4: ran a program, 8: signalled
     // the gateway, 16: couldn't confine itself fully.
-    assert_eq!(status.code(), Some(64), "{status}");
+    assert_eq!(output.status.code(), Some(64), "{}: {}", output.status, String::from_utf8_lossy(&output.stderr).trim());
 }
 
 #[tokio::test(flavor = "multi_thread")]

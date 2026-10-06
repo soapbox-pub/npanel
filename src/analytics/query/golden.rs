@@ -20,7 +20,14 @@ use crate::log::{LogLevel, Logger};
 /// 2026-09-30T12:34:56Z, a Wednesday.
 const NOW: i64 = 1_790_771_696;
 
-const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/analytics/query/testdata/golden.json");
+/// Where the answers are recorded. Found when the test runs rather than
+/// baked in when it compiles: cargo reuses a test binary built in another
+/// checkout of the same tree, as a CI runner sharing one target directory
+/// does, and that checkout may be gone.
+fn golden() -> std::path::PathBuf {
+    let root = std::env::var_os("CARGO_MANIFEST_DIR").expect("cargo test sets CARGO_MANIFEST_DIR");
+    std::path::Path::new(&root).join("src/analytics/query/testdata/golden.json")
+}
 
 /// A small deterministic generator, so the visits are the same every run.
 struct Lcg(u64);
@@ -330,13 +337,14 @@ fn answers_are_unchanged() {
     let answers = answers();
     let recorded: Value = Value::Array(answers.iter().map(|(name, answer)| json!({ "question": name, "answer": answer })).collect());
 
+    let path = golden();
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(GOLDEN).parent().unwrap()).unwrap();
-        std::fs::write(GOLDEN, serde_json::to_string_pretty(&recorded).unwrap() + "\n").unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, serde_json::to_string_pretty(&recorded).unwrap() + "\n").unwrap();
         return;
     }
 
-    let golden: Value = serde_json::from_str(&std::fs::read_to_string(GOLDEN).expect("golden answers; run with UPDATE_GOLDEN=1 to record them")).unwrap();
+    let golden: Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("golden answers; run with UPDATE_GOLDEN=1 to record them")).unwrap();
     let golden = golden.as_array().unwrap();
     assert_eq!(golden.len(), answers.len(), "the set of questions changed; rerun with UPDATE_GOLDEN=1");
     for (expected, (name, answer)) in golden.iter().zip(&answers) {
