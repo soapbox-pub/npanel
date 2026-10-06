@@ -675,7 +675,11 @@ async function draw(theme) {{
     assert!(varies(&headers));
     assert_eq!(headers["content-type"], "text/html; charset=utf-8");
     assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);
-    assert!(body.contains("<title>Author on Ditto</title>"), "{body}");
+    if !body.contains("<title>Author on Ditto</title>") {
+        // Which way the page came to be sent as published.
+        let (_, previews) = gw.api("GET", "/api/link-previews", None).await;
+        panic!("No preview: {previews}\n{body}");
+    }
     assert!(body.contains(r#"<meta property="og:type" content="profile">"#), "{body}");
     assert!(body.contains(r#"<meta property="og:description" content="Theme: Midnight">"#), "{body}");
     assert!(body.contains(r#"<meta name="twitter:card" content="summary_large_image">"#), "{body}");
