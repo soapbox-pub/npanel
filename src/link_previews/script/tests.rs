@@ -173,6 +173,53 @@ function structuredCloneMissing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_url_changes_as_in_a_browser() {
+    let urls = r#"
+export default {
+  async preview(request) {
+    const url = new URL("/start?keep=1", request.url);
+    const params = url.searchParams;
+    const seen = [];
+    url.pathname = "c d";
+    url.port = "8443";
+    url.hash = "top";
+    seen.push(url.href);
+    url.port = "";
+    url.port = "nope";
+    url.protocol = "ftp-ish:";
+    url.hostname = "y.example";
+    seen.push(url.href);
+    params.set("q", "a b!");
+    params.append("q", "~");
+    params.append("a", "1");
+    params.sort();
+    seen.push(url.search);
+    params.set("q", "one");
+    seen.push(url.href);
+    params.delete("q");
+    params.delete("a");
+    seen.push(url.href);
+    url.search = "?x=%zz&y=+";
+    seen.push(params === url.searchParams, params.get("x"), params.get("y") === " ");
+    url.href = "https://z.example/";
+    seen.push(params.size);
+    try { url.href = "not a url"; } catch (e) { seen.push(e instanceof TypeError, url.href); }
+    return { title: seen.join("|") };
+  },
+};
+"#;
+    let (_site, script) = script(urls);
+    let preview = previewed(run_page(&script, "https://x.example/npub1", vec![]).await.unwrap());
+    assert_eq!(
+        preview.title.as_deref(),
+        Some(
+            "https://x.example:8443/c%20d?keep=1#top|https://y.example/c%20d?keep=1#top|?a=1&keep=1&q=a+b%21&q=%7E\
+             |https://y.example/c%20d?a=1&keep=1&q=one#top|https://y.example/c%20d?keep=1#top|true|%zz|true|0|true|https://z.example/"
+        )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_request_is_a_get() {
     let request = r#"
 export default {

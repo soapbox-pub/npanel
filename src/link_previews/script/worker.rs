@@ -406,6 +406,24 @@ fn parse<T: serde::de::DeserializeOwned>(ctx: &Ctx<'_>, json: &str) -> rquickjs:
     serde_json::from_str(json).map_err(|e| thrown(ctx, format!("npanel's canvas was given something it can't read: {e}")))
 }
 
+/// A URL's components, as `URL`'s getters give them.
+fn url_parts<'js>(ctx: &Ctx<'js>, url: &url::Url) -> rquickjs::Result<Object<'js>> {
+    use url::quirks;
+    let parts = Object::new(ctx.clone())?;
+    parts.set("href", quirks::href(url))?;
+    parts.set("origin", quirks::origin(url))?;
+    parts.set("protocol", quirks::protocol(url))?;
+    parts.set("username", quirks::username(url))?;
+    parts.set("password", quirks::password(url))?;
+    parts.set("host", quirks::host(url))?;
+    parts.set("hostname", quirks::hostname(url))?;
+    parts.set("port", quirks::port(url))?;
+    parts.set("pathname", quirks::pathname(url))?;
+    parts.set("search", quirks::search(url))?;
+    parts.set("hash", quirks::hash(url))?;
+    Ok(parts)
+}
+
 /// What `prelude.js` is built on. `running` is false for a check, which
 /// asks nothing of the world.
 fn natives<'js>(ctx: &Ctx<'js>, link: Arc<Link>, running: bool) -> rquickjs::Result<Object<'js>> {
@@ -438,21 +456,30 @@ fn natives<'js>(ctx: &Ctx<'js>, link: Arc<Link>, running: bool) -> rquickjs::Res
                 None => url::Url::parse(&input),
             }
             .map_err(|_| thrown(&ctx, format!("{input} isn't a valid URL.")))?;
-            let parts = Object::new(ctx.clone())?;
-            let host = parsed.host_str().unwrap_or_default();
-            let port = parsed.port().map(|p| p.to_string()).unwrap_or_default();
-            parts.set("href", parsed.as_str())?;
-            parts.set("origin", parsed.origin().ascii_serialization())?;
-            parts.set("protocol", format!("{}:", parsed.scheme()))?;
-            parts.set("username", parsed.username())?;
-            parts.set("password", parsed.password().unwrap_or_default())?;
-            parts.set("host", if port.is_empty() { host.to_string() } else { format!("{host}:{port}") })?;
-            parts.set("hostname", host)?;
-            parts.set("port", port)?;
-            parts.set("pathname", parsed.path())?;
-            parts.set("search", parsed.query().map(|q| format!("?{q}")).unwrap_or_default())?;
-            parts.set("hash", parsed.fragment().map(|f| format!("#{f}")).unwrap_or_default())?;
-            rquickjs::Result::Ok(parts)
+            url_parts(&ctx, &parsed)
+        }),
+    )?;
+    natives.set(
+        "urlSet",
+        Function::new(ctx.clone(), |ctx: Ctx<'js>, href: String, component: String, value: String| {
+            use url::quirks;
+            let mut url = url::Url::parse(&href).map_err(|_| thrown(&ctx, format!("{href} isn't a valid URL.")))?;
+            // As in a browser, only `href` refuses a value: the rest leave the
+            // URL as it was.
+            match component.as_str() {
+                "href" => quirks::set_href(&mut url, &value).map_err(|_| thrown(&ctx, format!("{value} isn't a valid URL.")))?,
+                "protocol" => quirks::set_protocol(&mut url, &value).unwrap_or(()),
+                "username" => quirks::set_username(&mut url, &value).unwrap_or(()),
+                "password" => quirks::set_password(&mut url, &value).unwrap_or(()),
+                "host" => quirks::set_host(&mut url, &value).unwrap_or(()),
+                "hostname" => quirks::set_hostname(&mut url, &value).unwrap_or(()),
+                "port" => quirks::set_port(&mut url, &value).unwrap_or(()),
+                "pathname" => quirks::set_pathname(&mut url, &value),
+                "search" => quirks::set_search(&mut url, &value),
+                "hash" => quirks::set_hash(&mut url, &value),
+                _ => return Err(thrown(&ctx, format!("A URL has no {component} to set."))),
+            }
+            url_parts(&ctx, &url)
         }),
     )?;
     {

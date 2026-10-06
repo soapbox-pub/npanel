@@ -102,18 +102,53 @@ export default function (native, seed, now) {
 
   // --- URL. ------------------------------------------------------------------
 
+  // application/x-www-form-urlencoded, as a browser reads and writes it: a
+  // stray `%` is kept rather than thrown on.
+  const isHex = (b) => (b >= 48 && b <= 57) || (b >= 65 && b <= 70) || (b >= 97 && b <= 102);
+  const formDecode = (text) => {
+    const bytes = native.utf8Encode(text.replace(/\+/g, " "));
+    const out = new Uint8Array(bytes.length);
+    let n = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 37 && isHex(bytes[i + 1]) && isHex(bytes[i + 2])) {
+        out[n++] = parseInt(String.fromCharCode(bytes[i + 1], bytes[i + 2]), 16);
+        i += 2;
+      } else {
+        out[n++] = bytes[i];
+      }
+    }
+    return native.utf8Decode(out.slice(0, n));
+  };
+  const formParse = (query) => {
+    const pairs = [];
+    for (const part of query.replace(/^\?/, "").split("&")) {
+      if (!part) continue;
+      const at = part.indexOf("=");
+      pairs.push(at < 0 ? [formDecode(part), ""] : [formDecode(part.slice(0, at)), formDecode(part.slice(at + 1))]);
+    }
+    return pairs;
+  };
+  const formEncode = (text) =>
+    encodeURIComponent(text)
+      .replace(/[!'()~]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+      .replace(/%20/g, "+");
+
+  // How a URL and its searchParams keep each other current, out of a
+  // script's reach.
+  let attachParams, writeQuery;
+
   class URLSearchParams {
     #pairs = [];
     #url = null;
-    constructor(init = "", url = null) {
-      this.#url = url;
+    static {
+      attachParams = (params, url, query) => {
+        params.#url = url;
+        params.#pairs = formParse(query);
+      };
+    }
+    constructor(init = "") {
       if (typeof init === "string") {
-        for (const part of init.replace(/^\?/, "").split("&")) {
-          if (!part) continue;
-          const at = part.indexOf("=");
-          const decode = (s) => decodeURIComponent(s.replace(/\+/g, " "));
-          this.#pairs.push(at < 0 ? [decode(part), ""] : [decode(part.slice(0, at)), decode(part.slice(at + 1))]);
-        }
+        this.#pairs = formParse(init);
       } else if (init && typeof init[Symbol.iterator] === "function") {
         for (const [k, v] of init) this.#pairs.push([String(k), String(v)]);
       } else if (init && typeof init === "object") {
@@ -121,32 +156,43 @@ export default function (native, seed, now) {
       }
     }
     #changed() {
-      if (this.#url) unsupported("Changing a URL");
+      if (this.#url) writeQuery(this.#url, this.toString());
     }
     get size() {
       return this.#pairs.length;
     }
     get(name) {
-      return this.#pairs.find(([k]) => k === name)?.[1] ?? null;
+      return this.#pairs.find(([k]) => k === String(name))?.[1] ?? null;
     }
     getAll(name) {
-      return this.#pairs.filter(([k]) => k === name).map(([, v]) => v);
+      return this.#pairs.filter(([k]) => k === String(name)).map(([, v]) => v);
     }
-    has(name) {
-      return this.#pairs.some(([k]) => k === name);
+    has(name, value) {
+      return this.#pairs.some(([k, v]) => k === String(name) && (value === undefined || v === String(value)));
     }
     append(name, value) {
-      this.#changed();
       this.#pairs.push([String(name), String(value)]);
+      this.#changed();
     }
     set(name, value) {
+      [name, value] = [String(name), String(value)];
+      const at = this.#pairs.findIndex(([k]) => k === name);
+      if (at < 0) {
+        this.#pairs.push([name, value]);
+      } else {
+        this.#pairs[at] = [name, value];
+        this.#pairs = this.#pairs.filter(([k], i) => i <= at || k !== name);
+      }
       this.#changed();
-      this.delete(name);
-      this.#pairs.push([String(name), String(value)]);
     }
-    delete(name) {
+    delete(name, value) {
+      this.#pairs = this.#pairs.filter(([k, v]) => !(k === String(name) && (value === undefined || v === String(value))));
       this.#changed();
-      this.#pairs = this.#pairs.filter(([k]) => k !== name);
+    }
+    sort() {
+      // By UTF-16 code units, keeping pairs with the same name in order.
+      this.#pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      this.#changed();
     }
     forEach(fn, thisArg) {
       for (const [k, v] of this.#pairs) fn.call(thisArg, v, k, this);
@@ -164,16 +210,21 @@ export default function (native, seed, now) {
       return this.entries();
     }
     toString() {
-      return this.#pairs.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+      return this.#pairs.map(([k, v]) => `${formEncode(k)}=${formEncode(v)}`).join("&");
     }
   }
 
   class URL {
     #parts;
-    #params;
+    #params = new URLSearchParams();
+    static {
+      writeQuery = (url, query) => {
+        url.#parts = native.urlSet(url.href, "search", query);
+      };
+    }
     constructor(input, base) {
       this.#parts = base === undefined ? native.urlParse(String(input)) : native.urlParse(String(input), String(base));
-      this.#params = new URLSearchParams(this.#parts.search, this);
+      attachParams(this.#params, this, this.#parts.search);
     }
     static canParse(input, base) {
       try {
@@ -183,8 +234,17 @@ export default function (native, seed, now) {
         return false;
       }
     }
+    // Setting a part takes the URL a browser would make of it: only a bad
+    // `href` throws, and anything else that doesn't fit is ignored.
+    #set(name, value) {
+      this.#parts = native.urlSet(this.href, name, String(value));
+      if (name === "href" || name === "search") attachParams(this.#params, this, this.#parts.search);
+    }
     get href() {
       return this.#parts.href;
+    }
+    set href(value) {
+      this.#set("href", value);
     }
     get origin() {
       return this.#parts.origin;
@@ -192,29 +252,56 @@ export default function (native, seed, now) {
     get protocol() {
       return this.#parts.protocol;
     }
+    set protocol(value) {
+      this.#set("protocol", value);
+    }
     get username() {
       return this.#parts.username;
+    }
+    set username(value) {
+      this.#set("username", value);
     }
     get password() {
       return this.#parts.password;
     }
+    set password(value) {
+      this.#set("password", value);
+    }
     get host() {
       return this.#parts.host;
+    }
+    set host(value) {
+      this.#set("host", value);
     }
     get hostname() {
       return this.#parts.hostname;
     }
+    set hostname(value) {
+      this.#set("hostname", value);
+    }
     get port() {
       return this.#parts.port;
+    }
+    set port(value) {
+      this.#set("port", value);
     }
     get pathname() {
       return this.#parts.pathname;
     }
+    set pathname(value) {
+      this.#set("pathname", value);
+    }
     get search() {
       return this.#parts.search;
     }
+    set search(value) {
+      this.#set("search", value);
+    }
     get hash() {
       return this.#parts.hash;
+    }
+    set hash(value) {
+      this.#set("hash", value);
     }
     get searchParams() {
       return this.#params;
