@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.3.0]
 
 - Link previews drawn by the site. A site whose pages a crawler can't read by
   itself — a Nostr client showing `/npub1…` or `/nevent1…` from relays in the

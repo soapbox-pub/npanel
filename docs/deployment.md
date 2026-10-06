@@ -148,7 +148,7 @@ under the repository's releases on
 or with [ngit](https://ngit.dev) from a clone:
 
 ```sh
-ngit release view npanel@0.2.0 --verify
+ngit release view npanel@0.3.0 --verify
 ```
 
 The release is signed, and every file in it is addressed by its SHA-256, so any
@@ -156,7 +156,7 @@ Blossom server holding a copy serves the same bytes. Download
 `npanel-<version>-linux-x86_64` (or `-aarch64`) and `npanel.service`, then:
 
 ```sh
-sudo install -m 755 npanel-0.2.0-linux-x86_64 /usr/local/bin/npanel
+sudo install -m 755 npanel-0.3.0-linux-x86_64 /usr/local/bin/npanel
 sudo install -m 644 npanel.service /etc/systemd/system/npanel.service
 
 sudo useradd --system --home /var/lib/npanel --shell /usr/sbin/nologin npanel
