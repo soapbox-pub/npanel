@@ -302,9 +302,16 @@ fn confinement_probe() {
     if std::process::Command::new("/bin/true").status().is_ok() {
         could |= 4;
     }
-    // SAFETY: signal 0 only asks whether a signal could be sent.
-    if unsafe { libc::kill(libc::getppid(), 0) } == 0 {
+    // SAFETY: signal 0 only asks whether a signal could be sent. Pid 0 is
+    // the process group, which the gateway is in.
+    if unsafe { libc::kill(libc::getppid(), 0) == 0 || libc::kill(0, 0) == 0 } {
         could |= 8;
+    }
+    // A kernel without Landlock is the host's to fix, not npanel's, and
+    // seccomp still has to hold the lines above; anything else is a bug.
+    let (absent, unconfined): (Vec<_>, Vec<_>) = unconfined.into_iter().partition(|reason| reason == sandbox::NO_LANDLOCK);
+    if !absent.is_empty() {
+        eprintln!("{}", sandbox::NO_LANDLOCK);
     }
     if !unconfined.is_empty() {
         eprintln!("unconfined: {}", unconfined.join("; "));

@@ -435,8 +435,10 @@ pub fn confine() -> Vec<String> {
         }
     }
 
-    if let Err(error) = landlock() {
-        unconfined.push(format!("Landlock: {error}"));
+    match landlock() {
+        Ok(true) => {}
+        Ok(false) => unconfined.push(NO_LANDLOCK.into()),
+        Err(error) => unconfined.push(format!("Landlock: {error}")),
     }
     if let Err(error) = seccomp() {
         unconfined.push(format!("seccomp: {error}"));
@@ -449,9 +451,15 @@ pub fn confine() -> Vec<String> {
     vec!["Only Linux confines a preview script's process; here it is only a process of its own.".into()]
 }
 
-/// No file, no TCP, and no signal or abstract socket beyond the worker.
+/// What [`confine`] reports on a kernel without Landlock, which still leaves
+/// seccomp to refuse files, sockets, programs and signals.
 #[cfg(target_os = "linux")]
-fn landlock() -> Result<(), String> {
+pub const NO_LANDLOCK: &str = "Landlock: not enforced: this kernel has no Landlock";
+
+/// No file, no TCP, and no signal or abstract socket beyond the worker.
+/// False on a kernel without Landlock.
+#[cfg(target_os = "linux")]
+fn landlock() -> Result<bool, String> {
     use landlock::{Access, AccessFs, AccessNet, Ruleset, RulesetAttr, RulesetStatus, Scope, ABI};
 
     let status = Ruleset::default()
@@ -463,10 +471,7 @@ fn landlock() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     // Partly is as much as an older kernel's Landlock knows to enforce, and
     // seccomp covers the files and sockets it may not.
-    match status.ruleset {
-        RulesetStatus::NotEnforced => Err("not enforced: this kernel has no Landlock".into()),
-        _ => Ok(()),
-    }
+    Ok(status.ruleset != RulesetStatus::NotEnforced)
 }
 
 /// The system calls a worker is refused, whatever Landlock covered: opening
@@ -516,8 +521,10 @@ fn seccomp() -> Result<(), String> {
         rules.insert(call, Vec::new());
     }
     // Signals and limits for itself only: `abort` signals itself, and a
-    // limit is set with a pid of 0.
-    rules.insert(libc::SYS_kill, other(0, &[0, me])?);
+    // limit is set with a pid of 0. A signal to pid 0 goes to the whole
+    // process group, the gateway's included, which only Landlock's signal
+    // scoping (Linux 6.12) would otherwise stop.
+    rules.insert(libc::SYS_kill, other(0, &[me])?);
     rules.insert(libc::SYS_tgkill, other(0, &[me])?);
     rules.insert(libc::SYS_prlimit64, other(0, &[0, me])?);
 
