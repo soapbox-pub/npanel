@@ -9,9 +9,11 @@ import { ScrollToTop } from "@/components/ScrollToTop";
 // with the pages that use them.
 const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
 const AuditLogPage = lazy(() => import("@/pages/AuditLogPage"));
+const ErrorsPage = lazy(() => import("@/pages/ErrorsPage"));
 const HostDetailPage = lazy(() => import("@/pages/HostDetailPage"));
 const HostSectionPage = lazy(() => import("@/pages/HostSectionPage"));
 const HostsPage = lazy(() => import("@/pages/HostsPage"));
+const IssuePage = lazy(() => import("@/pages/IssuePage"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 const SettingsSectionPage = lazy(() => import("@/pages/SettingsSectionPage"));
@@ -26,6 +28,8 @@ export function AppRouter() {
           <Route path="/" element={<HostsPage />} />
           <Route path="/hosts/:hostname" element={<HostDetailPage />} />
           <Route path="/hosts/:hostname/analytics" element={<AnalyticsPage />} />
+          <Route path="/hosts/:hostname/errors" element={<ErrorsPage />} />
+          <Route path="/hosts/:hostname/errors/:id" element={<IssuePage />} />
           <Route path="/hosts/:hostname/:section" element={<HostSectionPage />} />
           <Route path="/users" element={<UsersPage />} />
           <Route path="/settings" element={<SettingsPage />} />

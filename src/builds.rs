@@ -2,8 +2,8 @@
 //!
 //! A build is a host's version chain flattened into one path map, plus every
 //! file npanel generates or rewrites for that host — a sitemap, a `robots.txt`
-//! with a line appended, `window.ENV` and the analytics tracker and every page
-//! loading them. All
+//! with a line appended, `window.ENV`, the analytics tracker and the error
+//! reporter, and every page loading them. All
 //! of it is worked out here, once, and stored as ordinary blobs with their
 //! compressed copies, so serving a request is a lookup and a send whatever the
 //! file is.
@@ -32,6 +32,7 @@ use tokio::time::Instant;
 use crate::analytics::tracker::{tracker_script, tracker_sha256, TRACKER_PATH};
 use crate::blobs::BlobStore;
 use crate::db::{BuildKind, Db, Host, HostBuild, SiteEvent, HOST_BUILD_COLUMNS};
+use crate::errors::reporter::{reporter_script, reporter_sha256, REPORTER_PATH};
 use crate::fields;
 use crate::hash::BlobHash;
 use crate::inject::{inject_script, versioned_src, Placement, Script, MAX_INJECT_BYTES};
@@ -89,6 +90,8 @@ struct BuildTarget {
     chain: Vec<String>,
     /// Whether its pages load the tracker.
     tracker: bool,
+    /// Whether its pages load the error reporter.
+    reporter: bool,
     /// The `window.ENV` script its pages load, if the host has variables.
     env: Option<String>,
     fingerprint: String,
@@ -462,6 +465,7 @@ impl HostBuilder {
                     .query_row([host_id], |row| row.get(0))
                     .optional()?;
                 let tracker = host.analytics;
+                let reporter = host.errors;
                 let vars = host_env(conn, host_id)?;
                 let env = (!vars.is_empty()).then(|| env_script(&vars));
 
@@ -475,7 +479,7 @@ impl HostBuilder {
                 Ok(origins
                     .into_iter()
                     .map(|(kind, origin)| {
-                        let fingerprint = fingerprint(&host, &origin, &chain, tracker, env.as_deref());
+                        let fingerprint = fingerprint(&host, &origin, &chain, tracker, reporter, env.as_deref());
                         BuildTarget {
                             host: host.clone(),
                             kind,
@@ -483,6 +487,7 @@ impl HostBuilder {
                             event: event.clone(),
                             chain: chain.clone(),
                             tracker,
+                            reporter,
                             env: env.clone(),
                             fingerprint,
                         }
@@ -687,7 +692,8 @@ struct Addition {
     msg: &'static str,
 }
 
-/// npanel's scripts — `window.ENV` and the analytics tracker — and every page
+/// npanel's scripts — `window.ENV`, the analytics tracker and the error
+/// reporter — and every page
 /// of the site loading them. Each page is rewritten once per distinct blob,
 /// with every script at once, and the rewritten page names the published one
 /// as its source.
@@ -706,6 +712,23 @@ fn scripts(conn: &Connection, blobs: &BlobStore, target: &BuildTarget, files: &m
             placement: Placement::Start,
             connects: false,
             msg: "env_added",
+        });
+    }
+    if target.reporter {
+        let body = reporter_script(&target.event.event_id);
+        additions.push(Addition {
+            path: REPORTER_PATH,
+            src: versioned_src(REPORTER_PATH, body.as_bytes()),
+            integrity: integrity(&body),
+            body,
+            module: false,
+            // It has to be listening before anything the site wrote runs, or
+            // an error while the page loads goes unseen. Small for that
+            // reason, as `window.ENV` is.
+            asynchronous: false,
+            placement: Placement::Start,
+            connects: true,
+            msg: "errors_added",
         });
     }
     if target.tracker {
@@ -865,8 +888,9 @@ fn store(conn: &Connection, blobs: &BlobStore, path: &str, bytes: &[u8], log: &L
 /// request and deliberately left out, so flipping one rebuilds nothing.
 ///
 /// `window.ENV` is left out too unless the host has variables, so adding them
-/// to npanel didn't rebuild the hosts that have none.
-fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, env: Option<&str>) -> String {
+/// to npanel didn't rebuild the hosts that have none, and the error reporter
+/// unless it is on, for the same reason.
+fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: bool, reporter: bool, env: Option<&str>) -> String {
     // A struct rather than `json!`, so the key order is fixed by the
     // declaration and not by a crate-wide serde_json feature.
     #[derive(serde::Serialize)]
@@ -880,6 +904,8 @@ fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: b
         tracker: Option<&'static str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         env: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reporter: Option<&'static str>,
     }
     let inputs = Inputs {
         builder: BUILDER_VERSION,
@@ -889,6 +915,7 @@ fn fingerprint(host: &Host, origin: &RequestOrigin, chain: &[String], tracker: b
         seo: i64::from(host.seo),
         tracker: tracker.then(tracker_sha256),
         env: env.map(|env| hex::encode(Sha256::digest(env.as_bytes()))),
+        reporter: reporter.then(reporter_sha256),
     };
     let serialized = serde_json::to_string(&inputs).expect("serializable");
     hex::encode(Sha256::digest(serialized.as_bytes()))
@@ -925,6 +952,7 @@ mod tests {
             merge_deployments: false,
             analytics: false,
             link_previews: false,
+            errors: false,
             created_by: String::new(),
             created_at: 0,
             updated_at: 0,
@@ -932,7 +960,7 @@ mod tests {
         let origin = RequestOrigin { hostname: "docs.example.com".into(), scheme: "https" };
         // Down to the key order: any change rebuilds every host.
         assert_eq!(
-            fingerprint(&host, &origin, &["e1".into()], false, None),
+            fingerprint(&host, &origin, &["e1".into()], false, false, None),
             sha(&format!(
                 r#"{{"builder":{BUILDER_VERSION},"origin":"https://docs.example.com","hostname":"docs.example.com","chain":["e1"],"seo":1,"tracker":null}}"#
             ))
@@ -1027,6 +1055,21 @@ mod tests {
             blobs.read_text(BlobHash::parse(&index.0).unwrap(), 10_000),
             format!(r#"<html><head><script src="{src}"></script><title>Hi</title><script type="module" async src="{tracker}"></script></head><body>hello</body></html>"#)
         );
+
+        // Error reporting on: the reporter goes first of all, naming the
+        // version it was built from.
+        t.db.with(|conn| Ok(conn.execute("UPDATE hosts SET errors = 1 WHERE id = ?", [host_id])?)).unwrap();
+        builder.hosts_changed(Some(&[host_id]));
+        builder.when_idle().await;
+        let (fourth, list) = files(&t.db);
+        assert_ne!(fourth, third);
+        assert!(list.iter().any(|(p, e)| p == REPORTER_PATH && e.is_none()));
+        let index = t
+            .db
+            .with(|conn| Ok(conn.query_row("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'", [fourth], |r| r.get::<_, String>(0))?))
+            .unwrap();
+        let reporter = versioned_src(REPORTER_PATH, reporter_script("e1").as_bytes());
+        assert!(blobs.read_text(BlobHash::parse(&index).unwrap(), 10_000).starts_with(&format!(r#"<html><head><script src="{reporter}"></script><script src="{src}">"#)));
 
         builder.stop().await;
     }

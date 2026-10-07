@@ -29,6 +29,8 @@ use crate::builds::current_build;
 use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, HOST_COLUMNS, SITE_EVENT_COLUMNS};
 use crate::deploy::Deployments;
 use crate::dns::DnsTargets;
+use crate::errors::queries::STATUSES;
+use crate::errors::Errors;
 use crate::fields;
 use crate::hostname::{is_onion_address, normalize_hostname, parse_hostname};
 use crate::identifiers::{parse_nip05_name, parse_pubkey, parse_relay_list, parse_relay_url};
@@ -65,6 +67,7 @@ pub struct ApiDeps {
     pub settings: Arc<Settings>,
     pub deployments: Arc<dyn Deployments>,
     pub analytics: Arc<Analytics>,
+    pub errors: Arc<Errors>,
     pub dns: DnsTargets,
     pub log: Logger,
     pub tor: Arc<TorService>,
@@ -219,6 +222,11 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/hosts/{hostname}/stats/current-visitors", get(stats_current_visitors))
         .route("/api/hosts/{hostname}/stats/suggestions/{filter}", get(stats_suggestions))
         .route("/api/stats/sparklines", get(sparklines))
+        .route("/api/hosts/{hostname}/issues", get(list_issues))
+        .route("/api/hosts/{hostname}/issues/{id}", get(get_issue).patch(update_issue))
+        .route("/api/hosts/{hostname}/issues/{id}/events", get(issue_events))
+        .route("/api/hosts/{hostname}/issues/{id}/events/{event}", get(issue_event))
+        .route("/api/errors/summary", get(errors_summary))
         .route("/api/users", get(list_users).post(create_user))
         .route("/api/users/{pubkey}", patch(update_user).delete(delete_user))
         .route("/api/settings", get(get_settings).put(put_settings))
@@ -499,6 +507,7 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "merge_deployments": host.merge_deployments,
         "analytics": host.analytics,
         "link_previews": host.link_previews,
+        "errors": host.errors,
         "onion": details.onion,
         "certificates": details.certificates,
         "pinned_event_id": host.pinned_event_id,
@@ -536,6 +545,7 @@ fn host_summary(host: &Host) -> Map<String, Value> {
         ("merge_deployments", json!(i64::from(host.merge_deployments))),
         ("analytics", json!(i64::from(host.analytics))),
         ("link_previews", json!(i64::from(host.link_previews))),
+        ("errors", json!(i64::from(host.errors))),
         ("pinned_event_id", json!(host.pinned_event_id)),
     ] {
         summary.insert(key.into(), value);
@@ -607,6 +617,7 @@ struct Flags {
     merge_deployments: Option<bool>,
     analytics: Option<bool>,
     link_previews: Option<bool>,
+    errors: Option<bool>,
 }
 
 impl Flags {
@@ -622,6 +633,7 @@ impl Flags {
             ("merge_deployments", self.merge_deployments),
             ("analytics", self.analytics),
             ("link_previews", self.link_previews),
+            ("errors", self.errors),
         ]
         .into_iter()
         .filter_map(|(column, value)| Some((column, value?)))
@@ -654,6 +666,7 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     let merge = flags.merge_deployments.unwrap_or(false);
     let analytics = flags.analytics.unwrap_or(false);
     let link_previews = flags.link_previews.unwrap_or(false);
+    let errors = flags.errors.unwrap_or(false);
 
     let (u, name, addr) = (user.clone(), hostname.clone(), address.clone());
     let created = deps
@@ -663,9 +676,9 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
             let tx = conn.transaction()?;
             let inserted = tx.execute(
                 "INSERT INTO hosts (hostname, pubkey, kind, identifier, pinned_event_id, enabled, hidden, redirect_www, spa, csp, seo,
-                   merge_deployments, analytics, link_previews, created_by, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, link_previews, u.pubkey, now, now],
+                   merge_deployments, analytics, link_previews, errors, created_by, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, link_previews, errors, u.pubkey, now, now],
             );
             match inserted {
                 Err(error) if is_unique_violation(&error) => return Ok(None),
@@ -699,6 +712,7 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     // straight away, and no deploy is coming along to say so.
     deps.deployments.rebuild(vec![host.id]);
     deps.analytics.hosts_changed().await;
+    deps.errors.hosts_changed().await;
 
     Ok(json_reply(StatusCode::CREATED, json!({ "host": serialize_host(&deps, host).await? })))
 }
@@ -823,6 +837,7 @@ async fn update_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     // what the build is made of and does nothing if that didn't change.
     deps.deployments.rebuild(vec![host.id]);
     deps.analytics.hosts_changed().await;
+    deps.errors.hosts_changed().await;
     // Tor publishes a name, and does not care which nsite is behind it.
     if changed("enabled") {
         deps.tor.hosts_changed();
@@ -856,6 +871,7 @@ async fn delete_host(State(deps): State<Deps>, user: AuthUser, Path(hostname): P
         tls.hosts_changed();
     }
     deps.analytics.hosts_changed().await;
+    deps.errors.hosts_changed().await;
     ok(json!({ "ok": true }))
 }
 
@@ -1331,7 +1347,13 @@ async fn stats_suggestions(
 
 /// The last 24 hours of every site the user may manage, in one request.
 async fn sparklines(State(deps): State<Deps>, user: AuthUser) -> ApiResult {
-    let hosts = deps
+    let hosts = managed_hosts(&deps, user).await?;
+    relay(deps.analytics.sparklines(hosts).await)
+}
+
+/// Every host the user may manage.
+async fn managed_hosts(deps: &Deps, user: AuthUser) -> Result<Vec<QueryHost>, ApiError> {
+    Ok(deps
         .db
         .call(move |conn| {
             let (sql, args): (&str, Vec<String>) = if user.is_admin() {
@@ -1344,8 +1366,76 @@ async fn sparklines(State(deps): State<Deps>, user: AuthUser) -> ApiResult {
                 .query_map(rusqlite::params_from_iter(args), |r| Ok(QueryHost { id: r.get(0)?, hostname: r.get(1)? }))?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })
-        .await?;
-    relay(deps.analytics.sparklines(hosts).await)
+        .await?)
+}
+
+/// A page of a site's issues in one state: `?status=` (unresolved by
+/// default), and `?cursor=` from the page before.
+async fn list_issues(State(deps): State<Deps>, user: AuthUser, Path(hostname): Path<String>, Query(query): Query<HashMap<String, String>>) -> ApiResult {
+    let host = accessible_host(&deps, &user, &hostname).await?;
+    let status = query.get("status").cloned().unwrap_or_else(|| "unresolved".into());
+    relay(deps.errors.issues(host.id, status, query.get("cursor").cloned()).await)
+}
+
+fn issue_id(raw: &str) -> Result<i64, ApiError> {
+    raw.parse().map_err(|_| ApiError::NotFound("This site has no such issue.".into()))
+}
+
+async fn get_issue(State(deps): State<Deps>, user: AuthUser, Path((hostname, id)): Path<(String, String)>) -> ApiResult {
+    let host = accessible_host(&deps, &user, &hostname).await?;
+    relay(deps.errors.issue(host.id, issue_id(&id)?).await)
+}
+
+/// Resolve, ignore or reopen an issue: `{ "status": … }`.
+async fn update_issue(State(deps): State<Deps>, user: AuthUser, Extension(body): Extension<RawBody>, Path((hostname, id)): Path<(String, String)>) -> ApiResult {
+    #[derive(Deserialize)]
+    struct IssuePatch {
+        status: String,
+    }
+    let host = accessible_host(&deps, &user, &hostname).await?;
+    let id = issue_id(&id)?;
+    let IssuePatch { status } = body.json("Expected a JSON body with a status.")?;
+    let Some(status) = STATUSES.iter().copied().find(|s| *s == status) else {
+        return Err(bad("Status must be unresolved, resolved, or ignored."));
+    };
+    let previous = match deps.errors.set_status(host.id, id, status).await {
+        Ok(Some(previous)) => previous,
+        Ok(None) => return Err(ApiError::NotFound("This site has no such issue.".into())),
+        Err(answer) => return relay(answer),
+    };
+    if previous != status {
+        let (actor, target) = (user.pubkey.clone(), format!("{}#{id}", host.hostname));
+        deps.db
+            .call(move |conn| Ok(audit(conn, &actor, "issue.update", Some(&target), Some(&json!(previous)), Some(&json!(status)))?))
+            .await?;
+    }
+    relay(deps.errors.issue(host.id, id).await)
+}
+
+/// A page of an issue's kept events, newest first: `?before=` from the page
+/// before.
+async fn issue_events(
+    State(deps): State<Deps>,
+    user: AuthUser,
+    Path((hostname, id)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+) -> ApiResult {
+    let host = accessible_host(&deps, &user, &hostname).await?;
+    let before = query.get("before").and_then(|b| b.parse().ok());
+    relay(deps.errors.events(host.id, issue_id(&id)?, before).await)
+}
+
+async fn issue_event(State(deps): State<Deps>, user: AuthUser, Path((hostname, id, event)): Path<(String, String, String)>) -> ApiResult {
+    let host = accessible_host(&deps, &user, &hostname).await?;
+    let event = event.parse().map_err(|_| ApiError::NotFound("This issue has no such event.".into()))?;
+    relay(deps.errors.event(host.id, issue_id(&id)?, event).await)
+}
+
+/// Unresolved issues and the last day's reports of every site the user may
+/// manage, in one request.
+async fn errors_summary(State(deps): State<Deps>, user: AuthUser) -> ApiResult {
+    let hosts = managed_hosts(&deps, user).await?;
+    relay(deps.errors.summary(hosts).await)
 }
 
 async fn list_users(State(deps): State<Deps>, _: Admin) -> ApiResult {

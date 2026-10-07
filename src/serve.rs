@@ -27,6 +27,8 @@ use crate::analytics::{Analytics, Peer};
 use crate::blobs::{BlobStore, Encoding, Variants};
 use crate::builds::current_build;
 use crate::db::{BuildKind, Db};
+use crate::errors::reporter::is_report_path;
+use crate::errors::Errors;
 use crate::fields;
 use crate::hash::BlobHash;
 use crate::hostname::{is_onion_address, www_apex};
@@ -185,6 +187,7 @@ pub struct SiteServerDeps {
     pub site_csp: Arc<SiteCsp>,
     pub serve_cache: Arc<ServeCache>,
     pub analytics: Arc<Analytics>,
+    pub errors: Arc<Errors>,
     pub link_previews: Arc<LinkPreviews>,
     pub scripts: Arc<Scripts>,
     pub log: Logger,
@@ -208,7 +211,7 @@ impl SiteServer {
 
     /// Serve one request for a site, as it reached the listener `origin`
     /// describes. `peer` is who the connection came from; only analytics
-    /// reads it.
+    /// and error reports read it.
     pub async fn serve(&self, request: Request<Body>, origin: RequestOrigin, peer: Peer) -> Reply {
         // The one path that isn't the site's, on any site: npanel's own event
         // endpoint, which the tracker in every counting site's build reports
@@ -222,6 +225,18 @@ impl SiteServer {
                 }
             };
             return self.deps.analytics.forward_event(request, site, peer).await;
+        }
+        // And the endpoint the error reporter in every reporting site's build
+        // sends to, which a Sentry SDK's DSN can name too.
+        if is_report_path(request.uri().path()) {
+            let site = match self.deps.serve_cache.lookup(&origin.hostname).await {
+                Ok(site) => site.map(|site| site.host.host.id),
+                Err(error) => {
+                    self.deps.log.error("site_unavailable", with_err(fields! { "hostname" => origin.hostname.as_str(), "path" => request.uri().path() }, &error));
+                    return text(StatusCode::SERVICE_UNAVAILABLE, "This site is temporarily unavailable. Try again in a moment.");
+                }
+            };
+            return self.deps.errors.forward_report(request, site, &origin.hostname, peer).await;
         }
 
         if request.method() == Method::OPTIONS && request.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {

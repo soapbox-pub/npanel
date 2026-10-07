@@ -498,6 +498,12 @@ Default `100000`. How many previews are kept on disk, in
 `DATA_DIR/previews.sqlite3`. Past it, the least recently made go first. A
 preview is a few kilobytes, one with an article up to a few hundred.
 
+### `errors_retention_days`
+
+Default `90`, between 1 and 365. How long error reports are kept, in
+`DATA_DIR/errors.sqlite3`: an older report is forgotten, and so is an issue
+with none newer — along with its counts. Checked hourly.
+
 ## Not a setting: the Content Security Policy
 
 Served sites carry a `Content-Security-Policy`, and there is no instance-wide

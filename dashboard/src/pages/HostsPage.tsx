@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { ArrowDownRight, ArrowUpRight, Globe, Search } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Bug, Globe, Search } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ import { Sparkline } from '@/components/Sparkline';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSparklines } from '@/hooks/useAnalytics';
+import { useErrorsSummary } from '@/hooks/useErrors';
 import { useHosts } from '@/hooks/useNpanel';
 import type { Host, Sparkline as SparklineData } from '@/lib/api-types';
 import { compactNumber } from '@/lib/format';
@@ -27,6 +28,7 @@ export function HostsPage() {
 
   const hosts = useHosts();
   const sparklines = useSparklines();
+  const errors = useErrorsSummary();
   const [search, setSearch] = useState('');
 
   const mine = hosts.data?.hosts ?? [];
@@ -74,6 +76,7 @@ export function HostsPage() {
                 host={host}
                 sparkline={sparklines.data?.[host.hostname]}
                 loading={sparklines.isLoading}
+                unresolved={errors.data?.[host.hostname]?.unresolved ?? 0}
               />
             </li>
           ))}
@@ -89,7 +92,18 @@ function Grid({ children }: { children: ReactNode }) {
   return <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">{children}</ul>;
 }
 
-function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: SparklineData; loading: boolean }) {
+function SiteCard({
+  host,
+  sparkline,
+  loading,
+  unresolved,
+}: {
+  host: Host;
+  sparkline?: SparklineData;
+  loading: boolean;
+  /** Its unresolved errors, flagged on the card so a broken site stands out. */
+  unresolved: number;
+}) {
   const status = siteStatus(host);
 
   const { preview } = host;
@@ -106,6 +120,15 @@ function SiteCard({ host, sparkline, loading }: { host: Host; sparkline?: Sparkl
             <p className="truncate font-semibold">{preview.title ?? host.hostname}</p>
             {preview.title && <p className="truncate text-xs text-muted-foreground">{host.hostname}</p>}
           </div>
+          {unresolved > 0 && (
+            <span
+              className="flex shrink-0 items-center gap-1 rounded-full bg-destructive/12 px-2 py-0.5 text-xs font-medium text-destructive tabular-nums"
+              title={`${unresolved} unresolved ${unresolved === 1 ? 'error' : 'errors'}`}
+            >
+              <Bug className="size-3" aria-hidden />
+              {compactNumber(unresolved)}
+            </span>
+          )}
         </div>
 
         {preview.description && (

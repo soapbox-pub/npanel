@@ -223,7 +223,7 @@ impl Analytics {
         };
 
         let body = match tokio::time::timeout(EVENT_READ_TIMEOUT, read_capped(&parts.headers, body, MAX_EVENT_BODY)).await {
-            Ok(Some(body)) => body,
+            Ok(Some(body)) => String::from_utf8_lossy(&body).into_owned(),
             Ok(None) => {
                 return (StatusCode::PAYLOAD_TOO_LARGE, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], "Request body is too large.")
                     .into_response()
@@ -404,8 +404,8 @@ async fn run(shared: &Arc<Shared>, stop: &CancellationToken) -> anyhow::Result<(
     Ok(())
 }
 
-/// Who is at the other end of the connection an event arrived on, which
-/// decides where the visitor's address comes from.
+/// Who is at the other end of the connection an event or an error report
+/// arrived on, which decides where the visitor's address comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Peer {
     /// The reverse proxy, whose `X-Forwarded-For` names the visitor.
@@ -425,7 +425,7 @@ pub enum Peer {
 /// the visitor where the last would be the CDN. Without one, the headers are
 /// the sender's to write and only the socket can be believed — and over Tor
 /// there is not even that, so there is no address at all.
-fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, peer: Peer) -> String {
+pub fn client_ip(forwarded_for: Option<&str>, real_ip: Option<&str>, peer: Peer) -> String {
     match peer {
         Peer::Proxy(proxy) => {
             let forwarded = forwarded_for.and_then(|f| f.split(',').next()).map(str::trim).filter(|f| !f.is_empty());
@@ -488,16 +488,15 @@ async fn refresh_hosts(shared: &Arc<Shared>) {
     }
 }
 
-/// A request body as text, or `None` if it is longer than `max` bytes. A
-/// declared length over the limit is refused before a byte is read.
-pub async fn read_capped(headers: &HeaderMap, body: Body, max: usize) -> Option<String> {
+/// A request body, or `None` if it is longer than `max` bytes. A declared
+/// length over the limit is refused before a byte is read.
+pub async fn read_capped(headers: &HeaderMap, body: Body, max: usize) -> Option<bytes::Bytes> {
     let declared = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
     if declared.is_some_and(|d| d > max) {
         return None;
     }
     let limited = http_body_util::Limited::new(body, max);
-    let bytes = limited.collect().await.ok()?.to_bytes();
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some(limited.collect().await.ok()?.to_bytes())
 }
 
 #[cfg(test)]

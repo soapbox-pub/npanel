@@ -64,6 +64,8 @@ function summary(id: SettingsSectionId, settings: Settings): string | undefined 
       return settings.tor_enabled ? 'On' : 'Off';
     case 'analytics':
       return settings.analytics_timezone.replaceAll('_', ' ');
+    case 'errors':
+      return settings.errors_retention_days === undefined ? undefined : `Kept ${settings.errors_retention_days} days`;
     default:
       return undefined;
   }

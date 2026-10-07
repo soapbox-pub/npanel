@@ -7,6 +7,9 @@
 //!
 //! The previous salt is kept for one day for the sake of visits in progress: a
 //! visitor browsing across midnight is found by trying the old salt as well.
+//!
+//! Error reports count the visitors they affected the same way, under salts
+//! of their own kept in their own database: see [`SaltStore`].
 
 use anyhow::Result;
 use hmac::{Hmac, Mac};
@@ -15,7 +18,25 @@ use sha2::Sha256;
 
 use super::store::AnalyticsStore;
 
-const DAY: i64 = 24 * 60 * 60;
+pub const DAY: i64 = 24 * 60 * 60;
+
+/// Where salts are kept: the newest two, and a way to mint the next.
+pub trait SaltStore {
+    /// The newest salts, newest first, with when each was made.
+    fn salts(&self) -> Result<Vec<(Vec<u8>, i64)>>;
+    /// Mint a salt, and destroy every one but it and the one before.
+    fn rotate_salt(&self, now: i64) -> Result<Vec<u8>>;
+}
+
+impl SaltStore for AnalyticsStore {
+    fn salts(&self) -> Result<Vec<(Vec<u8>, i64)>> {
+        AnalyticsStore::salts(self)
+    }
+
+    fn rotate_salt(&self, now: i64) -> Result<Vec<u8>> {
+        AnalyticsStore::rotate_salt(self, now)
+    }
+}
 
 #[derive(Default)]
 pub struct Salts {
@@ -28,7 +49,7 @@ pub struct Salts {
 impl Salts {
     /// Rotate if the current salt is from before today. Cheap enough to call
     /// per event: the store is only locked on the first event of a day.
-    pub fn refresh(&mut self, store: &Mutex<AnalyticsStore>, now: i64) -> Result<()> {
+    pub fn refresh(&mut self, store: &Mutex<impl SaltStore>, now: i64) -> Result<()> {
         let today = now - now.rem_euclid(DAY);
         if self.day == today && !self.current.is_empty() {
             return Ok(());
@@ -54,7 +75,7 @@ impl Salts {
     /// A visitor's id under the current salt, and under the previous one if
     /// there is one: 48 bits of an HMAC, enough that two visitors to one site
     /// on one day colliding is a one-in-millions event.
-    pub fn user_ids(&mut self, store: &Mutex<AnalyticsStore>, now: i64, parts: &[&str]) -> Result<(i64, Option<i64>)> {
+    pub fn user_ids(&mut self, store: &Mutex<impl SaltStore>, now: i64, parts: &[&str]) -> Result<(i64, Option<i64>)> {
         self.refresh(store, now)?;
         let input = parts.concat();
         Ok((hash(&self.current, &input), self.previous.as_ref().map(|salt| hash(salt, &input))))

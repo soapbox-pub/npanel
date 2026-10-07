@@ -68,6 +68,7 @@ const SITE_FLAGS: { key: string; label: string; inverted?: boolean }[] = [
   { key: 'hidden', label: 'Public site list', inverted: true },
   { key: 'seo', label: 'Search engine defaults' },
   { key: 'link_previews', label: 'Link previews' },
+  { key: 'errors', label: 'Error reporting' },
 ];
 
 /** Settings, as the Settings page labels them. */
@@ -97,6 +98,7 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   link_preview_concurrency: { label: 'Link preview lookups at once' },
   link_preview_misses_per_minute: { label: 'Link preview script runs', format: (value) => `${value} a minute` },
   link_preview_max_entries: { label: 'Link previews kept' },
+  errors_retention_days: { label: 'Error reports kept for', format: (value) => `${value} days` },
 };
 
 const ROLES: Record<string, string> = { admin: 'Admin', staff: 'Staff' };
@@ -211,6 +213,14 @@ export function describe(entry: AuditEntry): Activity {
 
     case 'settings.update':
       return settingUpdate(target, entry.old_value, entry.new_value);
+
+    case 'issue.update': {
+      // `hostname#id`, the issue's number on that site.
+      const hostname = target.replace(/#\d+$/, '');
+      const verbs: Record<string, string> = { resolved: 'resolved', ignored: 'ignored', unresolved: 'reopened' };
+      const verb = verbs[String(entry.new_value)];
+      return { kind: 'site-changed', sentence: [verb ?? 'changed', 'an error on', { site: hostname }], details: [] };
+    }
 
     case 'link_preview.refresh':
       return {

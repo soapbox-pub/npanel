@@ -84,6 +84,7 @@ urlpattern = "0.6"
 x509-parser = "0.18"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+sourcemap = "9"
 
 # The process a site's preview script runs in, confined: no files, no
 # sockets, no other processes.

@@ -17,6 +17,7 @@ mod dns;
 mod hash;
 #[cfg(test)]
 mod e2e;
+mod errors;
 mod hostname;
 mod html;
 mod identifiers;
@@ -59,6 +60,7 @@ use crate::blobs::BlobStore;
 use crate::config::Config;
 use crate::db::Db;
 use crate::deploy::{DeployConfig, DeployService, Deployments};
+use crate::errors::{Errors, ErrorsConfig};
 use crate::log::Logger;
 use crate::serve::{ServeCache, SiteServer, SiteServerDeps};
 use crate::settings::Settings;
@@ -136,6 +138,9 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         AnalyticsConfig { data_dir: config.data_dir.clone(), download_geo: true },
     ));
 
+    // npanel's error tracker, on a thread of its own.
+    let errors = Arc::new(Errors::start(db.clone(), blobs.clone(), settings.clone(), log, ErrorsConfig { data_dir: config.data_dir.clone() }));
+
     // Link previews for crawlers, looked up on a thread of their own.
     let link_previews = Arc::new(link_previews::LinkPreviews::start(
         settings.clone(),
@@ -152,6 +157,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         site_csp: site_csp.clone(),
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
+        errors: errors.clone(),
         link_previews: link_previews.clone(),
         scripts: scripts.clone(),
         log,
@@ -203,6 +209,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         settings: settings.clone(),
         deployments: deployments.clone(),
         analytics: analytics.clone(),
+        errors: errors.clone(),
         dns: dns::DnsTargets::new(config.dashboard_host.clone(), settings.clone(), log),
         log,
         tor: tor.clone(),
@@ -294,6 +301,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     tor.stop().await;
     deployments.stop().await;
     analytics.stop().await;
+    errors.stop().await;
     link_previews.stop().await;
 
     Ok(())

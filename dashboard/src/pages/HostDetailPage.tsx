@@ -3,6 +3,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart3,
+  Bug,
   ChevronRight,
   RefreshCw,
 } from 'lucide-react';
@@ -29,6 +30,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useSparklines } from '@/hooks/useAnalytics';
+import { useErrorsSummary } from '@/hooks/useErrors';
 import { useDeleteHost, useHost, useMe, useSyncHost } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
 import type { Host } from '@/lib/api-types';
@@ -138,7 +140,10 @@ export function HostDetailPage() {
         </p>
       )}
 
-      <Visitors host={data} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[2fr_1fr]">
+        <Visitors host={data} />
+        <Errors host={data} />
+      </div>
 
       <SiteMenu host={data} admin={me.data?.role === 'admin'} />
 
@@ -216,6 +221,46 @@ function Visitors({ host }: { host: Host }) {
   );
 }
 
+/** The site's unresolved errors at a glance, and the way into them. */
+function Errors({ host }: { host: Host }) {
+  const summary = useErrorsSummary();
+  const errors = summary.data?.[host.hostname];
+
+  return (
+    <Link
+      to={`/hosts/${host.hostname}/errors`}
+      className="group flex items-center gap-6 rounded-2xl bg-card p-5 surface transition-shadow hover:surface-lift focus-visible:ring-[3px] focus-visible:ring-ring/40 focus-visible:outline-hidden"
+    >
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="flex items-center gap-1.5 text-sm font-medium text-primary">
+          <Bug className="size-4" aria-hidden />
+          Errors
+        </p>
+        {!host.errors && !errors?.unresolved ? (
+          <p className="text-sm text-muted-foreground">Not reporting errors</p>
+        ) : summary.isLoading ? (
+          <Skeleton className="h-8 w-24" />
+        ) : (
+          <>
+            <p
+              className={cn(
+                'text-2xl font-bold tabular-nums',
+                errors?.unresolved ? 'text-destructive' : 'text-foreground',
+              )}
+            >
+              {compactNumber(errors?.unresolved ?? 0)}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              unresolved · {compactNumber(errors?.events_24h ?? 0)} in last 24h
+            </p>
+          </>
+        )}
+      </div>
+      <ChevronRight className="size-5 shrink-0 text-muted-foreground/60" aria-hidden />
+    </Link>
+  );
+}
+
 /** Every page of the site's settings, as Settings lists its panes. */
 function SiteMenu({ host, admin }: { host: Host; admin: boolean }) {
   return (
@@ -252,7 +297,9 @@ function summary(id: SiteSectionId, host: Host): string | undefined {
       if (!host.enabled) return 'Off';
       return host.spa ? 'Single-page app' : 'Static site';
     case 'privacy':
-      return host.analytics ? 'Analytics on' : undefined;
+      if (host.analytics && host.errors) return 'Analytics and errors on';
+      if (host.analytics) return 'Analytics on';
+      return host.errors ? 'Error reporting on' : undefined;
     case 'seo':
       return host.hidden ? 'Unlisted' : undefined;
     case 'versions':

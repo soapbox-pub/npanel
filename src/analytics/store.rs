@@ -114,7 +114,7 @@ pub struct AnalyticsStore {
 
 impl AnalyticsStore {
     pub fn new(mut conn: Connection) -> Result<AnalyticsStore> {
-        migrate(&mut conn)?;
+        crate::db::apply_migrations(&mut conn, MIGRATIONS, None)?;
         Ok(AnalyticsStore { conn })
     }
 
@@ -244,23 +244,4 @@ impl AnalyticsStore {
         self.conn.execute("DELETE FROM salts WHERE id NOT IN (SELECT id FROM salts ORDER BY id DESC LIMIT 2)", [])?;
         Ok(salt)
     }
-}
-
-fn migrate(conn: &mut Connection) -> Result<()> {
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)")?;
-    let applied: std::collections::HashSet<String> =
-        conn.prepare("SELECT name FROM schema_migrations")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-
-    for (name, statements) in MIGRATIONS {
-        if applied.contains(*name) {
-            continue;
-        }
-        let tx = conn.transaction()?;
-        for statement in *statements {
-            tx.execute_batch(statement)?;
-        }
-        tx.execute("INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)", params![name, crate::util::now()])?;
-        tx.commit()?;
-    }
-    Ok(())
 }

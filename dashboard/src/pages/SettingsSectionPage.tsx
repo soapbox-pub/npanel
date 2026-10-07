@@ -70,6 +70,7 @@ interface Draft {
   linkPreviewConcurrency?: string;
   linkPreviewMissesPerMinute?: string;
   linkPreviewMaxEntries?: string;
+  errorsRetentionDays?: string;
 }
 
 /**
@@ -120,6 +121,7 @@ export function SettingsSectionPage() {
   const linkPreviewMissesPerMinute =
     draft.linkPreviewMissesPerMinute ?? String(current?.link_preview_misses_per_minute ?? '');
   const linkPreviewMaxEntries = draft.linkPreviewMaxEntries ?? String(current?.link_preview_max_entries ?? '');
+  const errorsRetentionDays = draft.errorsRetentionDays ?? String(current?.errors_retention_days ?? '');
 
   const save = async () => {
     try {
@@ -147,6 +149,8 @@ export function SettingsSectionPage() {
         link_preview_concurrency: Number(linkPreviewConcurrency),
         link_preview_misses_per_minute: Number(linkPreviewMissesPerMinute),
         link_preview_max_entries: Number(linkPreviewMaxEntries),
+        // Left out for a server that predates it, which would refuse it.
+        ...(current?.errors_retention_days === undefined ? {} : { errors_retention_days: Number(errorsRetentionDays) }),
       });
 
       setDraft({});
@@ -427,6 +431,20 @@ export function SettingsSectionPage() {
               </SelectContent>
             </Select>
           </Row>
+        </Section>
+      )}
+
+      {section.id === 'errors' && (
+        <Section footer="Issues with no report newer than this are forgotten too. Counts stay exact; each issue keeps its first report and its latest hundred.">
+          <NumberRow
+            id="errors-retention-days"
+            label="Keep reports for"
+            unit="days"
+            min={1}
+            max={365}
+            value={errorsRetentionDays}
+            onChange={(value) => setDraft({ ...draft, errorsRetentionDays: value })}
+          />
         </Section>
       )}
 

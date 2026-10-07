@@ -183,6 +183,8 @@ A host object:
   "seo": true,
   "merge_deployments": false,
   "analytics": false,
+  "link_previews": false,
+  "errors": false,
   "onion": "abc…xyz.onion",
   "certificates": [
     { "hostname": "example.org", "expires_at": 1761000000, "error": null, "failures": 0, "attempted_at": 1753000000 }
@@ -282,6 +284,7 @@ Any subset of:
   "merge_deployments": true,
   "analytics": true,
   "link_previews": true,
+  "errors": true,
   "pinned_event_id": "<event id>"
 }
 ```
@@ -417,6 +420,15 @@ directives govern loading a script and `fetch`ing — and the header follows
 the page. A site that publishes files under `/_npanel/` has
 `/_npanel/script.js` shadowed while this is on.
 
+`errors` reports what the site's pages throw, and defaults to `false`. With it
+on, every HTML page loads npanel's error reporter, `/_npanel/errors.js`, as the
+first thing in its `<head>` — a small classic script, so it is listening before
+anything the site wrote runs — and it sends uncaught errors and unhandled
+rejections, with the clicks, navigations, requests and console output before
+them, to `/_npanel/api/report` on the same origin as Sentry envelopes. A
+`<meta>` policy is widened for it as for the tracker. Issues are read with the
+[errors](#errors) endpoints. See [errors](architecture.md#errors).
+
 `link_previews` runs the site's preview script,
 `/.well-known/npanel/preview.js`, for crawlers, and defaults to `false`. It is
 for sites whose pages a crawler can't read by itself, like a Nostr client that
@@ -438,7 +450,7 @@ or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
 
 A change to `hostname`, `address`, `pinned_event_id`, `seo`,
-`merge_deployments`, or `analytics` rebuilds the host in the background, since each changes
+`merge_deployments`, `analytics` or `errors` rebuilds the host in the background, since each changes
 the files it serves. The response doesn't wait: the previous build goes on
 serving until the new one is complete, which is usually a moment.
 
@@ -726,6 +738,82 @@ before (100 when there were none), and visitors in each hour, oldest first —
 
 ```json
 { "sparklines": { "docs.example.com": { "visitors": 42, "change": -8, "hours": [0, 3, 1, "…"] } } }
+```
+
+## Errors
+
+A site's errors, grouped into issues, for anyone who may manage the site.
+Like analytics, they answer whether or not the site is reporting right now,
+and are a `503` while the errors thread is starting or restarting.
+
+### `GET /api/hosts/:hostname/issues?status=unresolved&cursor=`
+
+A page of 50 issues in one state — `unresolved` (the default), `resolved` or
+`ignored` — the most recently seen first, each with its reports in each of
+the last 24 hours, oldest first. `counts` is how many the site has in each
+state, and `next` the `cursor` for the page after, or `null` on the last.
+
+```json
+{
+  "issues": [{
+    "id": 7,
+    "status": "unresolved",
+    "title": "TypeError: Cannot read properties of undefined (reading 'name')",
+    "culprit": "render (src/App.tsx)",
+    "level": "error",
+    "first_seen": 1759000000,
+    "last_seen": 1759700000,
+    "events": 41,
+    "visitors": 12,
+    "first_release": "<event id>",
+    "last_release": "<event id>",
+    "hours": [0, 0, 3, "…"]
+  }],
+  "counts": { "unresolved": 1, "resolved": 4, "ignored": 0 },
+  "next": null
+}
+```
+
+`events` counts every report, `visitors` the visitors it reached, each once a
+day (see [privacy](architecture.md#errors)). A release is the event id of the
+version the report came from.
+
+### `GET /api/hosts/:hostname/issues/:id`
+
+`{"issue": …}`: one issue as above, with `hours` covering the last 14 days,
+and `latest_event`, the id of its newest kept event.
+
+### `PATCH /api/hosts/:hostname/issues/:id`
+
+`{"status": "resolved"}`, `"ignored"` or `"unresolved"`. Answers as `GET`. A
+resolved issue stays resolved when it happens again; its counts go on
+counting. Audited as `issue.update`, with the target `hostname#id`.
+
+### `GET /api/hosts/:hostname/issues/:id/events?before=`
+
+A page of 50 of the issue's kept events, newest first, and `next`, the
+`before` for the page after. An issue keeps its first event and its latest
+100; its counts are of every one.
+
+```json
+{ "events": [{ "id": 90, "event_id": "<32 hex>", "received_at": 1759700000, "release": "<event id>", "url": "https://example.org/", "browser": "Firefox", "os": "GNU/Linux" }], "next": null }
+```
+
+### `GET /api/hosts/:hostname/issues/:id/events/:event`
+
+One event as above, with `report`: its exceptions (innermost cause first),
+each frame's place in the original source where the site's source map gives
+one (`mapped`) and the lines around it (`context`), its breadcrumbs, page,
+release, tags and device. `older` and `newer` are the ids either side, or
+`null`.
+
+### `GET /api/errors/summary`
+
+For every site the caller may manage, by hostname: how many issues are
+unresolved, and how many reports came in over the last 24 hours.
+
+```json
+{ "example.org": { "unresolved": 3, "events_24h": 17 } }
 ```
 
 ## Users — admin

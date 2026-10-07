@@ -36,6 +36,7 @@ src/
   tls_check.rs          certificate authorization, on its own port
   tls/                  HTTPS without a proxy: ACME certificates, renewed
   analytics/            the Plausible-compatible analytics runtime
+  errors/               the Sentry-compatible error tracker, and its reporter
   link_previews/        sites' preview scripts, run for crawlers in confined processes
   blobs.rs              content-addressed filesystem store
   hash.rs               BlobHash, a blob's name, parsed where it enters
@@ -55,7 +56,8 @@ src/
 build.rs                compiles dashboard/dist in, with `embedded-dashboard`
 vendor/device-detector/ Matomo's device detector, vendored and fixed (see its README)
 assets/                 data compiled into the binary: the PSL, Matomo's
-                        database, Plausible's tracker and source lists
+                        database, Plausible's tracker and source lists, and
+                        the error reporter
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api, development
 contrib/npanel.service  the systemd unit each release ships

@@ -70,6 +70,11 @@ export interface Host {
    */
   link_previews: boolean;
   /**
+   * Whether its pages report the errors they throw, shown on the dashboard.
+   * Missing from servers before it was added.
+   */
+  errors?: boolean;
+  /**
    * The site's Tor address, or null when Tor is off or hasn't published it yet.
    * Assigned by npanel, not by staff, and stable once it exists.
    */
@@ -105,6 +110,7 @@ export interface HostPatch {
   merge_deployments?: boolean;
   analytics?: boolean;
   link_previews?: boolean;
+  errors?: boolean;
   pinned_event_id?: string | null;
 }
 
@@ -204,6 +210,8 @@ export interface Settings {
   link_preview_misses_per_minute: number;
   /** Previews kept on disk. */
   link_preview_max_entries: number;
+  /** Days an error report is kept. Missing from servers before it was added. */
+  errors_retention_days?: number;
 }
 
 /** Whether npanel is on the Tor network, and what it has published there. */
@@ -369,4 +377,113 @@ export interface RefreshedLinkPreview {
   url: string;
   /** Null when the script had nothing for the page. */
   preview: LinkPreview | null;
+}
+
+export type IssueStatus = 'unresolved' | 'resolved' | 'ignored';
+
+/** Errors grouped by what threw them, and where. */
+export interface Issue {
+  id: number;
+  status: IssueStatus;
+  /** `Type: message`, one line. */
+  title: string;
+  /** Where it happened: the innermost of the site's own frames, or the page. */
+  culprit: string;
+  level: 'fatal' | 'error' | 'warning' | 'info' | 'debug';
+  first_seen: number;
+  last_seen: number;
+  events: number;
+  /** Visitors it reached, each counted once a day. */
+  visitors: number;
+  /** The versions it was first and last seen in, by event id. */
+  first_release: string | null;
+  last_release: string | null;
+}
+
+export interface ListedIssue extends Issue {
+  /** Reports in each of the last 24 hours, oldest first. */
+  hours: number[];
+}
+
+export interface IssueDetail extends Issue {
+  /** Reports in each hour of the last two weeks, oldest first. */
+  hours: number[];
+  /** The newest kept event's id. */
+  latest_event: number | null;
+}
+
+export interface IssuePage {
+  issues: ListedIssue[];
+  counts: Record<IssueStatus, number>;
+  /** Where the next page starts, or null on the last. */
+  next: string | null;
+}
+
+export interface IssueEventSummary {
+  id: number;
+  event_id: string;
+  received_at: number;
+  release: string | null;
+  url: string | null;
+  browser: string;
+  os: string;
+}
+
+export interface StackFrame {
+  abs_path: string;
+  function?: string;
+  lineno?: number;
+  colno?: number;
+  /** Whether it is the site's own code. */
+  in_app: boolean;
+  /** Where it is in the original source, through the site's source map. */
+  mapped?: { source: string; function?: string; lineno: number; colno: number };
+  context?: { pre: string[]; line: string; post: string[] };
+}
+
+export interface ReportedException {
+  type: string;
+  value: string;
+  mechanism?: string;
+  handled?: boolean;
+  /** Oldest call first. */
+  frames: StackFrame[];
+}
+
+export interface Breadcrumb {
+  timestamp?: number;
+  category?: string;
+  level?: string;
+  message?: string;
+  data?: Record<string, string | number | boolean>;
+}
+
+/** One report, as npanel kept it. */
+export interface ErrorReport {
+  event_id: string;
+  level: string;
+  message?: string;
+  /** Innermost cause first. */
+  exceptions: ReportedException[];
+  breadcrumbs: Breadcrumb[];
+  url?: string;
+  release?: string;
+  environment?: string;
+  tags: Record<string, string>;
+  sdk?: string;
+  browser: string;
+  browser_version: string;
+  os: string;
+  os_version: string;
+  device: string;
+}
+
+export interface IssueEvent extends IssueEventSummary {
+  report: ErrorReport;
+}
+
+/** One site's errors, as the list of sites shows them. */
+export interface ErrorSummary {
+  unresolved: number;
+  events_24h: number;
 }

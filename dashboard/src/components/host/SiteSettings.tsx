@@ -170,6 +170,18 @@ export function PrivacySettings({ host }: { host: Host }) {
           }
         />
       </Section>
+
+      <Section footer="Publish your scripts' source maps beside them and stack traces show your original code.">
+        <ToggleRow
+          id="errors"
+          label="Error reporting"
+          description="Collects the errors visitors' browsers hit, with what led up to them."
+          checked={!!host.errors}
+          onCheckedChange={(errors) =>
+            patch({ errors }, errors ? 'Reporting errors' : 'No longer reporting errors')
+          }
+        />
+      </Section>
     </div>
   );
 }

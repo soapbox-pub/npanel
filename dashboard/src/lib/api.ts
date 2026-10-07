@@ -5,10 +5,16 @@ import type {
   DeployLogEntry,
   DnsTarget,
   EnvVariable,
+  ErrorSummary,
   Host,
   HostPatch,
   HostVersion,
   Instance,
+  IssueDetail,
+  IssueEvent,
+  IssueEventSummary,
+  IssuePage,
+  IssueStatus,
   LinkPreviewStatus,
   ListedVersion,
   Me,
@@ -179,6 +185,37 @@ export class ApiClient {
 
   suggestions(hostname: string, filter: string, params: URLSearchParams): Promise<{ value: string; label: string }[]> {
     return this.request('GET', `/api/hosts/${path(hostname)}/stats/suggestions/${filter}?${params}`);
+  }
+
+  /** A page of a site's issues in one state. */
+  issues(hostname: string, status: IssueStatus, cursor?: string): Promise<IssuePage> {
+    const query = new URLSearchParams({ status });
+    if (cursor) query.set('cursor', cursor);
+    return this.request('GET', `/api/hosts/${path(hostname)}/issues?${query}`);
+  }
+
+  issue(hostname: string, id: number): Promise<{ issue: IssueDetail }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/issues/${id}`);
+  }
+
+  setIssueStatus(hostname: string, id: number, status: IssueStatus): Promise<{ issue: IssueDetail }> {
+    return this.request('PATCH', `/api/hosts/${path(hostname)}/issues/${id}`, { status });
+  }
+
+  /** A page of an issue's kept events, newest first. */
+  issueEvents(hostname: string, id: number, before?: number): Promise<{ events: IssueEventSummary[]; next: number | null }> {
+    const query = before === undefined ? '' : `?before=${before}`;
+    return this.request('GET', `/api/hosts/${path(hostname)}/issues/${id}/events${query}`);
+  }
+
+  /** One event, whole, with its neighbours' ids. */
+  issueEvent(hostname: string, id: number, event: number): Promise<{ event: IssueEvent; older: number | null; newer: number | null }> {
+    return this.request('GET', `/api/hosts/${path(hostname)}/issues/${id}/events/${event}`);
+  }
+
+  /** Every managed site's unresolved issues and last day's reports, keyed by hostname. */
+  errorsSummary(): Promise<Record<string, ErrorSummary>> {
+    return this.request('GET', '/api/errors/summary');
   }
 
   nip05Names(hostname: string): Promise<{ names: Nip05Name[] }> {

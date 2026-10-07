@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::analytics::tracker::EVENT_PATH;
 use crate::analytics::{Analytics, AnalyticsConfig};
 use crate::app::App;
+use crate::errors::{Errors, ErrorsConfig};
 use crate::auth::sign_nip98;
 use crate::blobs::BlobStore;
 use crate::db::Db;
@@ -173,6 +174,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         log,
         AnalyticsConfig { data_dir: dir.path().to_path_buf(), download_geo: false },
     ));
+    let errors = Arc::new(Errors::start(db.clone(), blobs.clone(), settings.clone(), log, ErrorsConfig { data_dir: dir.path().to_path_buf() }));
     let events = Arc::new(FakeEvents::default());
     let link_previews = Arc::new(LinkPreviews::start(
         settings.clone(),
@@ -187,6 +189,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         site_csp: site_csp.clone(),
         serve_cache: serve_cache.clone(),
         analytics: analytics.clone(),
+        errors: errors.clone(),
         link_previews: link_previews.clone(),
         scripts: scripts.clone(),
         log,
@@ -213,6 +216,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         settings: settings.clone(),
         deployments,
         analytics,
+        errors,
         dns: crate::dns::DnsTargets::new("panel.example.com".into(), settings.clone(), log),
         log,
         tor,
@@ -837,6 +841,87 @@ async fn a_site_without_a_script_has_no_previews() {
     assert_eq!(previews["stats"]["lookups"], 0, "{previews}");
     let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "url": format!("https://docs.example.com/{npub}") }))).await;
     assert!(status.is_client_error() && refused["error"].as_str().unwrap().contains("preview.js"), "{refused}");
+
+    gw.deployer.stop().await;
+}
+
+/// A reporting site's pages load the reporter, and what they throw reaches
+/// the dashboard as an issue, mapped through the site's own source map.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reporting_site_reports_its_errors() {
+    use crate::errors::reporter::{reporter_script, REPORTER_PATH, REPORT_PATH};
+    use crate::errors::symbolicate::tests::{map, MINIFIED};
+
+    let page = r#"<!doctype html><html><head><title>Docs</title><script src="/assets/app.js"></script></head><body></body></html>"#;
+    let map = map();
+    let blobs: HashMap<String, Vec<u8>> = [page.as_bytes(), MINIFIED.as_bytes(), map.as_bytes()].iter().map(|b| (sha(b), b.to_vec())).collect();
+    let server = blossom(blobs).await;
+    let manifest = Event::sign(
+        AUTHOR,
+        crate::util::now() - 60,
+        15128,
+        vec![
+            vec!["path".into(), "/index.html".into(), sha(page.as_bytes())],
+            vec!["path".into(), "/assets/app.js".into(), sha(MINIFIED.as_bytes())],
+            vec!["path".into(), "/assets/app.js.map".into(), sha(map.as_bytes())],
+        ],
+        "",
+    );
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let host = serde_json::json!({ "hostname": "docs.example.com", "address": npub, "errors": true });
+    let (status, body) = gw.api("POST", "/api/hosts", Some(host)).await;
+    assert_eq!((status, body["host"]["errors"].as_bool()), (StatusCode::CREATED, Some(true)));
+
+    // The reporter loads first thing, before the site's own script.
+    eventually("the reporter going live", async || gw.request("GET", "docs.example.com", REPORTER_PATH, &[], None).await.0 == StatusCode::OK).await;
+    let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
+    let src = crate::inject::versioned_src(REPORTER_PATH, reporter_script(&manifest.id).as_bytes());
+    assert_eq!(String::from_utf8(served).unwrap(), page.replacen("<head>", &format!(r#"<head><script src="{src}"></script>"#), 1));
+
+    // What the reporter sends for `r.user.name` throwing in the minified file.
+    let event = serde_json::json!({
+        "event_id": "a".repeat(32),
+        "release": manifest.id,
+        "request": { "url": "https://docs.example.com/" },
+        "exception": { "values": [{
+            "type": "TypeError",
+            "value": "Cannot read properties of undefined (reading 'name')",
+            "stacktrace": { "frames": [
+                { "abs_path": "https://docs.example.com/assets/app.js", "lineno": 1, "colno": 34 },
+                { "abs_path": "https://docs.example.com/assets/app.js", "function": "n", "lineno": 1, "colno": 22 },
+            ] },
+        }] },
+    });
+    let envelope = format!("{{}}\n{{\"type\":\"event\"}}\n{event}\n");
+    eventually("the errors runtime answering", async || {
+        gw.request("POST", "docs.example.com", REPORT_PATH, &[("user-agent", "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0")], Some(&envelope)).await.0
+            == StatusCode::OK
+    })
+    .await;
+    // A Sentry SDK's DSN path reaches the same place.
+    let (status, ..) = gw.request("POST", "docs.example.com", "/_npanel/api/1/envelope/", &[], Some(&envelope)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, list) = gw.api("GET", "/api/hosts/docs.example.com/issues", None).await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let issue = &list["issues"][0];
+    assert_eq!(issue["title"], "TypeError: Cannot read properties of undefined (reading 'name')");
+    assert_eq!(issue["culprit"], "render (src/App.js)");
+    assert_eq!((issue["events"].as_i64(), issue["visitors"].as_i64()), (Some(2), Some(2)));
+    let id = issue["id"].as_i64().unwrap();
+
+    let (_, one) = gw.api("GET", &format!("/api/hosts/docs.example.com/issues/{id}"), None).await;
+    let latest = one["issue"]["latest_event"].as_i64().unwrap();
+    let (status, event) = gw.api("GET", &format!("/api/hosts/docs.example.com/issues/{id}/events/{latest}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{event}");
+    assert_eq!(event["event"]["report"]["exceptions"][0]["frames"][1]["mapped"]["lineno"], 2);
+
+    let (status, resolved) = gw.api("PATCH", &format!("/api/hosts/docs.example.com/issues/{id}"), Some(serde_json::json!({ "status": "resolved" }))).await;
+    assert_eq!((status, resolved["issue"]["status"].as_str()), (StatusCode::OK, Some("resolved")));
+    let (_, summary) = gw.api("GET", "/api/errors/summary", None).await;
+    assert_eq!(summary["docs.example.com"], serde_json::json!({ "unresolved": 0, "events_24h": 2 }));
 
     gw.deployer.stop().await;
 }

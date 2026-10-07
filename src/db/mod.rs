@@ -241,6 +241,13 @@ pub fn open_connection(path: &Path) -> Result<Connection> {
 
 /// Create the schema and apply any migrations the database is missing.
 pub fn migrate(conn: &mut Connection, log: Option<&crate::log::Logger>) -> Result<()> {
+    apply_migrations(conn, migrations::MIGRATIONS, log)
+}
+
+/// Apply whichever of `migrations` a database is missing, each in a
+/// transaction of its own, recording each by name. Shared by every database
+/// npanel keeps, each with a list of its own.
+pub fn apply_migrations(conn: &mut Connection, migrations: &[(&str, &[&str])], log: Option<&crate::log::Logger>) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             name TEXT PRIMARY KEY,
@@ -253,7 +260,7 @@ pub fn migrate(conn: &mut Connection, log: Option<&crate::log::Logger>) -> Resul
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
 
-    for (name, statements) in migrations::MIGRATIONS {
+    for (name, statements) in migrations {
         if applied.contains(*name) {
             continue;
         }

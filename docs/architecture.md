@@ -24,6 +24,7 @@ its own, it keeps local storage in sync with Nostr.
                     └─ npanel :3001 ◄── proxy: may this name have a certificate?
 
    /_npanel/api/event on any site ──► analytics thread ──► analytics.sqlite3
+   /_npanel/api/report on any site ──► errors thread ──► errors.sqlite3
    a crawler on a page ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
    with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
@@ -903,6 +904,76 @@ Events reach their visit by id, through an explicitly ordered join: SQLite's
 planner, left to itself, starts from the visits and scans a site's events once
 for each. On a site of ten thousand visits a day a month's report takes a few
 hundred milliseconds to a few seconds, all of it on the analytics thread.
+
+## Errors
+
+A site with `errors` on reports what its pages throw, and npanel is the error
+tracker: it implements enough of Sentry's ingestion that a Sentry SDK can
+report to it, and a dashboard of its own to read the results. As with
+analytics, there is nothing to install or register, and nothing for the
+site's author to add.
+
+**Collection.** The host's build adds npanel's reporter
+(`assets/errors/reporter.js`) to every page, served from the site at
+`/_npanel/errors.js`, with the version the build serves baked in as its
+release. Unlike the tracker it is a classic script at the *start* of the
+head, not `async`: an error thrown while the page loads is the one most worth
+having, and a listener added afterwards never hears it. That makes it a
+script every page waits for, as it does for `window.ENV`, which is why it is a
+few kilobytes and nothing else. It listens for `error` and
+`unhandledrejection`, parses stack traces itself with the line formats
+Sentry's browser SDK reads, keeps the last 30 clicks, navigations, `fetch`es
+and console warnings and errors as breadcrumbs, and reports each distinct
+error once a page, ten at most, with `fetch(…, {keepalive: true})` and a
+`text/plain` body so there is no preflight. Errors from cross-origin scripts,
+which browsers reduce to `Script error.`, are dropped.
+
+**Ingestion** is Sentry's envelope endpoint, answered at the reporter's
+`/_npanel/api/report` and at `/_npanel/api/<project>/envelope/`, where a
+Sentry SDK sends given the DSN `https://<key>@<site>/_npanel/<project>`. The
+site is the hostname's; the key and project mean nothing. Only `event` items
+are read — sessions, transactions and client reports are accepted and dropped
+— and only what the dashboard shows is kept of them: no user, no headers or
+cookies, no `extra`, every field capped, and Nostr secret keys (`nsec1…`,
+`ncryptsec1…`) replaced wherever they appear, since a Nostr client's error
+message or console line can carry one (`src/errors/envelope.rs`). A site may
+send 60 reports a minute; past that it gets Sentry's `429` with
+`X-Sentry-Rate-Limits`, which an SDK backs off on. Bots' reports are dropped.
+
+**Isolation** is analytics': its own runtime on its own thread
+(`src/errors/mod.rs`), the listener reading the body — capped at 256 KiB —
+and handing it across whole, at most 64 waiting, the database and caches
+owned by the runtime, and restarts with backoff.
+
+**Source maps.** npanel has every file of every version a site deploys, so
+there is no upload step. A frame on the site's own origin is looked up in the
+files of the version the report names — its release, if that is a ready
+version of this host's site, or else what the host serves — through the
+host's version chain, so a merged host finds files from earlier deploys. The
+script names its map with `sourceMappingURL`, inline or relative, or the map
+is the file beside it with `.map` appended. Maps are parsed with Sentry's own
+`sourcemap` crate, and the last few kept parsed (`src/errors/symbolicate.rs`).
+Each mapped frame keeps where it was and where the map puts it, with the
+original function name and five lines of context either side. This happens as
+a report arrives rather than when it is read, because grouping needs it.
+
+**Grouping** follows Sentry's order (`src/errors/grouping.rs`): the SDK's
+`fingerprint` if it sent one; otherwise each exception's type and the site's
+own frames the map placed, by original file and function; otherwise its type
+and message with numbers, hex, UUIDs and Nostr identifiers taken out. A
+minified bundle's names change with every deploy and the original's don't,
+so with maps one bug stays one issue across deploys; without them an issue
+groups by message instead.
+
+**Storage** is SQLite, in `DATA_DIR/errors.sqlite3`, apart from the others for
+the reason analytics are. Reports are written every two seconds in one
+transaction. An issue holds exact running counts — events, and visitors under
+the daily salts analytics use (in this database, so the two can't be joined),
+counted once a day each — with hourly counts beside it, and keeps the report
+itself, deflated, for its first event and its latest 100. An issue's status is
+`unresolved`, `resolved` or `ignored`; a resolved one that happens again
+counts and stays resolved. Everything older than `errors_retention_days` is
+pruned hourly, with the issues of hosts that no longer exist.
 
 ## Link previews
 

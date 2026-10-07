@@ -120,6 +120,8 @@ settings! {
     link_preview_misses_per_minute: i64,
     /// Link previews kept on disk. The least recently made go first.
     link_preview_max_entries: i64,
+    /// Days an error report is kept, and an issue with none newer.
+    errors_retention_days: i64,
 }
 
 impl Default for SettingsValues {
@@ -152,6 +154,7 @@ impl Default for SettingsValues {
             link_preview_concurrency: 256,
             link_preview_misses_per_minute: 600,
             link_preview_max_entries: 100_000,
+            errors_retention_days: 90,
         }
     }
 }
@@ -355,6 +358,7 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "link_preview_concurrency" => integer(value, 1, 4096),
         "link_preview_misses_per_minute" => integer(value, 1, 100_000),
         "link_preview_max_entries" => integer(value, 100, 10_000_000),
+        "errors_retention_days" => integer(value, 1, 365),
         _ => Err("Unknown setting.".into()),
     }
 }

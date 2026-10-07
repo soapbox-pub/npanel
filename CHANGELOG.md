@@ -6,6 +6,21 @@ it is tagged.
 
 ## [Unreleased]
 
+- Error tracking, built in. Turn on **Error reporting** in a site's Privacy &
+  Security settings, and its pages load a small reporter, from the site's own
+  origin, that sends what they throw to npanel. Reports are grouped into
+  issues, listed under the site's **Errors** with how often each happens and
+  to how many visitors, and opened one event at a time: the stack trace, what
+  the visitor clicked, fetched and logged before it, the page, the browser and
+  the version. Issues can be resolved and ignored.
+- Stack traces are mapped through the source maps the site deployed beside its
+  scripts — there is nothing to upload — so they show the original files,
+  functions and lines, and one bug stays one issue across deploys.
+- The endpoint speaks Sentry's envelope format, so a site already using a
+  Sentry SDK can point its DSN at `https://<key>@<site>/_npanel/0` instead.
+- Nostr secret keys are scrubbed from every report, and visitors are counted
+  under the same daily salts as analytics. A site may send 60 reports a
+  minute; reports are kept for `errors_retention_days`, 90 by default.
 - The `dist` build profile is gone: `--release` now builds what releases
   publish, with full LTO. Build from source with `cargo build --release`, and
   install `target/release/npanel`.
