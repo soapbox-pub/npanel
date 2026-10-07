@@ -28,6 +28,9 @@ pub struct Host {
     pub seo: bool,
     pub merge_deployments: bool,
     pub analytics: bool,
+    /// Whether, while counting, visits are reported by the tracker the build
+    /// adds to every page, rather than counted by the server as pages load.
+    pub analytics_script: bool,
     /// Whether crawlers get a preview of the Nostr event a page's path names.
     pub link_previews: bool,
     /// Whether its pages report the errors they throw.
@@ -39,11 +42,11 @@ pub struct Host {
 
 pub const HOST_COLUMNS: &str = "hosts.id, hosts.hostname, hosts.pubkey, hosts.kind, hosts.identifier, \
     hosts.pinned_event_id, hosts.enabled, hosts.hidden, hosts.redirect_www, hosts.spa, hosts.csp, hosts.seo, \
-    hosts.merge_deployments, hosts.analytics, hosts.link_previews, hosts.errors, hosts.created_by, hosts.created_at, hosts.updated_at";
+    hosts.merge_deployments, hosts.analytics, hosts.analytics_script, hosts.link_previews, hosts.errors, hosts.created_by, hosts.created_at, hosts.updated_at";
 
 /// How many columns [`HOST_COLUMNS`] selects, for a query that selects more
 /// after them.
-pub const HOST_COLUMN_COUNT: usize = 19;
+pub const HOST_COLUMN_COUNT: usize = 20;
 
 impl Host {
     pub fn from_row(row: &Row) -> rusqlite::Result<Host> {
@@ -62,11 +65,12 @@ impl Host {
             seo: row.get(11)?,
             merge_deployments: row.get(12)?,
             analytics: row.get(13)?,
-            link_previews: row.get(14)?,
-            errors: row.get(15)?,
-            created_by: row.get(16)?,
-            created_at: row.get(17)?,
-            updated_at: row.get(18)?,
+            analytics_script: row.get(14)?,
+            link_previews: row.get(15)?,
+            errors: row.get(16)?,
+            created_by: row.get(17)?,
+            created_at: row.get(18)?,
+            updated_at: row.get(19)?,
         })
     }
 

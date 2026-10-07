@@ -506,6 +506,7 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "seo": host.seo,
         "merge_deployments": host.merge_deployments,
         "analytics": host.analytics,
+        "analytics_script": host.analytics_script,
         "link_previews": host.link_previews,
         "errors": host.errors,
         "onion": details.onion,
@@ -544,6 +545,7 @@ fn host_summary(host: &Host) -> Map<String, Value> {
         ("seo", json!(i64::from(host.seo))),
         ("merge_deployments", json!(i64::from(host.merge_deployments))),
         ("analytics", json!(i64::from(host.analytics))),
+        ("analytics_script", json!(i64::from(host.analytics_script))),
         ("link_previews", json!(i64::from(host.link_previews))),
         ("errors", json!(i64::from(host.errors))),
         ("pinned_event_id", json!(host.pinned_event_id)),
@@ -616,6 +618,7 @@ struct Flags {
     seo: Option<bool>,
     merge_deployments: Option<bool>,
     analytics: Option<bool>,
+    analytics_script: Option<bool>,
     link_previews: Option<bool>,
     errors: Option<bool>,
 }
@@ -632,6 +635,7 @@ impl Flags {
             ("seo", self.seo),
             ("merge_deployments", self.merge_deployments),
             ("analytics", self.analytics),
+            ("analytics_script", self.analytics_script),
             ("link_previews", self.link_previews),
             ("errors", self.errors),
         ]
@@ -665,6 +669,7 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     let seo = flags.seo.unwrap_or(true);
     let merge = flags.merge_deployments.unwrap_or(false);
     let analytics = flags.analytics.unwrap_or(false);
+    let analytics_script = flags.analytics_script.unwrap_or(true);
     let link_previews = flags.link_previews.unwrap_or(false);
     let errors = flags.errors.unwrap_or(false);
 
@@ -676,9 +681,9 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
             let tx = conn.transaction()?;
             let inserted = tx.execute(
                 "INSERT INTO hosts (hostname, pubkey, kind, identifier, pinned_event_id, enabled, hidden, redirect_www, spa, csp, seo,
-                   merge_deployments, analytics, link_previews, errors, created_by, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, link_previews, errors, u.pubkey, now, now],
+                   merge_deployments, analytics, analytics_script, link_previews, errors, created_by, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                params![name, addr.pubkey, addr.kind, addr.identifier, hidden, redirect_www, spa, csp, seo, merge, analytics, analytics_script, link_previews, errors, u.pubkey, now, now],
             );
             match inserted {
                 Err(error) if is_unique_violation(&error) => return Ok(None),

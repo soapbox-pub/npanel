@@ -16,14 +16,14 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use bytes::Bytes;
-use http::header::{self, HeaderMap, HeaderValue};
+use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
 use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 
 use crate::analytics::tracker::EVENT_PATH;
-use crate::analytics::{Analytics, Peer};
+use crate::analytics::{client_ip, Analytics, PageLoad, Peer};
 use crate::blobs::{BlobStore, Encoding, Variants};
 use crate::builds::current_build;
 use crate::db::{BuildKind, Db};
@@ -78,6 +78,13 @@ const ENV_CACHE_CONTROL: &str = "public, max-age=0, stale-while-revalidate=31536
 /// The largest page a link preview is spliced into. A shell is a few
 /// kilobytes; anything near this is a page with no room left for a preview.
 const MAX_PREVIEW_PAGE: u64 = 512 * 1024;
+
+const SEC_FETCH_MODE: HeaderName = HeaderName::from_static("sec-fetch-mode");
+const SEC_FETCH_DEST: HeaderName = HeaderName::from_static("sec-fetch-dest");
+const SEC_PURPOSE: HeaderName = HeaderName::from_static("sec-purpose");
+const PURPOSE: HeaderName = HeaderName::from_static("purpose");
+const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
+const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
 
 /// A preview image at the version a page named never changes; one asked for
 /// at any other is the current one, which may not last.
@@ -244,13 +251,13 @@ impl SiteServer {
         }
 
         let (parts, _) = request.into_parts();
-        let mut response = self.handle(&parts, &origin).await;
+        let mut response = self.handle(&parts, &origin, peer).await;
         allow_cross_origin(response.headers_mut());
         response
     }
 
-    async fn handle(&self, request: &Parts, origin: &RequestOrigin) -> Reply {
-        match self.try_handle(request, origin).await {
+    async fn handle(&self, request: &Parts, origin: &RequestOrigin, peer: Peer) -> Reply {
+        match self.try_handle(request, origin, peer).await {
             Ok(response) => response,
             // A database that couldn't answer says nothing about the site, so
             // the visitor is told to come back rather than that it's missing —
@@ -264,11 +271,11 @@ impl SiteServer {
         }
     }
 
-    async fn try_handle(&self, request: &Parts, origin: &RequestOrigin) -> anyhow::Result<Reply> {
+    async fn try_handle(&self, request: &Parts, origin: &RequestOrigin, peer: Peer) -> anyhow::Result<Reply> {
         // The build comes along because the policy below is the build's and
         // applies to every answer this host gives.
         let site = self.deps.serve_cache.lookup(&origin.hostname).await?;
-        let mut response = self.respond(request, origin, site.as_deref()).await?;
+        let mut response = self.respond(request, origin, site.as_deref(), peer).await?;
         let headers = response.headers_mut();
 
         // On unless this one site turned it off. A hostname with no host row
@@ -292,7 +299,7 @@ impl SiteServer {
         Ok(response)
     }
 
-    async fn respond(&self, request: &Parts, origin: &RequestOrigin, site: Option<&CachedSite>) -> anyhow::Result<Reply> {
+    async fn respond(&self, request: &Parts, origin: &RequestOrigin, site: Option<&CachedSite>, peer: Peer) -> anyhow::Result<Reply> {
         let log = &self.deps.log;
         let hostname = origin.hostname.as_str();
 
@@ -394,6 +401,21 @@ impl SiteServer {
                     None => true,
                 };
             }
+        }
+
+        // Counted ahead of `If-None-Match`, because a page revalidated is a
+        // page loaded all the same.
+        let host = &site.host.host;
+        if host.analytics && !host.analytics_script && is_page(&file) && is_navigation(request) {
+            let header = |name| header_str(&request.headers, name);
+            self.deps.analytics.page_load(PageLoad {
+                host_id: host.id,
+                hostname: host.hostname.clone(),
+                url: format!("{}://{}{}", origin.scheme, origin.hostname, request.uri.path_and_query().map_or("/", |p| p.as_str())),
+                referrer: header(header::REFERER).map(str::to_string),
+                user_agent: header(header::USER_AGENT).unwrap_or_default().to_string(),
+                ip: client_ip(header(X_FORWARDED_FOR), header(X_REAL_IP), peer),
+            });
         }
 
         // Everything below is about the representation this picks, not the
@@ -739,6 +761,21 @@ impl SiteServer {
 /// Whether a file is an HTML page a site's script may preview.
 fn is_page(file: &ResolvedFile) -> bool {
     file.status == 200 && content_type(&file.path).starts_with("text/html")
+}
+
+/// Whether a request is a browser opening a page for someone to see: in a
+/// tab or window, not a frame, and not fetched ahead in case they might. Only
+/// browsers say so — every current one does, Tor Browser included — so what
+/// doesn't is not counted, which keeps out most of what the tracker kept out
+/// by never running anywhere else.
+fn is_navigation(request: &Parts) -> bool {
+    let header = |name| header_str(&request.headers, name);
+    request.method == Method::GET
+        && header(SEC_FETCH_MODE) == Some("navigate")
+        && header(SEC_FETCH_DEST) == Some("document")
+        // `Purpose` is what Chrome sent before `Sec-Purpose`.
+        && header(SEC_PURPOSE).is_none()
+        && header(PURPOSE).is_none()
 }
 
 /// A page's URL, as its preview names it: no query, no trailing slash.

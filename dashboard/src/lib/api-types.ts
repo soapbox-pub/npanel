@@ -65,6 +65,12 @@ export interface Host {
   /** Whether visits to the site are counted, and shown on the dashboard. */
   analytics: boolean;
   /**
+   * Whether, while counting, visits are reported by a tracking script added
+   * to every page, rather than counted by the server as pages load. Missing
+   * from servers before it was added, which only ever used the script.
+   */
+  analytics_script?: boolean;
+  /**
    * Whether crawlers asking for a page whose path names a Nostr event — a
    * profile, a note, an article — get that event's preview and content.
    */
@@ -109,6 +115,7 @@ export interface HostPatch {
   seo?: boolean;
   merge_deployments?: boolean;
   analytics?: boolean;
+  analytics_script?: boolean;
   link_previews?: boolean;
   errors?: boolean;
   pinned_event_id?: string | null;

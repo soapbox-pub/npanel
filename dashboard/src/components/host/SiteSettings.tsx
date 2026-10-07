@@ -169,6 +169,24 @@ export function PrivacySettings({ host }: { host: Host }) {
             patch({ analytics }, analytics ? 'Counting visits' : 'No longer counting visits')
           }
         />
+        {host.analytics && (
+          <ToggleRow
+            id="analytics-script"
+            label="Tracking script"
+            description={
+              host.analytics_script !== false
+                ? 'Pages load a small script that reports visits, including moves within a single-page app, time on page and scroll depth.'
+                : 'Visits are counted by the server as pages load, and nothing is added to them. Moves within a single-page app, time on page and scroll depth aren\'t counted.'
+            }
+            checked={host.analytics_script !== false}
+            onCheckedChange={(script) =>
+              patch(
+                { analytics_script: script },
+                script ? 'Counting visits with the tracking script' : 'Counting visits on the server',
+              )
+            }
+          />
+        )}
       </Section>
 
       <Section footer="Publish your scripts' source maps beside them and stack traces show your original code.">

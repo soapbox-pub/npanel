@@ -944,3 +944,79 @@ async fn a_reporting_site_reports_its_errors() {
 
     gw.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_site_counted_on_the_server_loads_no_tracker() {
+    use crate::analytics::tracker::TRACKER_PATH;
+
+    let page = "<!doctype html><html><head><title>Private</title></head><body>hi</body></html>";
+    let script = "console.log('hi');";
+    let server = blossom([page.as_bytes(), script.as_bytes()].iter().map(|b| (sha(b), b.to_vec())).collect()).await;
+    let manifest = Event::sign(
+        AUTHOR,
+        crate::util::now() - 60,
+        15128,
+        vec![vec!["path".into(), "/index.html".into(), sha(page.as_bytes())], vec!["path".into(), "/app.js".into(), sha(script.as_bytes())]],
+        "",
+    );
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
+    let host = serde_json::json!({ "hostname": "docs.example.com", "address": npub, "analytics": true, "analytics_script": false });
+    let (status, body) = gw.api("POST", "/api/hosts", Some(host)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!((body["host"]["analytics"].as_bool(), body["host"]["analytics_script"].as_bool()), (Some(true), Some(false)));
+
+    // Pages go out as published, with nothing added.
+    eventually("the site going live", async || gw.request("GET", "docs.example.com", "/", &[], None).await.0 == StatusCode::OK).await;
+    let (_, _, served) = gw.request("GET", "docs.example.com", "/", &[], None).await;
+    assert_eq!(served, page.as_bytes());
+    assert_eq!(gw.request("GET", "docs.example.com", TRACKER_PATH, &[], None).await.0, StatusCode::NOT_FOUND);
+
+    let firefox = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0";
+    let navigate = [("user-agent", firefox), ("sec-fetch-mode", "navigate"), ("sec-fetch-dest", "document")];
+    fn with<'a>(base: &[(&'a str, &'a str)], extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        base.iter().chain(extra).copied().collect()
+    }
+    let pageviews = async || {
+        let query = serde_json::json!({ "date_range": "day", "metrics": ["pageviews", "visitors"] });
+        let (status, body) = gw.api("POST", "/api/hosts/docs.example.com/stats/query", Some(query)).await;
+        (status == StatusCode::OK).then(|| body["results"][0]["metrics"].clone())
+    };
+
+    // None of these is someone opening a page: no navigation headers, a
+    // prefetch, a frame, an asset, a HEAD, a bot.
+    gw.request("GET", "docs.example.com", "/", &[("user-agent", firefox)], None).await;
+    gw.request("GET", "docs.example.com", "/", &with(&navigate, &[("sec-purpose", "prefetch")]), None).await;
+    gw.request("GET", "docs.example.com", "/", &[("user-agent", firefox), ("sec-fetch-mode", "navigate"), ("sec-fetch-dest", "iframe")], None).await;
+    gw.request("GET", "docs.example.com", "/app.js", &navigate, None).await;
+    gw.request("HEAD", "docs.example.com", "/", &navigate, None).await;
+    gw.request("GET", "docs.example.com", "/", &[("user-agent", "Googlebot/2.1"), ("sec-fetch-mode", "navigate"), ("sec-fetch-dest", "document")], None).await;
+    // Nor is a tracker's event believed, on a site with no tracker.
+    let event = r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#;
+    eventually("the analytics runtime answering", async || {
+        let (status, headers, _) = gw.request("POST", "docs.example.com", EVENT_PATH, &[], Some(event)).await;
+        status == StatusCode::ACCEPTED && headers["x-plausible-dropped"] == "1"
+    })
+    .await;
+
+    // A page opened counts, and so does one revalidated.
+    let (status, headers, _) = gw.request("GET", "docs.example.com", "/?utm_source=newsletter", &with(&navigate, &[("referer", "https://news.example.org/")]), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = headers["etag"].to_str().unwrap().to_string();
+    let (status, ..) = gw.request("GET", "docs.example.com", "/", &with(&navigate, &[("if-none-match", &etag)]), None).await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    eventually("both page loads counted", async || pageviews().await == Some(serde_json::json!([2, 1]))).await;
+
+    // Turning the script back on puts the tracker in, and stops counting here.
+    let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "analytics_script": true }))).await;
+    assert_eq!(status, StatusCode::OK);
+    eventually("the tracker going live", async || gw.request("GET", "docs.example.com", TRACKER_PATH, &[], None).await.0 == StatusCode::OK).await;
+    gw.request("GET", "docs.example.com", "/", &navigate, None).await;
+    let (status, headers, _) = gw.request("POST", "docs.example.com", EVENT_PATH, &[("user-agent", firefox)], Some(event)).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(headers.get("x-plausible-dropped").is_none());
+    eventually("the tracker's pageview counted", async || pageviews().await == Some(serde_json::json!([3, 1]))).await;
+
+    gw.stop().await;
+}

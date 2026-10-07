@@ -119,6 +119,24 @@ pub fn parse_event_request(body: &str) -> Result<EventRequest, RequestErrors> {
     })
 }
 
+/// A pageview the server saw rather than one the tracker reported: a page
+/// loaded from `url`, after `referrer`, for the site `domain`. Held to the
+/// tracker's limits, so neither path stores what the other couldn't; `None`
+/// for a URL the tracker's would have been refused for.
+pub fn page_view(url: &str, domain: &str, referrer: Option<&str>) -> Option<EventRequest> {
+    let url = parse_url(Some(&Value::String(url.to_string())), &mut |_, _| {})?;
+    Some(EventRequest {
+        name: "pageview".into(),
+        pathname: pathname(&url, false),
+        url,
+        domains: vec![sanitize_hostname(domain)],
+        referrer: referrer.map(|r| r.chars().take(MAX_URL).collect()),
+        interactive: true,
+        engagement_time: 0,
+        scroll_depth: MISSING_SCROLL_DEPTH,
+    })
+}
+
 fn parse_url(value: Option<&Value>, error: &mut impl FnMut(&str, String)) -> Option<url::Url> {
     let Some(value) = value else {
         error("url", "is required".into());
@@ -263,5 +281,18 @@ mod tests {
         let many = (0..11).map(|i| format!("s{i}.com")).collect::<Vec<_>>().join(",");
         let errors = parse_event_request(&format!(r#"{{"n":"x","u":"https://a.com/","d":"{many}"}}"#)).unwrap_err();
         assert!(errors["domain"][0].contains("at most 10"));
+    }
+
+    #[test]
+    fn page_views() {
+        let event = page_view("https://www.docs.example.com/caf%C3%A9?utm_source=x", "www.docs.example.com", Some("https://google.com/")).unwrap();
+        assert_eq!(event.name, "pageview");
+        assert_eq!(event.pathname, "/café");
+        assert_eq!(event.domains, ["docs.example.com"]);
+        assert_eq!(event.referrer.as_deref(), Some("https://google.com/"));
+        assert_eq!(event.scroll_depth, MISSING_SCROLL_DEPTH);
+
+        let long = format!("https://a.com/{}", "x".repeat(MAX_URL));
+        assert!(page_view(&long, "a.com", None).is_none());
     }
 }

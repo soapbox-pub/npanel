@@ -5,7 +5,8 @@
 //! user-agent and location lookups, not the writes, and not the dashboard's
 //! queries. Events arrive at `/_npanel/api/event` on every site, on whichever
 //! listener serves it; each is read there and handed across whole, a few
-//! hundred bytes.
+//! hundred bytes. A host counting on the server, with no tracker, has its page
+//! loads handed across the same way, without the listener waiting on them.
 //!
 //! The analytics runtime owns its database file and its caches. If it dies it
 //! is started again with backoff (`src/supervise.rs`), and sites go on being
@@ -40,6 +41,7 @@ use tokio_util::sync::CancellationToken;
 
 use self::geo::Geo;
 use self::ingest::{AnalyticsHost, Ingest, Received, Sender};
+pub use self::ingest::PageLoad;
 use self::query::engine::QueryHost;
 use self::sessions::{SessionCache, SESSION_TIMEOUT};
 use self::store::AnalyticsStore;
@@ -274,6 +276,34 @@ impl Analytics {
         }
     }
 
+    /// Count a page load on a host counting on the server. Returns at once:
+    /// the visitor's page is not held up by counting it, and a load that
+    /// finds the runtime down or too many events waiting is not counted.
+    pub fn page_load(&self, load: PageLoad) {
+        let Some(worker) = self.worker() else {
+            return;
+        };
+        let Ok(permit) = self.queued.clone().try_acquire_owned() else {
+            return;
+        };
+        let hosts = self.shared.hosts.read().clone();
+        let log = self.shared.log;
+        // The user-agent lookup is the expensive part, as for an event.
+        worker.runtime.spawn_blocking({
+            let worker = worker.clone();
+            move || {
+                let _permit = permit;
+                let Some(host) = hosts.get(&load.hostname) else {
+                    return;
+                };
+                let full = worker.ingest.lock().page_load(&worker.store, &load, host, crate::util::now());
+                if full == Some(true) {
+                    flush(&worker, &log);
+                }
+            }
+        });
+    }
+
     /// Answer a dashboard query, Plausible's `POST /api/stats/:domain/query`.
     pub async fn query(&self, host: QueryHost, body: serde_json::Value) -> Answer {
         let timezone = self.shared.settings.get().analytics_timezone.clone();
@@ -461,9 +491,14 @@ async fn refresh_hosts(shared: &Arc<Shared>) {
         .db
         .call(|conn| {
             Ok(conn
-                .prepare("SELECT id, hostname, enabled, analytics FROM hosts")?
+                .prepare("SELECT id, hostname, enabled, analytics, analytics_script FROM hosts")?
                 .query_map([], |r| {
-                    Ok(AnalyticsHost { id: r.get(0)?, hostname: r.get(1)?, counting: r.get::<_, bool>(2)? && r.get::<_, bool>(3)? })
+                    Ok(AnalyticsHost {
+                        id: r.get(0)?,
+                        hostname: r.get(1)?,
+                        counting: r.get::<_, bool>(2)? && r.get::<_, bool>(3)?,
+                        script: r.get(4)?,
+                    })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?)
         })

@@ -464,7 +464,8 @@ impl HostBuilder {
                     .prepare_cached("SELECT address FROM onion_services WHERE host_id = ?")?
                     .query_row([host_id], |row| row.get(0))
                     .optional()?;
-                let tracker = host.analytics;
+                // A host counting on the server has nothing to add to its pages.
+                let tracker = host.analytics && host.analytics_script;
                 let reporter = host.errors;
                 let vars = host_env(conn, host_id)?;
                 let env = (!vars.is_empty()).then(|| env_script(&vars));
@@ -951,6 +952,7 @@ mod tests {
             seo: true,
             merge_deployments: false,
             analytics: false,
+            analytics_script: true,
             link_previews: false,
             errors: false,
             created_by: String::new(),
@@ -1070,6 +1072,19 @@ mod tests {
             .unwrap();
         let reporter = versioned_src(REPORTER_PATH, reporter_script("e1").as_bytes());
         assert!(blobs.read_text(BlobHash::parse(&index).unwrap(), 10_000).starts_with(&format!(r#"<html><head><script src="{reporter}"></script><script src="{src}">"#)));
+
+        // Counting on the server instead: still counting, but no tracker.
+        t.db.with(|conn| Ok(conn.execute("UPDATE hosts SET analytics_script = 0 WHERE id = ?", [host_id])?)).unwrap();
+        builder.hosts_changed(Some(&[host_id]));
+        builder.when_idle().await;
+        let (fifth, list) = files(&t.db);
+        assert_ne!(fifth, fourth);
+        assert!(!list.iter().any(|(p, _)| p == TRACKER_PATH));
+        let index = t
+            .db
+            .with(|conn| Ok(conn.query_row("SELECT sha256 FROM host_build_files WHERE build_id = ? AND path = '/index.html'", [fifth], |r| r.get::<_, String>(0))?))
+            .unwrap();
+        assert!(!blobs.read_text(BlobHash::parse(&index).unwrap(), 10_000).contains(TRACKER_PATH));
 
         builder.stop().await;
     }

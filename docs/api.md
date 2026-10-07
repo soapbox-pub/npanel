@@ -183,6 +183,7 @@ A host object:
   "seo": true,
   "merge_deployments": false,
   "analytics": false,
+  "analytics_script": true,
   "link_previews": false,
   "errors": false,
   "onion": "abc…xyz.onion",
@@ -283,6 +284,7 @@ Any subset of:
   "seo": true,
   "merge_deployments": true,
   "analytics": true,
+  "analytics_script": false,
   "link_previews": true,
   "errors": true,
   "pinned_event_id": "<event id>"
@@ -420,6 +422,17 @@ directives govern loading a script and `fetch`ing — and the header follows
 the page. A site that publishes files under `/_npanel/` has
 `/_npanel/script.js` shadowed while this is on.
 
+`analytics_script` says how a counting site is counted, and defaults to
+`true`: the tracker, as above. Set to `false`, the pages get no tracker and are
+served exactly as published, and npanel counts each page a browser opens as it
+serves it — a `GET` for an HTML page answered `200` or `304`, carrying
+`Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document` and no
+`Sec-Purpose` or `Purpose`. Events sent to `/_npanel/api/event` are dropped
+while it is off, so a site is never counted both ways. Moves within a
+single-page app, time on page and scroll depth are only known to a script, so
+they aren't counted this way. It has no effect while `analytics` is off. See
+[analytics](architecture.md#analytics).
+
 `errors` reports what the site's pages throw, and defaults to `false`. With it
 on, every HTML page loads npanel's error reporter, `/_npanel/errors.js`, as the
 first thing in its `<head>` — a small classic script, so it is listening before
@@ -450,7 +463,7 @@ or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
 
 A change to `hostname`, `address`, `pinned_event_id`, `seo`,
-`merge_deployments`, `analytics` or `errors` rebuilds the host in the background, since each changes
+`merge_deployments`, `analytics`, `analytics_script` or `errors` rebuilds the host in the background, since each changes
 the files it serves. The response doesn't wait: the previous build goes on
 serving until the new one is complete, which is usually a moment.
 

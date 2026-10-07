@@ -340,4 +340,10 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
             r#"ALTER TABLE hosts ADD COLUMN errors INTEGER NOT NULL DEFAULT 0"#,
         ],
     ),
+    (
+        "025_hosts_analytics_script",
+        &[
+            r#"ALTER TABLE hosts ADD COLUMN analytics_script INTEGER NOT NULL DEFAULT 1"#,
+        ],
+    ),
 ];

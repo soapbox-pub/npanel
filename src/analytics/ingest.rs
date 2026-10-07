@@ -14,7 +14,7 @@ use rand::Rng;
 
 use super::channel::{channel, ChannelInputs};
 use super::geo::{Geo, Location};
-use super::request::{parse_event_request, EventRequest};
+use super::request::{page_view, parse_event_request, EventRequest};
 use super::salts::Salts;
 use super::request::RequestErrors;
 use super::sessions::{Session, SessionAttributes, SessionCache};
@@ -33,12 +33,30 @@ pub struct AnalyticsHost {
     /// Whether it is enabled and counting visits: the only hosts events are
     /// kept for.
     pub counting: bool,
+    /// Whether its visits are reported by the tracker, rather than counted by
+    /// the server as its pages load. Each host is counted one way only, so
+    /// nothing is counted twice and nothing has to be matched up.
+    pub script: bool,
 }
 
 /// Who sent an event, as far as the request says.
 pub struct Sender<'a> {
     pub ip: &'a str,
     pub user_agent: &'a str,
+}
+
+/// A page a visitor's browser loaded, on a host counting on the server: what
+/// the request said, taken on the listener and handed across.
+pub struct PageLoad {
+    pub host_id: i64,
+    /// The host's own hostname, which the visitor hash is salted with, as the
+    /// tracker's `d` is — over Tor too, where `url` names the onion.
+    pub hostname: String,
+    /// The page as the browser asked for it, scheme and host included.
+    pub url: String,
+    pub referrer: Option<String>,
+    pub user_agent: String,
+    pub ip: String,
 }
 
 /// Events held before a flush is forced, rather than waiting for the timer.
@@ -130,7 +148,10 @@ impl Ingest {
             for domain in &event.domains {
                 // `d` arrives without `www.`, which a site configured under its
                 // `www` name still has to be found by.
-                let host = hosts.get(domain).or_else(|| hosts.get(&format!("www.{domain}"))).filter(|h| Some(h.id) == site);
+                // A host counting on the server has no tracker in its pages,
+                // so whatever reports to it is forged or a page cached from
+                // before, and would count a visit the server already has.
+                let host = hosts.get(domain).or_else(|| hosts.get(&format!("www.{domain}"))).filter(|h| Some(h.id) == site && h.script);
                 match self.record(store, &event, domain, host, sender, now) {
                     Some(full) => flush |= full,
                     None => dropped += 1,
@@ -139,6 +160,21 @@ impl Ingest {
         }
 
         (Received::Accepted { dropped }, flush)
+    }
+
+    /// Count a page the server saw load, on a host counting on the server.
+    /// `None` when it wasn't kept, as for an event; otherwise whether the
+    /// buffer is full enough to flush.
+    pub fn page_load(&mut self, store: &Mutex<AnalyticsStore>, load: &PageLoad, host: &AnalyticsHost, now: i64) -> Option<bool> {
+        if host.script || host.id != load.host_id {
+            return None;
+        }
+        let event = page_view(&load.url, &load.hostname, load.referrer.as_deref())?;
+        if is_spam_referrer(event.referrer.as_deref()) {
+            return None;
+        }
+        let sender = Sender { ip: &load.ip, user_agent: &load.user_agent };
+        self.record(store, &event, &event.domains[0], Some(host), &sender, now)
     }
 
     /// Record one event for one site. `None` when it wasn't kept; otherwise
@@ -320,8 +356,8 @@ mod tests {
         let store = Mutex::new(AnalyticsStore::new(rusqlite::Connection::open(dir.path().join("a.sqlite3")).unwrap()).unwrap());
         let mut ingest = Ingest::new(SessionCache::default(), Geo::new(dir.path(), crate::log::Logger::new(crate::log::LogLevel::Error)));
         let hosts: HashMap<String, AnalyticsHost> = [
-            ("docs.example.com".into(), AnalyticsHost { id: 1, hostname: "docs.example.com".into(), counting: true }),
-            ("off.example.com".into(), AnalyticsHost { id: 2, hostname: "off.example.com".into(), counting: false }),
+            ("docs.example.com".into(), AnalyticsHost { id: 1, hostname: "docs.example.com".into(), counting: true, script: true }),
+            ("off.example.com".into(), AnalyticsHost { id: 2, hostname: "off.example.com".into(), counting: false, script: true }),
         ]
         .into();
         let sender = Sender { ip: "203.0.113.5", user_agent: UA };
@@ -358,6 +394,48 @@ mod tests {
         assert_eq!((s.entry_page.as_str(), s.exit_page.as_str()), ("/", "/about"));
         assert_eq!(s.attributes.source, "Google");
         assert_eq!(s.attributes.channel, "Organic Search");
+        assert_eq!(s.attributes.browser, "Chrome");
+    }
+
+    #[test]
+    fn counts_page_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Mutex::new(AnalyticsStore::new(rusqlite::Connection::open(dir.path().join("a.sqlite3")).unwrap()).unwrap());
+        let mut ingest = Ingest::new(SessionCache::default(), Geo::new(dir.path(), crate::log::Logger::new(crate::log::LogLevel::Error)));
+        let server = AnalyticsHost { id: 1, hostname: "docs.example.com".into(), counting: true, script: false };
+        let load = |path: &str, user_agent: &str, referrer: Option<&str>| PageLoad {
+            host_id: 1,
+            hostname: "docs.example.com".into(),
+            url: format!("https://docs.example.com{path}"),
+            referrer: referrer.map(str::to_string),
+            user_agent: user_agent.into(),
+            ip: "203.0.113.5".into(),
+        };
+
+        assert_eq!(ingest.page_load(&store, &load("/?utm_source=google", UA, None), &server, 1000), Some(false));
+        assert_eq!(ingest.page_load(&store, &load("/about", UA, Some("https://docs.example.com/")), &server, 1010), Some(false));
+        // Bots and spam aren't counted, any more than when the tracker reports them.
+        assert_eq!(ingest.page_load(&store, &load("/", "Googlebot/2.1", None), &server, 1020), None);
+        assert_eq!(ingest.page_load(&store, &load("/", UA, Some("https://semalt.com/")), &server, 1030), None);
+        // Nor is a page load on a host the tracker counts, or another host's.
+        let script = AnalyticsHost { script: true, ..server.clone() };
+        assert_eq!(ingest.page_load(&store, &load("/", UA, None), &script, 1040), None);
+        let other = AnalyticsHost { id: 2, ..server.clone() };
+        assert_eq!(ingest.page_load(&store, &load("/", UA, None), &other, 1050), None);
+
+        // And the tracker isn't believed on a host the server counts.
+        let hosts: HashMap<String, AnalyticsHost> = [("docs.example.com".into(), server.clone())].into();
+        let sender = Sender { ip: "203.0.113.5", user_agent: UA };
+        let (received, _) = ingest.handle(&store, r#"{"n":"pageview","u":"https://docs.example.com/","d":"docs.example.com"}"#, &sender, &hosts, Some(1), 1060);
+        assert_eq!(dropped(&received), Some(1));
+
+        let pending = ingest.take_pending();
+        assert_eq!((pending.events.len(), pending.sessions.len()), (2, 1));
+        store.lock().write(&pending.events, &pending.sessions).unwrap();
+        let s = &store.lock().open_sessions(0).unwrap()[0];
+        assert_eq!((s.pageviews, s.is_bounce, s.duration), (2, false, 10));
+        assert_eq!((s.entry_page.as_str(), s.exit_page.as_str()), ("/", "/about"));
+        assert_eq!(s.attributes.source, "Google");
         assert_eq!(s.attributes.browser, "Chrome");
     }
 }

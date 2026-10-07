@@ -289,7 +289,7 @@ A ready version is not yet something a host serves. What a host serves is its
 (`HostBuilder`, `src/builds.rs`). A build is a path map — the host's version
 chain flattened into one, plus every file npanel generates or rewrites for that
 host: a sitemap, a `robots.txt` with a line appended, the `window.ENV` script
-for a host with variables, the tracker script with analytics on, and every page
+for a host with variables, the tracker script with analytics counted by it, and every page
 rewritten to load them — and everything in it is an
 ordinary stored blob with its compressed copies. So every body a site sends is a stored file, sent from a
 kept memory mapping or straight from disk, including the ones npanel wrote, and all the work of making them happens once, when the host
@@ -875,6 +875,30 @@ order before `DOMContentLoaded`: on a connection that drops packets rather
 than failing, the request for the tracker would never end, and every deferred
 script after it — the site's own entry point, often — would never start. That
 is most likely exactly when it hurts, in a site's offline shell.
+
+**Counting on the server.** A site with `analytics_script` off has no
+tracker, for sites whose visitors won't have one, and is counted from its page
+loads instead. Each `GET` for a page that a browser marks as one being opened
+— `Sec-Fetch-Mode: navigate` and `Sec-Fetch-Dest: document`, and no
+`Sec-Purpose` — becomes a pageview, a `304` included. Requests without those
+headers aren't counted: every current browser sends them, and most bots
+don't, which is the nearest the server gets to the filter the tracker is by
+only ever running in a browser. Everything after that is the tracker's path —
+the same bot and spam checks, the same visitor hash, the same visits — so the
+two are counted alike as far as a page load can say. A single-page app's moves
+between its routes, time on page and scroll depth never reach the server, so
+they aren't counted.
+
+This is the one place counting touches the threads that serve sites, and it
+does so as little as it can: the serving thread copies the URL, referrer, user
+agent and address, and hands them to the analytics runtime without waiting
+(`Analytics::page_load`). The handoff takes a slot from the same bounded queue
+events wait in, and a page load that finds it full, or the runtime down, isn't
+counted rather than held. A site is counted one way only: events sent to a
+site counting on the server are dropped, and page loads on a site with the
+tracker aren't looked at. Counting both and matching them up would need every
+page load held until its tracker had had time to report, and still couldn't
+tell a visitor without JavaScript from a bot claiming to be a browser.
 
 **Isolation.** Events are recorded on a runtime of their own, on a thread of
 its own (`src/analytics/mod.rs`). Serving sites is always the first priority,

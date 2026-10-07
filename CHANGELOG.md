@@ -4,6 +4,18 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- Analytics can be counted on the server instead of by a script. Turn off
+  **Tracking script** under a site's Analytics switch, and its pages go out as
+  published, with nothing added: npanel counts each page a browser opens as it
+  serves it, under the same cookieless, daily-salted visitor hash. Visits,
+  sources, locations and devices are counted as before; moves within a
+  single-page app, time on page and scroll depth can't be, and only requests a
+  browser marks as opening a page (`Sec-Fetch-Mode: navigate`,
+  `Sec-Fetch-Dest: document`, not a prefetch) count. Each site is counted one
+  way or the other, never both.
+
 ## [0.4.2]
 
 - Files of 64 KiB and up are sent with `sendfile(2)` on Linux, straight from
