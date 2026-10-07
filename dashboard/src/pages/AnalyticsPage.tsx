@@ -70,12 +70,6 @@ export function AnalyticsPage() {
       />
 
       {!host.data.analytics && <CountingOff hostname={hostname} />}
-      {host.data.analytics && host.data.analytics_script === false && (
-        <p className="rounded-2xl bg-card p-4 text-sm text-muted-foreground surface">
-          This site is counted by the server, without a tracking script. Visits, sources, locations and devices are
-          counted as pages load; moves within a single-page app, time on page and scroll depth aren&apos;t.
-        </p>
-      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <PeriodPicker state={state} onChange={setState} today={today()} />
