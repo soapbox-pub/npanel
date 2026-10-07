@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.4.2]
 
 - Files of 64 KiB and up are sent with `sendfile(2)` on Linux, straight from
   the page cache to the socket, when npanel serves plain HTTP behind a proxy:
