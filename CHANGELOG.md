@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.5.0]
 
 - Analytics can be counted on the server instead of by a script. Turn off
   **Tracking script** under a site's Analytics switch, and its pages go out as
