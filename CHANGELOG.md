@@ -4,6 +4,12 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- The `dist` build profile is gone: `--release` now builds what releases
+  publish, with full LTO. Build from source with `cargo build --release`, and
+  install `target/release/npanel`.
+
 ## [0.3.1]
 
 - A preview script can change a `URL`: its `href`, `pathname`, `search` and

@@ -220,13 +220,13 @@ workflow pins both):
 ```sh
 (cd dashboard && bun run build)
 ulimit -n "$(ulimit -Hn)"   # zig's linker holds every object file open at once
-cargo zigbuild --profile dist --target x86_64-unknown-linux-musl --features embedded-dashboard
-cargo zigbuild --profile dist --target aarch64-unknown-linux-musl --features embedded-dashboard
+cargo zigbuild --release --target x86_64-unknown-linux-musl --features embedded-dashboard
+cargo zigbuild --release --target aarch64-unknown-linux-musl --features embedded-dashboard
 ```
 
-`dist` is `release` with fat LTO and one codegen unit (see `Cargo.toml`): a
-smaller, faster binary, from a build that takes several minutes every time. Plain `--release` rebuilds in seconds, and is what to use for anything
-short of publishing.
+The `release` profile builds with fat LTO and one codegen unit (see
+`Cargo.toml`): a smaller, faster binary, from a build that takes several
+minutes every time.
 
 ## Housekeeping
 

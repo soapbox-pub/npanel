@@ -109,17 +109,11 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
-# What `cargo build --release` makes: optimized, but quick to rebuild, for
-# running locally and deploying by hand. Symbols are stripped because they are
-# a fifth of the binary and only name functions in a panic's backtrace.
+# What a release publishes (.ngit/act/workflows/release.yml), and what to
+# deploy: the smallest and fastest binary, at the price of a build that takes
+# minutes. Symbols are stripped because they are a fifth of the binary and only
+# name functions in a panic's backtrace.
 [profile.release]
 strip = "symbols"
-incremental = true
-
-# What a release publishes (.ngit/act/workflows/release.yml): the smallest and
-# fastest binary, at the price of a much slower build.
-[profile.dist]
-inherits = "release"
 lto = "fat"
 codegen-units = 1
-incremental = false

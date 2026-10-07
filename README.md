@@ -92,7 +92,7 @@ To build it instead:
 
 ```sh
 (cd dashboard && bun install && bun run build)
-cargo build --profile dist --features embedded-dashboard
+cargo build --release --features embedded-dashboard
 ```
 
 Then put Caddy in front of it:

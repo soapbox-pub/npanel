@@ -217,8 +217,8 @@ names, and [Bun](https://bun.sh) 1.3 or newer:
 ```sh
 git clone <your-repo-url> npanel && cd npanel
 (cd dashboard && bun install && bun run build)
-cargo build --profile dist --features embedded-dashboard
-sudo install -m 755 target/dist/npanel /usr/local/bin/npanel
+cargo build --release --features embedded-dashboard
+sudo install -m 755 target/release/npanel /usr/local/bin/npanel
 sudo install -m 644 contrib/npanel.service /etc/systemd/system/npanel.service
 ```
 

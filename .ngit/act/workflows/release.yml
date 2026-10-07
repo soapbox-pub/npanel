@@ -117,8 +117,6 @@ jobs:
           bun install --frozen-lockfile
           bun run build
 
-      # The dist profile (Cargo.toml): fat LTO and one codegen unit, for the
-      # smallest binary, which is worth the extra minutes here and nowhere else.
       - name: Build the binaries
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -131,8 +129,8 @@ jobs:
           # The runner's image points CARGO_TARGET_DIR at a directory every
           # run shares.
           for arch in x86_64 aarch64; do
-            cargo zigbuild --profile dist --locked --target "$arch-unknown-linux-musl" --features embedded-dashboard
-            cp "${CARGO_TARGET_DIR:-target}/$arch-unknown-linux-musl/dist/npanel" "dist/npanel-$VERSION-linux-$arch"
+            cargo zigbuild --release --locked --target "$arch-unknown-linux-musl" --features embedded-dashboard
+            cp "${CARGO_TARGET_DIR:-target}/$arch-unknown-linux-musl/release/npanel" "dist/npanel-$VERSION-linux-$arch"
           done
           # A musl binary that still asks for a dynamic loader fails on glibc
           # hosts with a misleading "No such file or directory"; refuse to

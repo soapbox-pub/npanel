@@ -8,16 +8,15 @@ FROM rust:1-bookworm AS server
 WORKDIR /src
 
 # Dependencies first, so a source change doesn't rebuild the world. The image's
-# rustup installs whichever Rust rust-toolchain.toml names. `dist` is the
-# profile releases are built with.
+# rustup installs whichever Rust rust-toolchain.toml names.
 COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
 COPY vendor ./vendor
-RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --profile dist --locked && rm -rf src
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release --locked && rm -rf src
 
 COPY build.rs ./
 COPY assets ./assets
 COPY src ./src
-RUN touch src/main.rs && cargo build --profile dist --locked
+RUN touch src/main.rs && cargo build --release --locked
 
 # The dashboard is built separately because it needs its own toolchain (vite,
 # react and the rest), none of which belong in the runtime image.
@@ -45,7 +44,7 @@ RUN groupadd --gid 1000 npanel && useradd --uid 1000 --gid npanel --home /app --
 
 WORKDIR /app
 
-COPY --from=server /src/target/dist/npanel /usr/local/bin/npanel
+COPY --from=server /src/target/release/npanel /usr/local/bin/npanel
 # The server serves this directory as the dashboard; without it the dashboard
 # hostname answers 503.
 COPY --from=dashboard /app/dashboard/dist ./dashboard/dist
