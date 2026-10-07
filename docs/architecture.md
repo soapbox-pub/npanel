@@ -663,7 +663,15 @@ patches in a fork that adds `SendFile`.
 The 64 KiB line is measured, not guessed. `sendfile` writes the head on its
 own first, an extra system call and packet, which below the line costs more
 than the copy it saves: small files are about 10% faster mapped. The two tie at
-64 KiB, and above it `sendfile` is 10–25% faster, up to 16 MiB. Each large blob
+64 KiB, and above it `sendfile` is 10–25% faster, up to 16 MiB.
+
+The socket is corked (`TCP_CORK`) while a file goes out, and uncorked once its
+last byte is handed over, which is what nginx's `tcp_nopush` does. Every
+connection has `TCP_NODELAY` on, so an uncorked socket sends a file in the
+pieces sendfile hands the kernel: about a quarter more segments for a
+megabyte, each its own trip through the network stack, which cost 12–18% of
+the throughput on files of a megabyte and more. Corked, npanel sends as many
+segments as nginx and spends as long in the kernel per request. Each large blob
 kept mapped holds its file open, so the server takes its hard limit on open
 files as its soft one at startup rather than living within systemd's 1024.
 

@@ -102,7 +102,7 @@ impl Connections {
         H: Fn(Request<Body>) -> F + Send + 'static,
         F: Future<Output = Response<Body>> + Send + 'static,
     {
-        tokio::spawn(serve_http1(self.0.watcher(), TcpIo(TokioIo::new(stream)), handler));
+        tokio::spawn(serve_http1(self.0.watcher(), TcpIo { stream: TokioIo::new(stream), corked: false }, handler));
     }
 
     /// A claim on a connection that is still being set up — a TLS handshake —
@@ -147,33 +147,37 @@ where
 /// A TCP connection for hyper, which writes a file with sendfile(2): the
 /// kernel moves the file's pages to the socket, and nothing is copied
 /// through the process.
-struct TcpIo(TokioIo<TcpStream>);
+struct TcpIo {
+    stream: TokioIo<TcpStream>,
+    /// Whether `TCP_CORK` is on, which it is while a file is being sent.
+    corked: bool,
+}
 
 impl hyper::rt::Read for TcpIo {
     fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: hyper::rt::ReadBufCursor<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
     }
 }
 
 impl hyper::rt::Write for TcpIo {
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
     }
 
     fn is_write_vectored(&self) -> bool {
-        self.0.is_write_vectored()
+        self.stream.is_write_vectored()
     }
 
     fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().0).poll_write_vectored(cx, bufs)
+        Pin::new(&mut self.get_mut().stream).poll_write_vectored(cx, bufs)
     }
 
     fn supports_write_file(&self) -> bool {
@@ -184,8 +188,18 @@ impl hyper::rt::Write for TcpIo {
     fn poll_write_file(self: Pin<&mut Self>, cx: &mut Context<'_>, file: &std::fs::File, offset: u64, len: usize) -> Poll<io::Result<usize>> {
         use std::os::fd::AsRawFd;
 
-        let stream = self.get_mut().0.inner();
+        let this = self.get_mut();
+        let stream = this.stream.inner();
         let mut offset = libc::off_t::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // With `TCP_NODELAY` on, as every connection has it, the kernel sends
+        // a file in whatever pieces sendfile hands it, a quarter more
+        // segments than a corked socket sends for a large one, each a trip
+        // through the network stack. Corked, it holds them back to fill whole
+        // segments, which is nginx's `tcp_nopush`.
+        if !this.corked {
+            set_cork(stream, true)?;
+            this.corked = true;
+        }
         loop {
             std::task::ready!(stream.poll_write_ready(cx))?;
             // Given an offset to read from, sendfile leaves the file's own
@@ -199,10 +213,36 @@ impl hyper::rt::Write for TcpIo {
             });
             match sent {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                // hyper asks for exactly what is left of the body, so this
+                // was its end: uncorking sends the last partial segment now
+                // rather than after the kernel's 200 ms.
+                Ok(n) if n == len => {
+                    set_cork(stream, false)?;
+                    this.corked = false;
+                    return Poll::Ready(Ok(n));
+                }
                 sent => return Poll::Ready(sent),
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn set_cork(stream: &TcpStream, on: bool) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let value = libc::c_int::from(on);
+    // SAFETY: the descriptor is open, and `value` is the `int` TCP_CORK takes.
+    let result = unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::IPPROTO_TCP,
+            libc::TCP_CORK,
+            (&raw const value).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if result == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 /// Serve HTTP/2 on `io` until it closes or `watcher` is told to finish.
