@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.4.0]
 
 - Error tracking, built in. Turn on **Error reporting** in a site's Privacy &
   Security settings, and its pages load a small reporter, from the site's own
@@ -19,9 +19,10 @@ it is tagged.
 - The endpoint speaks Sentry's envelope format, so a site already using a
   Sentry SDK can point its DSN at `https://<key>@<site>/_npanel/0` instead.
 - Nostr secret keys, and URL parameters named like secrets (`secret=`,
-  `access_token=`, `api_key=`…), are scrubbed from every report, and visitors are counted
-  under the same daily salts as analytics. A site may send 60 reports a
-  minute; reports are kept for `errors_retention_days`, 90 by default.
+  `access_token=`, `api_key=`…), are scrubbed from every report, and visitors
+  are counted under the same daily salts as analytics. A site may send 60
+  reports a minute; reports are kept for `errors_retention_days`, 90 by
+  default.
 - The `dist` build profile is gone: `--release` now builds what releases
   publish, with full LTO. Build from source with `cargo build --release`, and
   install `target/release/npanel`.
