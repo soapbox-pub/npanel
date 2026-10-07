@@ -94,7 +94,12 @@ mod tests {
         var window = {
             addEventListener: function (name, f) { listeners[name] = f; },
             location: { href: "https://docs.example.com/a?b=1", pathname: "/a", search: "?b=1", hash: "" },
-            fetch: function (url, init) { sent.push([url, init && init.body]); return Promise.resolve({ status: 404 }); },
+            fetch: function (url, init) {
+                // As a browser does once the page's keepalive allowance is spent.
+                if (init && init.keepalive && window.keepaliveSpent) return Promise.reject(new TypeError("keepalive"));
+                sent.push([url, init && init.body]);
+                return Promise.resolve({ status: 404 });
+            },
             console: { error: function () {}, warn: function () {} },
             history: { pushState: function () {}, replaceState: function () {} },
         };
@@ -213,6 +218,35 @@ mod tests {
         assert_eq!(sent[1]["exception"]["values"][0]["value"], "Non-Error promise rejection captured with value: {\"code\":7}");
         assert_eq!(sent[2]["exception"]["values"][0]["value"], "Uncaught SyntaxError: nope");
         assert_eq!(frames(&sent[2], 0), [("".into(), "https://docs.example.com/b.js".into(), 3, 9)]);
+    }
+
+    #[test]
+    fn fits_what_keepalive_allows() {
+        let sent = run(r#"
+            window.keepaliveSpent = true;
+            // 30 lines of 3-byte characters: half the limit in characters,
+            // half again over it in bytes.
+            for (var i = 0; i < 30; i++) window.console.error(new Array(991).join("\u20ac"));
+            var e = new Error("boom");
+            e.stack = "    at f (https://docs.example.com/a.js:1:1)";
+            listeners.error({ error: e });
+        "#);
+        // Sent without keepalive, and cut to fit it anyway.
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["breadcrumbs"]["values"].as_array().unwrap().len(), 15);
+    }
+
+    #[test]
+    fn describes_values_shallowly() {
+        let sent = run(r#"
+            var state = { user: { name: "x" }, list: [1, 2], f: function () {}, n: 1, s: "s" };
+            for (var i = 0; i < 20; i++) state["k" + i] = i;
+            listeners.unhandledrejection({ reason: state });
+        "#);
+        assert_eq!(
+            sent[0]["exception"]["values"][0]["value"],
+            r#"Non-Error promise rejection captured with value: {"user":"[Object]","list":"[Array]","f":"[Function]","n":1,"s":"s","k0":0,"k1":1,"k2":2,"k3":3,"k4":4}…"#
+        );
     }
 
     #[test]

@@ -774,7 +774,8 @@ state, and `next` the `cursor` for the page after, or `null` on the last.
 }
 ```
 
-`events` counts every report, `visitors` the visitors it reached, each once a
+`events` counts every report kept — not those turned away once the site had
+sent its 60 a minute — and `visitors` the visitors it reached, each once a
 day (see [privacy](architecture.md#errors)). A release is the event id of the
 version the report came from.
 

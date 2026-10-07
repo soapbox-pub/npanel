@@ -38,14 +38,46 @@
     return text.length > max ? text.slice(0, max) + "\u2026" : text;
   }
 
+  // A value inside an object or array, as `describe` shows it: one level only.
+  function shallow(value) {
+    if (typeof value === "string") return truncate(value, 100);
+    if (typeof value === "number" || typeof value === "boolean" || value === null) return value;
+    if (typeof value === "function") return "[Function]";
+    if (Array.isArray(value)) return "[Array]";
+    return typeof value === "object" ? "[Object]" : String(value);
+  }
+
+  // A value as text, at a cost that doesn't grow with it: a page may log,
+  // or reject with, its whole state, and `console.warn` runs whether or not
+  // anything is ever reported. One level deep, and the first few entries.
   function describe(value) {
     if (typeof value === "string") return value;
     if (value instanceof Error) return value.name + ": " + value.message;
+    if (typeof value === "function") return "[Function " + (value.name || "anonymous") + "]";
+    if (value === null || typeof value !== "object") return String(value);
     try {
-      var json = JSON.stringify(value);
-      return json === undefined ? String(value) : json;
+      var out;
+      var more = false;
+      if (Array.isArray(value)) {
+        out = [];
+        for (var i = 0; i < value.length && i < 10; i++) out.push(shallow(value[i]));
+        more = value.length > 10;
+      } else {
+        out = {};
+        var count = 0;
+        for (var key in value) {
+          if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+          if (count === 10) {
+            more = true;
+            break;
+          }
+          out[key] = shallow(value[key]);
+          count++;
+        }
+      }
+      return JSON.stringify(out) + (more ? "\u2026" : "");
     } catch (e) {
-      return String(value);
+      return "[object]";
     }
   }
 
@@ -154,17 +186,43 @@
     var header = JSON.stringify({ event_id: id, sent_at: new Date().toISOString() }) + "\n" + JSON.stringify({ type: "event" }) + "\n";
     var body = header + JSON.stringify(event);
     // The oldest breadcrumbs go first, half at a time, until it fits.
-    while (body.length > MAX_BODY && event.breadcrumbs.values.length) {
+    while (utf8Length(body) > MAX_BODY && event.breadcrumbs.values.length) {
       var crumbs = event.breadcrumbs.values;
       event.breadcrumbs.values = crumbs.length > 1 ? crumbs.slice(Math.ceil(crumbs.length / 2)) : [];
       body = header + JSON.stringify(event);
     }
-    if (body.length > MAX_BODY) return;
+    if (utf8Length(body) > MAX_BODY) return;
+    // `keepalive`'s 64 KiB is shared by every request of the page still in
+    // flight, so several errors at once can run out of it. The report goes
+    // without it then, and is lost only if the page closes first.
+    post(body, true)
+      .catch(function () {
+        return post(body, false);
+      })
+      .catch(function () {
+        // Nowhere to report a failure to report.
+      });
+  }
+
+  function post(body, keepalive) {
     try {
-      send.call(root, config.endpoint, { method: "POST", body: body, keepalive: true }).catch(function () {});
+      return send.call(root, config.endpoint, { method: "POST", body: body, keepalive: keepalive });
     } catch (e) {
-      // Nowhere to report a failure to report.
+      return Promise.reject(e);
     }
+  }
+
+  // What `keepalive` limits: bytes, not the UTF-16 units `length` counts.
+  // JSON.stringify leaves no lone surrogates, so each half of a pair is two
+  // of a character's four bytes.
+  function utf8Length(text) {
+    var bytes = text.length;
+    for (var i = 0; i < text.length; i++) {
+      var code = text.charCodeAt(i);
+      if (code >= 0x800 && (code < 0xd800 || code > 0xdfff)) bytes += 2;
+      else if (code >= 0x80) bytes += 1;
+    }
+    return bytes;
   }
 
   root.addEventListener("error", function (event) {

@@ -18,7 +18,8 @@ it is tagged.
   functions and lines, and one bug stays one issue across deploys.
 - The endpoint speaks Sentry's envelope format, so a site already using a
   Sentry SDK can point its DSN at `https://<key>@<site>/_npanel/0` instead.
-- Nostr secret keys are scrubbed from every report, and visitors are counted
+- Nostr secret keys, and URL parameters named like secrets (`secret=`,
+  `access_token=`, `api_key=`…), are scrubbed from every report, and visitors are counted
   under the same daily salts as analytics. A site may send 60 reports a
   minute; reports are kept for `errors_retention_days`, 90 by default.
 - The `dist` build profile is gone: `--release` now builds what releases

@@ -925,8 +925,13 @@ few kilobytes and nothing else. It listens for `error` and
 Sentry's browser SDK reads, keeps the last 30 clicks, navigations, `fetch`es
 and console warnings and errors as breadcrumbs, and reports each distinct
 error once a page, ten at most, with `fetch(…, {keepalive: true})` and a
-`text/plain` body so there is no preflight. Errors from cross-origin scripts,
-which browsers reduce to `Script error.`, are dropped.
+`text/plain` body so there is no preflight. A report is cut to fit
+`keepalive`'s 64 KiB, counted in bytes; since that allowance is shared by
+every request the page has in flight, one refused for it is sent again
+without. Objects logged or rejected are described one level deep, their
+first ten entries, so a page logging its whole state costs no more than one
+logging a word. Errors from cross-origin scripts, which browsers reduce to
+`Script error.`, are dropped.
 
 **Ingestion** is Sentry's envelope endpoint, answered at the reporter's
 `/_npanel/api/report` and at `/_npanel/api/<project>/envelope/`, where a
@@ -936,23 +941,39 @@ are read — sessions, transactions and client reports are accepted and dropped
 — and only what the dashboard shows is kept of them: no user, no headers or
 cookies, no `extra`, every field capped, and Nostr secret keys (`nsec1…`,
 `ncryptsec1…`) replaced wherever they appear, since a Nostr client's error
-message or console line can carry one (`src/errors/envelope.rs`). A site may
-send 60 reports a minute; past that it gets Sentry's `429` with
-`X-Sentry-Rate-Limits`, which an SDK backs off on. Bots' reports are dropped.
+message or console line can carry one — as can the value of any URL
+parameter named like a secret (`secret=`, as in a bunker URI,
+`#access_token=`, `api_key=`…), which is replaced too
+(`src/errors/envelope.rs`). A site may send 60 reports a minute; past that
+it gets Sentry's `429` with `X-Sentry-Rate-Limits`, which an SDK backs off
+on, and what it sent is neither kept nor counted. Bots' reports are dropped.
 
 **Isolation** is analytics': its own runtime on its own thread
 (`src/errors/mod.rs`), the listener reading the body — capped at 256 KiB —
 and handing it across whole, at most 64 waiting, the database and caches
-owned by the runtime, and restarts with backoff.
+owned by the runtime, and restarts with backoff. A report for a site that
+isn't collecting is answered without its body being read, so those can't
+take the places of reports for sites that are.
 
 **Source maps.** npanel has every file of every version a site deploys, so
 there is no upload step. A frame on the site's own origin is looked up in the
 files of the version the report names — its release, if that is a ready
 version of this host's site, or else what the host serves — through the
-host's version chain, so a merged host finds files from earlier deploys. The
-script names its map with `sourceMappingURL`, inline or relative, or the map
-is the file beside it with `.map` appended. Maps are parsed with Sentry's own
-`sourcemap` crate, and the last few kept parsed (`src/errors/symbolicate.rs`).
+host's version chain, so a merged host finds files from earlier deploys. A
+release naming a version npanel doesn't have for this site — pruned, or never
+its — maps nothing, since another version's map would put its lines
+somewhere they aren't. The script names its map with `sourceMappingURL`,
+inline or relative, or the map is the file beside it with `.map` appended.
+Maps are parsed with Sentry's own `sourcemap` crate, and the last few
+scripts and maps kept parsed, each by its own hash
+(`src/errors/symbolicate.rs`).
+
+Anyone can send a report, so what one costs is bounded. Only scripts and
+pages are read, eight files at most per report, innermost frames first. Each
+file is parsed once however many reports want it at the same moment, and one
+file at a time across all reports, so a burst after a broken deploy is not
+one copy of a large map per report. npanel's database is asked only which
+files to read, and its connection given back before any is.
 Each mapped frame keeps where it was and where the map puts it, with the
 original function name and five lines of context either side. This happens as
 a report arrives rather than when it is read, because grouping needs it.

@@ -76,6 +76,15 @@ fn text(status: StatusCode, message: &'static str) -> Response<Body> {
     (status, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], message).into_response()
 }
 
+/// What a Sentry SDK expects back: the id of the event kept, if one was.
+fn accepted(id: Option<String>) -> Response<Body> {
+    let body = match id {
+        Some(id) => serde_json::json!({ "id": id }),
+        None => serde_json::json!({}),
+    };
+    Answer { status: StatusCode::OK, body: body.to_string() }.into_response()
+}
+
 /// A Sentry SDK backs off on this: `Retry-After`, and the categories it
 /// covers — all of them.
 fn limited() -> Response<Body> {
@@ -183,6 +192,13 @@ impl Errors {
         if parts.method != Method::POST {
             return (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST, OPTIONS")], "Send reports with POST.").into_response();
         }
+        // Nothing is read for a site that keeps no reports, so reports sent
+        // to one can't take the places of those for sites that do.
+        let host = match self.shared.hosts.read().as_ref() {
+            Some(hosts) => site.and_then(|id| hosts.get(&id)).filter(|h| h.collecting).cloned(),
+            None => return starting().into_response(),
+        };
+        let Some(host) = host else { return accepted(None) };
         let Ok(permit) = self.queued.clone().try_acquire_owned() else {
             let mut response = text(StatusCode::TOO_MANY_REQUESTS, "Too many reports are waiting. Try again in a moment.");
             response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("10"));
@@ -201,7 +217,6 @@ impl Errors {
         let header = |name: &str| parts.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
         let user_agent = header("user-agent").unwrap_or_default();
         let ip = client_ip(header("x-forwarded-for").as_deref(), header("x-real-ip").as_deref(), peer);
-        let host = site.and_then(|id| self.shared.hosts.read().as_ref().and_then(|hosts| hosts.get(&id).cloned()));
         let hostname = hostname.to_string();
         let log = self.shared.log;
 
@@ -211,7 +226,7 @@ impl Errors {
                 let _permit = permit;
                 let cx = ingest::Context { ingest: &worker.ingest, store: &worker.store, symbolicator: &worker.symbolicator, log: &log };
                 let sender = Sender { ip: &ip, user_agent: &user_agent };
-                let (received, full) = ingest::handle(&cx, &body, &sender, host.as_ref(), &hostname, crate::util::now());
+                let (received, full) = ingest::handle(&cx, &body, &sender, &host, &hostname, crate::util::now());
                 if full {
                     flush(&worker, &log);
                 }
@@ -220,13 +235,7 @@ impl Errors {
         });
 
         match tokio::time::timeout(REPORT_TIMEOUT, task).await {
-            Ok(Ok(Received::Accepted(id))) => {
-                let body = match id {
-                    Some(id) => serde_json::json!({ "id": id }),
-                    None => serde_json::json!({}),
-                };
-                Answer { status: StatusCode::OK, body: body.to_string() }.into_response()
-            }
+            Ok(Ok(Received::Accepted(id))) => accepted(id),
             Ok(Ok(Received::Limited)) => limited(),
             Ok(Ok(Received::Invalid(message))) => Answer::error(StatusCode::BAD_REQUEST, &message).into_response(),
             Ok(Err(_)) => restarted().into_response(),

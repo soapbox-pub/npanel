@@ -8,10 +8,11 @@
 //!
 //! Nothing from an event is kept as it came. Each field is read leniently —
 //! Sentry's SDKs write some of them more than one way — capped, and scrubbed
-//! of Nostr secret keys, and whatever npanel has no use for is left behind:
+//! of Nostr secret keys and secret URL parameters, and whatever npanel has no use for is left behind:
 //! no user, no request headers or cookies, no `extra`. What's kept is a
 //! [`Report`], which is also what the dashboard is shown.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -331,14 +332,27 @@ pub fn clean(text: &str, max: usize) -> String {
     }
 }
 
-/// `text` with every `nsec` and `ncryptsec` replaced. A Nostr client's state
-/// can hold one, and an error message, a URL or a line of console output can
-/// carry it here; a key in an error tracker is a key every staff member with
-/// access to the site can read.
-pub fn scrub(text: &str) -> std::borrow::Cow<'_, str> {
+/// `text` with every `nsec` and `ncryptsec` replaced, and the value of every
+/// URL parameter whose name says it is a secret. A Nostr client's state can
+/// hold a key, and a page's address a bunker's `secret=` or an OAuth
+/// `#access_token=`; an error message, a URL or a line of console output
+/// can carry any of them here, and a secret in an error tracker is one every
+/// staff member with access to the site can read.
+pub fn scrub(text: &str) -> Cow<'_, str> {
     static SECRET: OnceLock<Regex> = OnceLock::new();
-    let secret = SECRET.get_or_init(|| Regex::new(r"(?i)\b(?:nsec|ncryptsec)1[02-9ac-hj-np-z]{20,}").expect("regex"));
-    secret.replace_all(text, "[nsec]")
+    static PARAMETER: OnceLock<Regex> = OnceLock::new();
+    // No word boundary before it: a key in a URL is as often
+    // `nostr%3Ansec1…` as `nostr:nsec1…`.
+    let secret = SECRET.get_or_init(|| Regex::new(r"(?i)(?:nsec|ncryptsec)1[02-9ac-hj-np-z]{20,}").expect("regex"));
+    let parameter = PARAMETER.get_or_init(|| {
+        Regex::new(r#"(?i)([?&#][a-z0-9_.\-]*(?:secret|token|passw|pwd|api[_\-]?key|private[_\-]?key|credential|session|signature)[a-z0-9_.\-]*=)[^&#\s"'<>]+"#)
+            .expect("regex")
+    });
+    let text = secret.replace_all(text, "[nsec]");
+    match parameter.replace_all(&text, "${1}[redacted]") {
+        Cow::Owned(scrubbed) => Cow::Owned(scrubbed),
+        Cow::Borrowed(_) => text,
+    }
 }
 
 #[cfg(test)]
@@ -409,6 +423,22 @@ mod tests {
         // Whatever is missing is filled in.
         let report = read_event(&json!({ "message": "  hi  ", "level": "loud" }));
         assert_eq!((report.event_id.len(), report.level.as_str(), report.message.as_deref()), (32, "error", Some("hi")));
+    }
+
+    #[test]
+    fn scrubs_secrets() {
+        let key = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+        assert_eq!(scrub(&format!("/login?uri=nostr%3A{key}&x=1")), "/login?uri=nostr%3A[nsec]&x=1");
+        assert_eq!(scrub(&key.to_uppercase()), "[nsec]");
+        assert_eq!(
+            scrub("bunker://abc?relay=wss%3A%2F%2Fr.example&secret=hunter2&x=1"),
+            "bunker://abc?relay=wss%3A%2F%2Fr.example&secret=[redacted]&x=1"
+        );
+        assert_eq!(scrub("https://s/cb#access_token=abc.def&state=1"), "https://s/cb#access_token=[redacted]&state=1");
+        assert_eq!(scrub("/a?API_KEY=k&sessionId=s&q=token"), "/a?API_KEY=[redacted]&sessionId=[redacted]&q=token");
+        // Not every `token=` is a URL's.
+        assert_eq!(scrub("if (a.token=b) return;"), "if (a.token=b) return;");
+        assert!(matches!(scrub("nothing here"), Cow::Borrowed(_)));
     }
 
     #[test]

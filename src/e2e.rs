@@ -900,6 +900,9 @@ async fn a_reporting_site_reports_its_errors() {
             == StatusCode::OK
     })
     .await;
+    // A site that keeps no reports reads none, and says it took them.
+    let (status, _, body) = gw.request("POST", "nobody.example.com", REPORT_PATH, &[], Some("not an envelope")).await;
+    assert_eq!((status, body.as_slice()), (StatusCode::OK, &b"{}"[..]));
     // A Sentry SDK's DSN path reaches the same place.
     let (status, ..) = gw.request("POST", "docs.example.com", "/_npanel/api/1/envelope/", &[], Some(&envelope)).await;
     assert_eq!(status, StatusCode::OK);

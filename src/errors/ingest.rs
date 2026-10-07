@@ -100,15 +100,14 @@ pub struct Context<'a> {
 }
 
 /// Handle one request body. `host` is the site whose name it arrived on —
-/// the only one it may be kept for — and `hostname` that name, which the
-/// site's own frames are served from. The flag is whether the buffer asked
-/// to be written now. Blocking.
-pub fn handle(cx: &Context, body: &[u8], sender: &Sender, host: Option<&ErrorsHost>, hostname: &str, now: i64) -> (Received, bool) {
+/// the only one it may be kept for, and one that is collecting — and
+/// `hostname` that name, which the site's own frames are served from. The
+/// flag is whether the buffer asked to be written now. Blocking.
+pub fn handle(cx: &Context, body: &[u8], sender: &Sender, host: &ErrorsHost, hostname: &str, now: i64) -> (Received, bool) {
     let events = match parse_envelope(body) {
         Ok(events) => events,
         Err(error) => return (Received::Invalid(error), false),
     };
-    let Some(host) = host.filter(|h| h.collecting) else { return (Received::Accepted(None), false) };
     if events.is_empty() {
         return (Received::Accepted(None), false);
     }
@@ -194,20 +193,17 @@ mod tests {
         let log = Logger::new(crate::log::LogLevel::Error);
         let cx = Context { ingest: &ingest, store: &store, symbolicator: &symbolicator, log: &log };
         let on = ErrorsHost { id: 1, hostname: "docs.example.com".into(), collecting: true };
-        let off = ErrorsHost { id: 2, hostname: "off.example.com".into(), collecting: false };
         let sender = Sender { ip: "203.0.113.5", user_agent: UA };
         let envelope = |id: &str| format!("{{}}\n{{\"type\":\"event\"}}\n{{\"event_id\":\"{id}\",\"message\":\"boom 1\"}}\n");
 
         let id = "a".repeat(32);
-        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &sender, Some(&on), "docs.example.com", 1000).0, Received::Accepted(Some(id.clone())));
-        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &sender, Some(&off), "off.example.com", 1000).0, Received::Accepted(None));
-        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &sender, None, "nobody.example.com", 1000).0, Received::Accepted(None));
+        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &sender, &on, "docs.example.com", 1000).0, Received::Accepted(Some(id.clone())));
         let bot = Sender { ip: "203.0.113.5", user_agent: "Googlebot/2.1 (+http://www.google.com/bot.html)" };
-        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &bot, Some(&on), "docs.example.com", 1000).0, Received::Accepted(None));
-        assert!(matches!(handle(&cx, b"nope", &sender, Some(&on), "docs.example.com", 1000).0, Received::Invalid(_)));
+        assert_eq!(handle(&cx, envelope(&id).as_bytes(), &bot, &on, "docs.example.com", 1000).0, Received::Accepted(None));
+        assert!(matches!(handle(&cx, b"nope", &sender, &on, "docs.example.com", 1000).0, Received::Invalid(_)));
 
         // The site's allowance runs out.
-        let limited = (0..100).filter(|_| handle(&cx, envelope(&id).as_bytes(), &sender, Some(&on), "docs.example.com", 1000).0 == Received::Limited).count();
+        let limited = (0..100).filter(|_| handle(&cx, envelope(&id).as_bytes(), &sender, &on, "docs.example.com", 1000).0 == Received::Limited).count();
         // Sixty a minute, so a slow run may have earned one or two back.
         assert!((35..=41).contains(&limited), "{limited}");
 
