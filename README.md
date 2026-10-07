@@ -79,13 +79,13 @@ Releases are published over Nostr with [ngit](https://ngit.dev): the binaries,
 `SHA256SUMS`, and a systemd unit.
 
 ```sh
-chmod +x npanel-0.4.0-linux-x86_64
+chmod +x npanel-0.4.1-linux-x86_64
 
 cp .env.example .env
 $EDITOR .env          # set DASHBOARD_HOST at minimum
 
-./npanel-0.4.0-linux-x86_64 make-admin npub1yourkeyhere
-./npanel-0.4.0-linux-x86_64
+./npanel-0.4.1-linux-x86_64 make-admin npub1yourkeyhere
+./npanel-0.4.1-linux-x86_64
 ```
 
 To build it instead:

@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.4.1]
 
 - The error reporter scrubs Nostr secret keys and secret URL parameters in the
   browser, before a report is sent, as well as on arrival. A page's fragment
