@@ -185,13 +185,21 @@ impl hyper::rt::Write for TcpIo {
         {
             // A slice below the threshold can only be a file's if it is the
             // tail of one already being sent, which only a corked socket has.
+            // An empty one is nobody's: sending nothing of a file would report
+            // a write of nothing, which hyper takes for a dead connection.
             let file = bufs
                 .iter()
                 .enumerate()
-                .filter(|(_, buf)| this.corked || buf.len() as u64 >= crate::send_file::MIN)
+                .filter(|(_, buf)| !buf.is_empty() && (this.corked || buf.len() as u64 >= crate::send_file::MIN))
                 .find_map(|(at, buf)| crate::send_file::find(buf).map(|(fd, offset)| (at, fd, offset)));
             if let Some((at, fd, offset)) = file {
                 return this.poll_send_file(cx, &bufs[..at], fd, offset, bufs[at].len());
+            }
+            // Corked with no file to finish shouldn't happen, but if it did,
+            // these bytes would wait up to the kernel's 200 ms behind the cork.
+            if this.corked {
+                set_cork(this.stream.inner(), false)?;
+                this.corked = false;
             }
         }
         Pin::new(&mut this.stream).poll_write_vectored(cx, bufs)
@@ -385,6 +393,35 @@ mod tests {
 
         shutdown.cancel();
         server.await.unwrap();
+    }
+
+    /// Neither should happen, but an empty slice inside a mapping isn't sent
+    /// as a write of nothing, and a plain write uncorks a socket left corked.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_plain_write_is_never_held_or_lost() {
+        use std::os::fd::AsRawFd;
+
+        let blob = blob();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        set_cork(&client, true).unwrap();
+        let mut io = TcpIo { stream: TokioIo::new(client), corked: true };
+
+        let bufs = [io::IoSlice::new(&blob[10..10]), io::IoSlice::new(b"hello")];
+        let written = std::future::poll_fn(|cx| hyper::rt::Write::poll_write_vectored(Pin::new(&mut io), cx, &bufs)).await.unwrap();
+        assert_eq!(written, 5);
+
+        let mut cork: libc::c_int = 1;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: the descriptor is open, and `cork` and `len` are what TCP_CORK fills in.
+        let result = unsafe { libc::getsockopt(io.stream.inner().as_raw_fd(), libc::IPPROTO_TCP, libc::TCP_CORK, (&raw mut cork).cast(), &mut len) };
+        assert_eq!((result, cork, io.corked), (0, 0, false));
+
+        let mut hello = [0; 5];
+        peer.read_exact(&mut hello).await.unwrap();
+        assert_eq!(&hello, b"hello");
     }
 
     #[tokio::test]
