@@ -7,8 +7,7 @@
 //! A warm request touches neither the database nor the filesystem: which host
 //! a hostname names and which build it serves are cached until a writer says
 //! otherwise, which file a path resolves to within a build is cached forever
-//! (a build is immutable), and the blob itself is a kept memory mapping —
-//! with, for a large one, the file kept open beside it for sendfile(2).
+//! (a build is immutable), and the blob itself is a kept memory mapping.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -20,13 +19,12 @@ use bytes::Bytes;
 use http::header::{self, HeaderMap, HeaderValue};
 use http::request::Parts;
 use http::{Method, Request, Response, StatusCode};
-use hyper::ext::SendFile;
 use parking_lot::{Mutex, RwLock};
 use sha2::{Digest, Sha256};
 
 use crate::analytics::tracker::EVENT_PATH;
 use crate::analytics::{Analytics, Peer};
-use crate::blobs::{BlobStore, Encoding, Opened, Variants};
+use crate::blobs::{BlobStore, Encoding, Variants};
 use crate::builds::current_build;
 use crate::db::{BuildKind, Db};
 use crate::errors::reporter::is_report_path;
@@ -437,11 +435,11 @@ impl SiteServer {
         // the same file, but if the two ever disagreed, a `Content-Length` the
         // body doesn't match is a response hyper aborts, and a range past the
         // body's end a slice that panics.
-        let opened = if request.method == Method::HEAD {
+        let bytes = if request.method == Method::HEAD {
             None
         } else {
             match self.open(file.sha256, encoding).await {
-                Ok(opened) => Some(opened),
+                Ok(bytes) => Some(bytes),
                 Err(error) => {
                     log.error(
                         "blob_missing",
@@ -451,7 +449,7 @@ impl SiteServer {
                 }
             }
         };
-        let size = opened.as_ref().map_or(size, |opened| opened.bytes.len() as u64);
+        let size = bytes.as_ref().map_or(size, |bytes| bytes.len() as u64);
 
         // A range is of this representation only: not of a not-found page
         // standing in for what was asked, and not of a version the client
@@ -485,19 +483,14 @@ impl SiteServer {
             None => builder.header(header::CONTENT_LENGTH, size),
         };
 
-        let Some(Opened { bytes, file: kept }) = opened else {
+        let Some(bytes) = bytes else {
             return Ok(builder.status(status).body(Body::empty()).expect("response"));
         };
         // `parse_range` keeps both ends within `size`, which is this length.
-        let (offset, body) = match range {
-            Some((start, end)) => (start, bytes.slice(start as usize..=end as usize)),
-            None => (0, bytes),
+        let body = match range {
+            Some((start, end)) => bytes.slice(start as usize..=end as usize),
+            None => bytes,
         };
-        // A connection that can send the file does, and never reads the
-        // body; any other — TLS, Tor — sends the body, which is the same bytes.
-        if let Some(kept) = kept {
-            builder = builder.extension(SendFile::new(kept, offset, body.len() as u64));
-        }
 
         if log.enabled(crate::log::LogLevel::Debug) {
             log.debug(
@@ -539,7 +532,7 @@ impl SiteServer {
         let page = Arc::new(ScriptPage { script: script.clone(), page: script_page(request, &url), hints: hints.clone() });
         let Answer::Preview(preview) = self.deps.link_previews.preview(page.clone(), wait).await else { return None };
         let vary = self.deps.link_previews.vary(&page);
-        let document = self.open(file.sha256, None).await.ok()?.bytes;
+        let document = self.open(file.sha256, None).await.ok()?;
         let body = splice(&document, &preview, &Page { url: &url, origin: &site_origin })?;
 
         // Made per request, so its tag is its own hash: a preview refreshed
@@ -628,9 +621,9 @@ impl SiteServer {
 
     /// A blob's bytes for a response body. A kept mapping answers right
     /// here, with no system call; a new one is opened off the runtime threads.
-    async fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> anyhow::Result<Opened> {
-        if let Some(opened) = self.deps.blobs.mapped(sha256, encoding) {
-            return Ok(opened);
+    async fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> anyhow::Result<Bytes> {
+        if let Some(bytes) = self.deps.blobs.mapped(sha256, encoding) {
+            return Ok(bytes);
         }
         let blobs = self.deps.blobs.clone();
         tokio::task::spawn_blocking(move || blobs.open(sha256, encoding)).await?

@@ -118,10 +118,3 @@ debug = false
 strip = "symbols"
 lto = "fat"
 codegen-units = 1
-
-# hyper with `ext::SendFile`, so a large blob goes from the page cache to the
-# socket with sendfile(2) instead of being copied through the process. Upstream
-# declined it (hyperium/hyper#4215); the fork is hyper's main branch, a few
-# commits past 1.11.1, plus that change.
-[patch.crates-io]
-hyper = { git = "https://github.com/alexgleason/hyper", rev = "a7dddb3b3b586abdc0cf4307ad3d319f383ebadd" }

@@ -8,9 +8,9 @@ it is tagged.
 
 - Files of 64 KiB and up are sent with `sendfile(2)` on Linux, straight from
   the page cache to the socket, when npanel serves plain HTTP behind a proxy:
-  10–25% more requests a second for large files, and with the socket corked
-  while the file goes out, as nginx's `tcp_nopush` does, 12–18% more again
-  for files of a megabyte and up. Smaller files, and connections over TLS or
+  30–55% more requests a second for files of 128 KiB and up. The socket is
+  corked while a file goes out, as nginx's `tcp_nopush` does, so the head and
+  the file share whole segments. Smaller files, and connections over TLS or
   Tor, are sent as before.
 - npanel raises its soft limit on open files to the hard limit at startup,
   since large files being served are now kept open.

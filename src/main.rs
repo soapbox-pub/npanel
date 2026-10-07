@@ -33,6 +33,7 @@ mod prune;
 mod psl;
 mod rate_limit;
 mod scripts;
+mod send_file;
 mod seo;
 mod serve;
 mod server;

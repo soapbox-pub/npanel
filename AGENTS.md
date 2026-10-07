@@ -45,6 +45,7 @@ src/
   site_preview.rs       link-preview metadata, read from a site's own index.html
   seo.rs                sitemaps, robots.txt, canonical links
   serve.rs              serving an nsite request, and its caches
+  send_file.rs          large blobs sent with sendfile(2), known by address
   dashboard.rs          serving the built SPA, from disk or compiled in
   auth.rs               NIP-98
   api.rs                the JSON API

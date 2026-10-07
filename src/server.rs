@@ -95,8 +95,8 @@ impl Connections {
         tokio::spawn(http1(self.0.watcher(), io, handler));
     }
 
-    /// Serve HTTP/1.1 on a TCP connection, which sends a response carrying a
-    /// [`hyper::ext::SendFile`] straight from the file.
+    /// Serve HTTP/1.1 on a TCP connection, which sends a large blob's body
+    /// straight from its file.
     fn serve_tcp<H, F>(&self, stream: TcpStream, handler: H)
     where
         H: Fn(Request<Body>) -> F + Send + 'static,
@@ -144,9 +144,10 @@ where
     let _ = watcher.watch(connection).await;
 }
 
-/// A TCP connection for hyper, which writes a file with sendfile(2): the
-/// kernel moves the file's pages to the socket, and nothing is copied
-/// through the process.
+/// A TCP connection for hyper, which sends a large blob with sendfile(2):
+/// the kernel moves the file's pages to the socket, and nothing is copied
+/// through the process. See `send_file` for how it knows a blob when it sees
+/// one.
 struct TcpIo {
     stream: TokioIo<TcpStream>,
     /// Whether `TCP_CORK` is on, which it is while a file is being sent.
@@ -173,55 +174,88 @@ impl hyper::rt::Write for TcpIo {
     }
 
     fn is_write_vectored(&self) -> bool {
+        // hyper passes a body's bytes through uncopied only to a writer that
+        // takes them vectored, which is what lets this one recognise a file.
         self.stream.is_write_vectored()
     }
 
     fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().stream).poll_write_vectored(cx, bufs)
-    }
-
-    fn supports_write_file(&self) -> bool {
-        cfg!(target_os = "linux")
-    }
-
-    #[cfg(target_os = "linux")]
-    fn poll_write_file(self: Pin<&mut Self>, cx: &mut Context<'_>, file: &std::fs::File, offset: u64, len: usize) -> Poll<io::Result<usize>> {
-        use std::os::fd::AsRawFd;
-
         let this = self.get_mut();
-        let stream = this.stream.inner();
-        let mut offset = libc::off_t::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-        // With `TCP_NODELAY` on, as every connection has it, the kernel sends
-        // a file in whatever pieces sendfile hands it, a quarter more
-        // segments than a corked socket sends for a large one, each a trip
-        // through the network stack. Corked, it holds them back to fill whole
-        // segments, which is nginx's `tcp_nopush`.
-        if !this.corked {
-            set_cork(stream, true)?;
-            this.corked = true;
+        #[cfg(target_os = "linux")]
+        {
+            // A slice below the threshold can only be a file's if it is the
+            // tail of one already being sent, which only a corked socket has.
+            let file = bufs
+                .iter()
+                .enumerate()
+                .filter(|(_, buf)| this.corked || buf.len() as u64 >= crate::send_file::MIN)
+                .find_map(|(at, buf)| crate::send_file::find(buf).map(|(fd, offset)| (at, fd, offset)));
+            if let Some((at, fd, offset)) = file {
+                return this.poll_send_file(cx, &bufs[..at], fd, offset, bufs[at].len());
+            }
         }
+        Pin::new(&mut this.stream).poll_write_vectored(cx, bufs)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl TcpIo {
+    /// Write `head`, then `len` bytes of the file `fd` from `offset`, and
+    /// report how much of the two went out, as a vectored write would.
+    fn poll_send_file(&mut self, cx: &mut Context<'_>, head: &[io::IoSlice<'_>], fd: std::os::fd::RawFd, offset: u64, len: usize) -> Poll<io::Result<usize>> {
+        // With `TCP_NODELAY` on, as every connection has it, the kernel sends
+        // a file in whatever pieces sendfile hands it — a quarter more
+        // segments than a corked socket for a large one, each a trip through
+        // the network stack — and a head written before it in a packet of its
+        // own. Corked, the head and the file fill whole segments together,
+        // which is nginx's `tcp_nopush`.
+        if !self.corked {
+            set_cork(self.stream.inner(), true)?;
+            self.corked = true;
+        }
+
+        let head_len: usize = head.iter().map(|buf| buf.len()).sum();
+        let written = if head_len == 0 {
+            0
+        } else {
+            let written = std::task::ready!(hyper::rt::Write::poll_write_vectored(Pin::new(&mut self.stream), cx, head))?;
+            if written < head_len {
+                return Poll::Ready(Ok(written));
+            }
+            written
+        };
+
+        let stream = self.stream.inner();
+        let mut offset = libc::off_t::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         loop {
-            std::task::ready!(stream.poll_write_ready(cx))?;
             // Given an offset to read from, sendfile leaves the file's own
             // position alone, so one file can be sent on any number of
             // connections at once.
             let sent = stream.try_io(tokio::io::Interest::WRITABLE, || {
-                // SAFETY: both descriptors are open for the length of the call,
-                // and `offset` is a valid `off_t` the call may write to.
-                let n = unsafe { libc::sendfile(stream.as_raw_fd(), file.as_raw_fd(), &mut offset, len) };
+                // SAFETY: both descriptors are open for the length of the call
+                // (see `send_file::find`), and `offset` is a valid `off_t` the
+                // call may write to.
+                let n = unsafe { libc::sendfile(std::os::fd::AsRawFd::as_raw_fd(stream), fd, &mut offset, len) };
                 usize::try_from(n).map_err(|_| io::Error::last_os_error())
             });
             match sent {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-                // hyper asks for exactly what is left of the body, so this
-                // was its end: uncorking sends the last partial segment now
-                // rather than after the kernel's 200 ms.
-                Ok(n) if n == len => {
-                    set_cork(stream, false)?;
-                    this.corked = false;
-                    return Poll::Ready(Ok(n));
+                // The head went out, so that is what this call reports; the
+                // next one meets the full socket, or the error, again.
+                Err(_) if written > 0 => return Poll::Ready(Ok(written)),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => std::task::ready!(stream.poll_write_ready(cx))?,
+                Err(error) => return Poll::Ready(Err(error)),
+                Ok(n) => {
+                    #[cfg(test)]
+                    crate::send_file::SENT.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                    // That was all of this file there is to write: uncorking
+                    // sends its last partial segment now, rather than after
+                    // the kernel's 200 ms.
+                    if n == len {
+                        set_cork(stream, false)?;
+                        self.corked = false;
+                    }
+                    return Poll::Ready(Ok(written + n));
                 }
-                sent => return Poll::Ready(sent),
             }
         }
     }
@@ -277,76 +311,92 @@ where
 mod tests {
     use std::io::Write;
 
-    use hyper::ext::SendFile;
+    use bytes::Bytes;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
     use crate::log::LogLevel;
 
-    /// A response whose file and body differ, so what arrives says which of
-    /// the two was sent. They never differ outside this test.
-    fn respond(file: &Arc<std::fs::File>, request: &Request<Body>) -> Response<Body> {
-        let (offset, len) = match request.uri().path() {
-            "/part" => (5, 10),
-            _ => (0, 26),
-        };
-        let mut response = Response::builder().header(http::header::CONTENT_LENGTH, len).body(Body::from(vec![b'.'; len as usize])).unwrap();
-        response.extensions_mut().insert(SendFile::new(file.clone(), offset, len));
-        response
-    }
-
-    fn alphabet() -> Arc<std::fs::File> {
+    /// A blob of a megabyte, mapped as `BlobStore::open` maps one.
+    fn blob() -> Bytes {
+        let contents: Vec<u8> = (0..1024 * 1024u32).map(|i| (i % 251) as u8).collect();
         let mut file = tempfile::tempfile().unwrap();
-        file.write_all(b"abcdefghijklmnopqrstuvwxyz").unwrap();
-        Arc::new(file)
+        file.write_all(&contents).unwrap();
+        // SAFETY: nothing else has the temporary file.
+        let map = unsafe { memmap2::Mmap::map(&file).unwrap() };
+        crate::send_file::bytes(map, file)
     }
 
-    async fn exchange(stream: &mut (impl AsyncRead + AsyncWrite + Unpin)) -> String {
-        // Two on one connection: the second is only read right if the first
-        // body ended exactly where its head said.
+    /// `/part` is a range from the middle of the blob, as `Range` asks for one;
+    /// anything else is all of it.
+    fn respond(blob: &Bytes, request: &Request<Body>) -> Response<Body> {
+        let body = match request.uri().path() {
+            "/part" => blob.slice(100_000..300_000),
+            _ => blob.clone(),
+        };
+        Response::builder().header(http::header::CONTENT_LENGTH, body.len()).body(Body::from(body)).unwrap()
+    }
+
+    /// Two requests on one connection, and the bodies of their responses: the
+    /// second is only read right if the first body ended exactly where its head
+    /// said it would.
+    async fn exchange(stream: &mut (impl AsyncRead + AsyncWrite + Unpin)) -> Vec<Vec<u8>> {
         stream.write_all(b"GET /part HTTP/1.1\r\nhost: x\r\n\r\nGET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").await.unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).await.unwrap();
-        response
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+
+        let mut bodies = Vec::new();
+        let mut rest = &response[..];
+        while !rest.is_empty() {
+            let end = rest.windows(4).position(|w| w == b"\r\n\r\n").expect("a head") + 4;
+            let head = String::from_utf8_lossy(&rest[..end]).to_lowercase();
+            let len: usize = head.split("content-length: ").nth(1).and_then(|v| v.split("\r\n").next()).unwrap().parse().unwrap();
+            bodies.push(rest[end..end + len].to_vec());
+            rest = &rest[end + len..];
+        }
+        bodies
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_tcp_connection_sends_the_file() {
-        let file = alphabet();
+    #[tokio::test(flavor = "multi_thread")]
+    async fn sends_files_over_tcp() {
+        let blob = blob();
+        let expected = vec![blob[100_000..300_000].to_vec(), blob.to_vec()];
         let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let address = listener.local_addr().unwrap();
         let shutdown = CancellationToken::new();
+        let served = blob.clone();
         let server = tokio::spawn(serve(
             listener,
             move |request, _| {
-                let response = respond(&file, &request);
+                let response = respond(&served, &request);
                 async move { response }
             },
             shutdown.clone(),
             Logger::new(LogLevel::Error),
         ));
 
-        let response = exchange(&mut TcpStream::connect(address).await.unwrap()).await;
-        let bodies: Vec<&str> = response.split("\r\n\r\n").skip(1).map(|rest| rest.split("HTTP/1.1").next().unwrap()).collect();
-        assert_eq!(bodies, ["fghijklmno", "abcdefghijklmnopqrstuvwxyz"], "{response}");
+        let before = crate::send_file::SENT.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(exchange(&mut TcpStream::connect(address).await.unwrap()).await, expected);
+        // From the file, not through the process. If this fails after updating
+        // hyper, hyper has started copying bodies before writing them.
+        let sent = crate::send_file::SENT.load(std::sync::atomic::Ordering::Relaxed) - before;
+        assert!(sent >= (200_000 + blob.len()) as u64, "only {sent} bytes went by sendfile");
 
         shutdown.cancel();
         server.await.unwrap();
     }
 
     #[tokio::test]
-    async fn any_other_connection_sends_the_body() {
-        let file = alphabet();
-        let (mut client, stream) = tokio::io::duplex(1024);
+    async fn any_other_connection_sends_the_bytes() {
+        let blob = blob();
+        let expected = vec![blob[100_000..300_000].to_vec(), blob.to_vec()];
+        let (mut client, stream) = tokio::io::duplex(64 * 1024);
         let connections = Connections::new();
         connections.serve(stream, move |request| {
-            let response = respond(&file, &request);
+            let response = respond(&blob, &request);
             async move { response }
         });
-
-        let response = exchange(&mut client).await;
-        let bodies: Vec<&str> = response.split("\r\n\r\n").skip(1).map(|rest| rest.split("HTTP/1.1").next().unwrap()).collect();
-        assert_eq!(bodies, [".".repeat(10), ".".repeat(26)], "{response}");
+        assert_eq!(exchange(&mut client).await, expected);
     }
 }

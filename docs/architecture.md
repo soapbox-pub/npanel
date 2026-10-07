@@ -650,30 +650,38 @@ Nothing is proxied at request time. Every byte comes from local disk, which is
 why a served site survives its relays and Blossom servers going offline.
 
 How those bytes leave depends on the file's size. A body is a slice of the
-blob's kept memory mapping, which hyper sends in one `writev` with the head.
-From 64 KiB the response also carries the file itself (`hyper::ext::SendFile`),
-and a plain TCP connection (`TcpIo`, `src/server.rs`) sends it with
-`sendfile(2)` instead, so the kernel hands the page cache to the socket and
-nothing is copied through npanel. That is most connections in production,
-since the proxy in front speaks plain HTTP. A connection that can't send a
-file — TLS npanel terminated itself, an onion — sends the mapped body, which
-is the same bytes. Upstream hyper can't send files at all, so `Cargo.toml`
-patches in a fork that adds `SendFile`.
+blob's kept memory mapping, which hyper hands the connection in one vectored
+write with the head, and a plain TCP connection (`TcpIo`, `src/server.rs`)
+sends a slice of a mapping of 64 KiB or more with `sendfile(2)` instead: the
+kernel moves the file's pages from the page cache to the socket, and nothing
+is copied through npanel. That is most connections in production, since the
+proxy in front speaks plain HTTP.
 
-The 64 KiB line is measured, not guessed. `sendfile` writes the head on its
-own first, an extra system call and packet, which below the line costs more
-than the copy it saves: small files are about 10% faster mapped. The two tie at
-64 KiB, and above it `sendfile` is 10–25% faster, up to 16 MiB.
+hyper has no way to be handed a file, so the connection recognises one by
+address (`src/send_file.rs`). Every large mapping is registered, by the range
+of memory it occupies, for as long as it exists; a slice the connection is
+asked to write that lies inside one is a range of that file, at the offset the
+address says. hyper writes a body to a connection that takes vectored writes
+without copying it, so the slice it passes is the mapping's own memory. The
+bytes are the file's either way, so anything that keeps a slice from being
+recognised — TLS npanel terminated itself, an onion, a hyper that copied
+bodies — changes how fast a file is sent and never what is sent. A test in
+`src/server.rs` counts what went by `sendfile`, so a hyper upgrade that starts
+copying bodies fails it rather than quietly losing the speed.
 
-The socket is corked (`TCP_CORK`) while a file goes out, and uncorked once its
-last byte is handed over, which is what nginx's `tcp_nopush` does. Every
-connection has `TCP_NODELAY` on, so an uncorked socket sends a file in the
-pieces sendfile hands the kernel: about a quarter more segments for a
-megabyte, each its own trip through the network stack, which cost 12–18% of
-the throughput on files of a megabyte and more. Corked, npanel sends as many
-segments as nginx and spends as long in the kernel per request. Each large blob
-kept mapped holds its file open, so the server takes its hard limit on open
-files as its soft one at startup rather than living within systemd's 1024.
+While a file goes out the socket is corked (`TCP_CORK`), from before the head
+until the file's last byte is handed over, which is nginx's `tcp_nopush`.
+Every connection has `TCP_NODELAY` on, so uncorked, the head would go out in a
+packet of its own and the file in whatever pieces `sendfile` hands the kernel:
+about a quarter more segments for a megabyte, each its own trip through the
+network stack. Corked, the head and the file fill whole segments together.
+
+The 64 KiB line is measured. Below it, `sendfile` and a write from the mapping
+tie, and registering a file would only hold its descriptor open; from it,
+`sendfile` is 8% faster, and 30–55% from 128 KiB to 16 MiB. Each registered
+mapping holds its file open for as long as it is kept, so the server takes its
+hard limit on open files as its soft one at startup rather than living within
+systemd's 1024.
 
 ## NIP-05 names
 

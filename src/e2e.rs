@@ -444,54 +444,6 @@ async fn a_published_site_is_deployed_built_and_served() {
     drop(gw.db);
 }
 
-/// A large file goes out with the file it came from attached, for a
-/// connection that can send it straight from disk; a small one doesn't.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_large_file_is_offered_from_disk() {
-    use hyper::ext::SendFile;
-
-    let large: Vec<u8> = (0..100_000u32).map(|i| (i * 7 % 251) as u8).collect();
-    let small = b"small".to_vec();
-    let files: HashMap<String, Vec<u8>> = [(sha(&large), large.clone()), (sha(&small), small.clone())].into();
-    let server = blossom(files).await;
-    let manifest = Event::sign(
-        AUTHOR,
-        crate::util::now() - 60,
-        15128,
-        vec![vec!["path".into(), "/large.bin".into(), sha(&large)], vec!["path".into(), "/small.bin".into(), sha(&small)]],
-        "",
-    );
-    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![manifest.clone()]), server });
-    let gw = gateway(nostr).await;
-    let npub = crate::nostr::nip19::npub_encode(&manifest.pubkey);
-    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "files.example.com", "address": npub }))).await;
-    assert_eq!(status, StatusCode::CREATED);
-    eventually("the site going live", async || gw.request("GET", "files.example.com", "/small.bin", &[], None).await.0 == StatusCode::OK).await;
-
-    let send = async |method: &str, path: &str, headers: &[(&str, &str)]| {
-        let mut builder = Request::builder().method(method).uri(path).header("host", "files.example.com");
-        for (name, value) in headers {
-            builder = builder.header(*name, *value);
-        }
-        let response = gw.app.handle(builder.body(Body::empty()).unwrap(), crate::app::Via::Proxy([127, 0, 0, 1].into())).await;
-        let file = response.extensions().get::<SendFile>().map(|file| (file.offset(), file.len()));
-        (file, response.into_body().collect().await.unwrap().to_bytes())
-    };
-
-    // The body is still the file's bytes, for a connection that can't.
-    let (file, body) = send("GET", "/large.bin", &[]).await;
-    assert_eq!(file, cfg!(target_os = "linux").then_some((0, 100_000)));
-    assert_eq!(body, large);
-    let (file, body) = send("GET", "/large.bin", &[("range", "bytes=1000-1999")]).await;
-    assert_eq!(file, cfg!(target_os = "linux").then_some((1000, 1000)));
-    assert_eq!(body, large[1000..2000]);
-
-    assert_eq!(send("HEAD", "/large.bin", &[]).await.0, None);
-    assert_eq!(send("GET", "/small.bin", &[]).await, (None, small.into()));
-
-    gw.deployer.stop().await;
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_missing_blob_fails_the_deploy_and_says_why() {
     let manifest = Event::sign(AUTHOR, crate::util::now() - 60, 15128, vec![vec!["path".into(), "/index.html".into(), "e".repeat(64)]], "");
