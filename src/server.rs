@@ -1,8 +1,11 @@
 //! Serving HTTP on a listener, with a handler per request.
 
 use std::future::Future;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -45,7 +48,7 @@ where
 
     while let Some((stream, remote)) = accept(&listener, &shutdown, log).await {
         let handler = handler.clone();
-        connections.serve(stream, move |request| handler(request, remote));
+        connections.serve_tcp(stream, move |request| handler(request, remote));
     }
 
     drop(listener);
@@ -92,6 +95,16 @@ impl Connections {
         tokio::spawn(http1(self.0.watcher(), io, handler));
     }
 
+    /// Serve HTTP/1.1 on a TCP connection, which sends a response carrying a
+    /// [`hyper::ext::SendFile`] straight from the file.
+    fn serve_tcp<H, F>(&self, stream: TcpStream, handler: H)
+    where
+        H: Fn(Request<Body>) -> F + Send + 'static,
+        F: Future<Output = Response<Body>> + Send + 'static,
+    {
+        tokio::spawn(serve_http1(self.0.watcher(), TcpIo(TokioIo::new(stream)), handler));
+    }
+
     /// A claim on a connection that is still being set up — a TLS handshake —
     /// so that draining waits for it too.
     pub fn watcher(&self) -> Watcher {
@@ -113,13 +126,83 @@ where
     H: Fn(Request<Body>) -> F + Send + 'static,
     F: Future<Output = Response<Body>> + Send + 'static,
 {
+    serve_http1(watcher, TokioIo::new(io), handler).await;
+}
+
+async fn serve_http1<I, H, F>(watcher: Watcher, io: I, handler: H)
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+    H: Fn(Request<Body>) -> F + Send + 'static,
+    F: Future<Output = Response<Body>> + Send + 'static,
+{
     let connection = hyper::server::conn::http1::Builder::new()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_TIMEOUT)
         .keep_alive(true)
-        .serve_connection(TokioIo::new(io), service(handler));
+        .serve_connection(io, service(handler));
     // Clients hang up mid-response all the time; that is not news.
     let _ = watcher.watch(connection).await;
+}
+
+/// A TCP connection for hyper, which writes a file with sendfile(2): the
+/// kernel moves the file's pages to the socket, and nothing is copied
+/// through the process.
+struct TcpIo(TokioIo<TcpStream>);
+
+impl hyper::rt::Read for TcpIo {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: hyper::rt::ReadBufCursor<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for TcpIo {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().0).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.0.is_write_vectored()
+    }
+
+    fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[io::IoSlice<'_>]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().0).poll_write_vectored(cx, bufs)
+    }
+
+    fn supports_write_file(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn poll_write_file(self: Pin<&mut Self>, cx: &mut Context<'_>, file: &std::fs::File, offset: u64, len: usize) -> Poll<io::Result<usize>> {
+        use std::os::fd::AsRawFd;
+
+        let stream = self.get_mut().0.inner();
+        let mut offset = libc::off_t::try_from(offset).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        loop {
+            std::task::ready!(stream.poll_write_ready(cx))?;
+            // Given an offset to read from, sendfile leaves the file's own
+            // position alone, so one file can be sent on any number of
+            // connections at once.
+            let sent = stream.try_io(tokio::io::Interest::WRITABLE, || {
+                // SAFETY: both descriptors are open for the length of the call,
+                // and `offset` is a valid `off_t` the call may write to.
+                let n = unsafe { libc::sendfile(stream.as_raw_fd(), file.as_raw_fd(), &mut offset, len) };
+                usize::try_from(n).map_err(|_| io::Error::last_os_error())
+            });
+            match sent {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                sent => return Poll::Ready(sent),
+            }
+        }
+    }
 }
 
 /// Serve HTTP/2 on `io` until it closes or `watcher` is told to finish.
@@ -148,4 +231,82 @@ where
         let response = handler(request.map(Body::new));
         async move { Ok::<_, std::convert::Infallible>(response.await) }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use hyper::ext::SendFile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+    use crate::log::LogLevel;
+
+    /// A response whose file and body differ, so what arrives says which of
+    /// the two was sent. They never differ outside this test.
+    fn respond(file: &Arc<std::fs::File>, request: &Request<Body>) -> Response<Body> {
+        let (offset, len) = match request.uri().path() {
+            "/part" => (5, 10),
+            _ => (0, 26),
+        };
+        let mut response = Response::builder().header(http::header::CONTENT_LENGTH, len).body(Body::from(vec![b'.'; len as usize])).unwrap();
+        response.extensions_mut().insert(SendFile::new(file.clone(), offset, len));
+        response
+    }
+
+    fn alphabet() -> Arc<std::fs::File> {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"abcdefghijklmnopqrstuvwxyz").unwrap();
+        Arc::new(file)
+    }
+
+    async fn exchange(stream: &mut (impl AsyncRead + AsyncWrite + Unpin)) -> String {
+        // Two on one connection: the second is only read right if the first
+        // body ended exactly where its head said.
+        stream.write_all(b"GET /part HTTP/1.1\r\nhost: x\r\n\r\nGET / HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_tcp_connection_sends_the_file() {
+        let file = alphabet();
+        let listener = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let server = tokio::spawn(serve(
+            listener,
+            move |request, _| {
+                let response = respond(&file, &request);
+                async move { response }
+            },
+            shutdown.clone(),
+            Logger::new(LogLevel::Error),
+        ));
+
+        let response = exchange(&mut TcpStream::connect(address).await.unwrap()).await;
+        let bodies: Vec<&str> = response.split("\r\n\r\n").skip(1).map(|rest| rest.split("HTTP/1.1").next().unwrap()).collect();
+        assert_eq!(bodies, ["fghijklmno", "abcdefghijklmnopqrstuvwxyz"], "{response}");
+
+        shutdown.cancel();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn any_other_connection_sends_the_body() {
+        let file = alphabet();
+        let (mut client, stream) = tokio::io::duplex(1024);
+        let connections = Connections::new();
+        connections.serve(stream, move |request| {
+            let response = respond(&file, &request);
+            async move { response }
+        });
+
+        let response = exchange(&mut client).await;
+        let bodies: Vec<&str> = response.split("\r\n\r\n").skip(1).map(|rest| rest.split("HTTP/1.1").next().unwrap()).collect();
+        assert_eq!(bodies, [".".repeat(10), ".".repeat(26)], "{response}");
+    }
 }

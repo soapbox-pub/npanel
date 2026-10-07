@@ -112,6 +112,14 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Mapped blobs kept for serving.
 const MAPPED_BLOBS: usize = 4096;
 
+/// Size from which a blob is sent with sendfile(2) rather than from its
+/// mapping. The response's head goes out in a write of its own ahead of the
+/// file, where a mapped body shares one `writev` with it, so a small file is
+/// faster mapped: about 10% at 4–48 KiB. The two tie at 64 KiB and sendfile
+/// pulls ahead above it, by 10–25% from 128 KiB to 16 MiB, measured over
+/// loopback with four cores saturated.
+const SEND_FILE_MIN: u64 = 64 * 1024;
+
 /// Sizes of a stored blob and whatever compressed copies it has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Variants {
@@ -197,7 +205,19 @@ struct Inner {
     /// Only tests turn this off: their Blossom servers listen on loopback,
     /// which is exactly what the real check refuses.
     public_only: bool,
-    mapped: Mutex<lru::LruCache<(BlobHash, Option<Encoding>), Bytes>>,
+    mapped: Mutex<lru::LruCache<(BlobHash, Option<Encoding>), Opened>>,
+}
+
+/// A stored file, ready to send.
+#[derive(Clone)]
+pub struct Opened {
+    /// The whole file, mapped.
+    pub bytes: Bytes,
+    /// The file itself, for a connection that can send it with sendfile(2),
+    /// kept open only when it is at least [`SEND_FILE_MIN`] bytes: below that
+    /// the mapping is faster, and an open file is a descriptor held for as
+    /// long as the mapping is kept.
+    pub file: Option<Arc<std::fs::File>>,
 }
 
 impl BlobStore {
@@ -295,7 +315,7 @@ impl BlobStore {
 
     /// A blob or copy an earlier [`BlobStore::open`] mapped and kept, found
     /// without touching the disk — so without leaving a runtime thread.
-    pub fn mapped(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Option<Bytes> {
+    pub fn mapped(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Option<Opened> {
         self.inner.mapped.lock().get(&(sha256, encoding)).cloned()
     }
 
@@ -306,9 +326,9 @@ impl BlobStore {
     /// file costs no system call at all to send again. Stored files are only
     /// ever replaced by rename, never rewritten, so a mapping can't change
     /// under a reader.
-    pub fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Result<Bytes> {
-        if let Some(bytes) = self.mapped(sha256, encoding) {
-            return Ok(bytes);
+    pub fn open(&self, sha256: BlobHash, encoding: Option<Encoding>) -> Result<Opened> {
+        if let Some(opened) = self.mapped(sha256, encoding) {
+            return Ok(opened);
         }
         let key = (sha256, encoding);
 
@@ -322,9 +342,14 @@ impl BlobStore {
             let map = unsafe { memmap2::Mmap::map(&file)? };
             Bytes::from_owner(map)
         };
+        // The same immutability is what lets sendfile(2) read the file while
+        // the response's head has already promised its length. Only Linux's
+        // connections send files (`server::TcpIo`), so only there is one kept.
+        let file = (cfg!(target_os = "linux") && len >= SEND_FILE_MIN).then(|| Arc::new(file));
 
-        self.inner.mapped.lock().put(key, bytes.clone());
-        Ok(bytes)
+        let opened = Opened { bytes, file };
+        self.inner.mapped.lock().put(key, opened.clone());
+        Ok(opened)
     }
 
     /// Compress a stored blob, if it isn't already and it's worth doing.
@@ -673,13 +698,13 @@ mod tests {
         assert!(variants.gzip.unwrap() < variants.identity);
 
         let mut decoded = String::new();
-        flate2::read::GzDecoder::new(&store.open(sha, Some(Encoding::Gzip)).unwrap()[..]).read_to_string(&mut decoded).unwrap();
+        flate2::read::GzDecoder::new(&store.open(sha, Some(Encoding::Gzip)).unwrap().bytes[..]).read_to_string(&mut decoded).unwrap();
         assert_eq!(decoded, text);
         let mut decoded = Vec::new();
-        brotli::BrotliDecompress(&mut &store.open(sha, Some(Encoding::Br)).unwrap()[..], &mut decoded).unwrap();
+        brotli::BrotliDecompress(&mut &store.open(sha, Some(Encoding::Br)).unwrap().bytes[..], &mut decoded).unwrap();
         assert_eq!(decoded, text.as_bytes());
 
-        assert_eq!(&store.open(sha, None).unwrap()[..], text.as_bytes());
+        assert_eq!(&store.open(sha, None).unwrap().bytes[..], text.as_bytes());
         assert_eq!(store.list(), std::slice::from_ref(&sha));
         assert!(store.delete(sha));
         assert!(!store.has(sha));

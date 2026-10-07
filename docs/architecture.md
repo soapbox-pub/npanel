@@ -291,8 +291,8 @@ chain flattened into one, plus every file npanel generates or rewrites for that
 host: a sitemap, a `robots.txt` with a line appended, the `window.ENV` script
 for a host with variables, the tracker script with analytics on, and every page
 rewritten to load them — and everything in it is an
-ordinary stored blob with its compressed copies. So every body a site sends is a slice of a kept memory
-mapping of a stored file, including the ones npanel wrote, and all the work of making them happens once, when the host
+ordinary stored blob with its compressed copies. So every body a site sends is a stored file, sent from a
+kept memory mapping or straight from disk, including the ones npanel wrote, and all the work of making them happens once, when the host
 is built, rather than on a request. Only headers are decided per request.
 
 Every script npanel adds to a page — `window.ENV` and the tracker — is loaded
@@ -648,6 +648,24 @@ to by name, get an hour. Nothing is cached long enough to outlive a deploy.
 
 Nothing is proxied at request time. Every byte comes from local disk, which is
 why a served site survives its relays and Blossom servers going offline.
+
+How those bytes leave depends on the file's size. A body is a slice of the
+blob's kept memory mapping, which hyper sends in one `writev` with the head.
+From 64 KiB the response also carries the file itself (`hyper::ext::SendFile`),
+and a plain TCP connection (`TcpIo`, `src/server.rs`) sends it with
+`sendfile(2)` instead, so the kernel hands the page cache to the socket and
+nothing is copied through npanel. That is most connections in production,
+since the proxy in front speaks plain HTTP. A connection that can't send a
+file — TLS npanel terminated itself, an onion — sends the mapped body, which
+is the same bytes. Upstream hyper can't send files at all, so `Cargo.toml`
+patches in a fork that adds `SendFile`.
+
+The 64 KiB line is measured, not guessed. `sendfile` writes the head on its
+own first, an extra system call and packet, which below the line costs more
+than the copy it saves: small files are about 10% faster mapped. The two tie at
+64 KiB, and above it `sendfile` is 10–25% faster, up to 16 MiB. Each large blob
+kept mapped holds its file open, so the server takes its hard limit on open
+files as its soft one at startup rather than living within systemd's 1024.
 
 ## NIP-05 names
 
