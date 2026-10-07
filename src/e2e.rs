@@ -122,11 +122,25 @@ struct Gateway {
     app: App,
     db: Db,
     deployer: Deployer,
+    analytics: Arc<Analytics>,
+    errors: Arc<Errors>,
+    link_previews: Arc<LinkPreviews>,
     events: Arc<FakeEvents>,
     _dir: tempfile::TempDir,
 }
 
 impl Gateway {
+    /// Stop every runtime the gateway started. A test that ends without this
+    /// leaves them running into a deleted directory, failing and restarting
+    /// for as long as the test binary lives, which on a busy runner is enough
+    /// to slow every test after it.
+    async fn stop(&self) {
+        self.deployer.stop().await;
+        self.analytics.stop().await;
+        self.errors.stop().await;
+        self.link_previews.stop().await;
+    }
+
     async fn request(&self, method: &str, host: &str, path: &str, headers: &[(&str, &str)], body: Option<&str>) -> (StatusCode, http::HeaderMap, Vec<u8>) {
         let mut builder = Request::builder().method(method).uri(path).header("host", host);
         for (name, value) in headers {
@@ -215,15 +229,15 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         db: db.clone(),
         settings: settings.clone(),
         deployments,
-        analytics,
-        errors,
+        analytics: analytics.clone(),
+        errors: errors.clone(),
         dns: crate::dns::DnsTargets::new("panel.example.com".into(), settings.clone(), log),
         log,
         tor,
         tls: None,
         site_csp,
         previews: Arc::new(crate::site_preview::SitePreviews::new(blobs.clone())),
-        link_previews,
+        link_previews: link_previews.clone(),
         scripts,
         serve_cache,
         last_prune,
@@ -237,7 +251,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     };
 
     deployer.start().await;
-    Gateway { app, db, deployer, events, _dir: dir }
+    Gateway { app, db, deployer, analytics, errors, link_previews, events, _dir: dir }
 }
 
 fn sha(bytes: &[u8]) -> String {
@@ -440,7 +454,7 @@ async fn a_published_site_is_deployed_built_and_served() {
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert_eq!(actions, ["host.update", "host.update", "env.delete", "env.set", "nip05.set", "host.delete", "host.create", "host.create"]);
 
-    gw.deployer.stop().await;
+    gw.stop().await;
     drop(gw.db);
 }
 
@@ -474,7 +488,7 @@ async fn a_missing_blob_fails_the_deploy_and_says_why() {
     assert_eq!(messages.last(), Some(&"deploy_failed"));
     assert_eq!(log["entries"][messages.iter().position(|m| *m == "blob_download_failed").unwrap()]["fields"]["status"], 404);
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// What the dashboard published as an nsite does: talks to the API from an
@@ -501,7 +515,7 @@ async fn a_dashboard_on_another_origin_can_use_the_api() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["access-control-allow-origin"], "*");
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -532,7 +546,7 @@ async fn a_failed_deploy_is_retried_with_backoff_then_left_to_the_next_sync() {
     assert!(messages.iter().filter(|m| **m == "deploy_retrying").count() >= 2, "{messages:?}");
     assert_eq!(messages.last(), Some(&"deploy_failed"), "{messages:?}");
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// Onion traffic never touches a socket: Tor hands npanel a stream, which is
@@ -585,7 +599,7 @@ async fn a_site_is_served_at_its_onion_and_only_there() {
         assert!(response.starts_with("HTTP/1.1 404"), "{host}: {response}");
     }
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// A site with link previews on that publishes a preview script gets
@@ -653,6 +667,8 @@ async function draw(theme) {{
         log["entries"].as_array().is_some_and(|entries| entries.iter().any(|e| e["msg"] == "preview_script_found"))
     })
     .await;
+    // Until its runtime is up, every page goes out as published, crawler or not.
+    eventually("link previews starting", async || gw.api("GET", "/api/link-previews", None).await.0 == StatusCode::OK).await;
 
     let theme = Event::sign(
         AUTHOR,
@@ -789,7 +805,7 @@ async function draw(theme) {{
     let actions: Vec<&str> = audit["entries"].as_array().unwrap().iter().map(|e| e["action"].as_str().unwrap()).collect();
     assert!(actions.contains(&"link_preview.refresh") && actions.contains(&"link_preview.clear"), "{actions:?}");
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// A site's script isn't run, not even to check it, until staff turn link
@@ -816,7 +832,7 @@ async fn a_script_is_left_alone_with_previews_off() {
     eventually("the script being noticed", async || said("preview_script_unused").await).await;
     assert!(!said("preview_script_found").await);
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// A site without a script gets no previews, link previews on or not.
@@ -842,7 +858,7 @@ async fn a_site_without_a_script_has_no_previews() {
     let (status, refused) = gw.api("POST", "/api/link-previews/refresh", Some(serde_json::json!({ "url": format!("https://docs.example.com/{npub}") }))).await;
     assert!(status.is_client_error() && refused["error"].as_str().unwrap().contains("preview.js"), "{refused}");
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
 
 /// A reporting site's pages load the reporter, and what they throw reaches
@@ -926,5 +942,5 @@ async fn a_reporting_site_reports_its_errors() {
     let (_, summary) = gw.api("GET", "/api/errors/summary", None).await;
     assert_eq!(summary["docs.example.com"], serde_json::json!({ "unresolved": 0, "events_24h": 2 }));
 
-    gw.deployer.stop().await;
+    gw.stop().await;
 }
