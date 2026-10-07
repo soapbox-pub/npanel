@@ -237,6 +237,33 @@ mod tests {
     }
 
     #[test]
+    fn scrubs_secrets_before_sending() {
+        let sent = run(r##"
+            var key = "nsec1vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5";
+            window.location.href = "https://docs.example.com/a?b=1#" + key;
+            window.location.hash = "#" + key;
+            window.history.pushState({}, "", "/a");
+            window.console.error("key", key.toUpperCase(), { k: key });
+            window.fetch("/x?relay=wss%3A%2F%2Fr.example&secret=hunter2&y=1").then(function () {
+                var e = new Error('nostr%3A' + key + ' at /cb?token=abc"d');
+                e.stack = "    at f (https://docs.example.com/a.js:1:1)";
+                listeners.error({ error: e });
+            });
+        "##);
+        assert_eq!(sent.len(), 1);
+        let event = &sent[0];
+        let text = event.to_string();
+        assert!(!text.contains("vl029mgpspedva04g90vltkh6fvh240zqtv9k0t9af8935ke9laqsnlfe5") && !text.to_lowercase().contains("vl029mgps"), "{text}");
+        assert!(!text.contains("hunter2") && !text.contains("abc"), "{text}");
+        assert_eq!(event["request"]["url"], "https://docs.example.com/a?b=1#[nsec]");
+        assert_eq!(event["exception"]["values"][0]["value"], r#"nostr%3A[nsec] at /cb?token=[redacted]"d"#);
+        let crumbs = event["breadcrumbs"]["values"].as_array().unwrap();
+        assert_eq!(crumbs[0]["data"]["to"], "/a?b=1#[nsec]");
+        assert_eq!(crumbs[1]["message"], r#"key [nsec] {"k":"[nsec]"}"#);
+        assert_eq!(crumbs[2]["data"]["url"], "/x?relay=wss%3A%2F%2Fr.example&secret=[redacted]&y=1");
+    }
+
+    #[test]
     fn describes_values_shallowly() {
         let sent = run(r#"
             var state = { user: { name: "x" }, list: [1, 2], f: function () {}, n: 1, s: "s" };

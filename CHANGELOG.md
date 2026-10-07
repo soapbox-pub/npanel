@@ -4,6 +4,13 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- The error reporter scrubs Nostr secret keys and secret URL parameters in the
+  browser, before a report is sent, as well as on arrival. A page's fragment
+  and its state reach npanel only in a report, so a key in either no longer
+  crosses the network at all.
+
 ## [0.4.0]
 
 - Error tracking, built in. Turn on **Error reporting** in a site's Privacy &

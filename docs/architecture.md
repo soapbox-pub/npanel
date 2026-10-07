@@ -944,7 +944,9 @@ cookies, no `extra`, every field capped, and Nostr secret keys (`nsec1…`,
 message or console line can carry one — as can the value of any URL
 parameter named like a secret (`secret=`, as in a bunker URI,
 `#access_token=`, `api_key=`…), which is replaced too
-(`src/errors/envelope.rs`). A site may send 60 reports a minute; past that
+(`src/errors/envelope.rs`). npanel's reporter replaces the same things before
+it sends, since a page's fragment and its state otherwise never leave the
+browser; the gateway's pass is still what covers Sentry's own SDKs. A site may send 60 reports a minute; past that
 it gets Sentry's `429` with `X-Sentry-Rate-Limits`, which an SDK backs off
 on, and what it sent is neither kept nor counted. Bots' reports are dropped.
 

@@ -337,7 +337,9 @@ pub fn clean(text: &str, max: usize) -> String {
 /// hold a key, and a page's address a bunker's `secret=` or an OAuth
 /// `#access_token=`; an error message, a URL or a line of console output
 /// can carry any of them here, and a secret in an error tracker is one every
-/// staff member with access to the site can read.
+/// staff member with access to the site can read. npanel's reporter scrubs
+/// the same way before it sends (`assets/errors/reporter.js`): change both
+/// together. This one still matters for Sentry's own SDKs.
 pub fn scrub(text: &str) -> Cow<'_, str> {
     static SECRET: OnceLock<Regex> = OnceLock::new();
     static PARAMETER: OnceLock<Regex> = OnceLock::new();

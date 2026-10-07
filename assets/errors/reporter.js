@@ -81,6 +81,26 @@
     }
   }
 
+  // Nostr secret keys, and the values of URL parameters named like secrets,
+  // as `scrub` in src/errors/envelope.rs finds them: change both together.
+  // The gateway scrubs what it keeps too, but a fragment never leaves the
+  // browser except in a report, and a page's state only in one, so they are
+  // replaced before anything is sent.
+  var SECRET = /(?:nsec|ncryptsec)1[02-9ac-hj-np-z]{20,}/gi;
+  var PARAMETER = /([?&#][a-z0-9_.\-]*(?:secret|token|passw|pwd|api[_\-]?key|private[_\-]?key|credential|session|signature)[a-z0-9_.\-]*=)[^&#\s"'<>]+/gi;
+
+  function scrub(text) {
+    return text.replace(SECRET, "[nsec]").replace(PARAMETER, "$1[redacted]");
+  }
+
+  // An event as JSON with every string in it scrubbed. Scrubbing the JSON
+  // text instead could eat the backslash of an escaped quote.
+  function serialize(event) {
+    return JSON.stringify(event, function (key, value) {
+      return typeof value === "string" ? scrub(value) : value;
+    });
+  }
+
   function crumb(entry) {
     entry.timestamp = now();
     breadcrumbs.push(entry);
@@ -184,12 +204,12 @@
       breadcrumbs: { values: breadcrumbs.slice() },
     };
     var header = JSON.stringify({ event_id: id, sent_at: new Date().toISOString() }) + "\n" + JSON.stringify({ type: "event" }) + "\n";
-    var body = header + JSON.stringify(event);
+    var body = header + serialize(event);
     // The oldest breadcrumbs go first, half at a time, until it fits.
     while (utf8Length(body) > MAX_BODY && event.breadcrumbs.values.length) {
       var crumbs = event.breadcrumbs.values;
       event.breadcrumbs.values = crumbs.length > 1 ? crumbs.slice(Math.ceil(crumbs.length / 2)) : [];
-      body = header + JSON.stringify(event);
+      body = header + serialize(event);
     }
     if (utf8Length(body) > MAX_BODY) return;
     // `keepalive`'s 64 KiB is shared by every request of the page still in
