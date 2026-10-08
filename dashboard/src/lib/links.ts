@@ -1,7 +1,7 @@
 /** Links out of the dashboard, to npanel itself and to the wider Nostr web. */
 
 /** Where npanel is developed, for the footer and the homepage's call to action. */
-export const SOURCE_URL = 'https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel';
+export const SOURCE_URL = 'https://gitworkshop.dev/soapbox.pub/npanel';
 
 /**
  * A Nostr profile on the web.

@@ -144,7 +144,7 @@ npanel is one static binary, with the dashboard compiled in. Each release
 publishes one for x86_64 Linux and one for aarch64, which run on any
 distribution, and the same binaries as `.deb` and `.rpm` packages. Find them
 under the repository's releases on
-[gitworkshop.dev](https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel),
+[gitworkshop.dev](https://gitworkshop.dev/soapbox.pub/npanel),
 or with [ngit](https://ngit.dev) from a clone:
 
 ```sh

@@ -3,7 +3,7 @@
   "id": "npanel",
   "title": "npanel",
   "description": "The npanel dashboard, for managing any npanel server.",
-  "source": "https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel",
+  "source": "https://gitworkshop.dev/soapbox.pub/npanel",
   "fallback": "/index.html",
   "relays": [
     "wss://relay.ditto.pub",

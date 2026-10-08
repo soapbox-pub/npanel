@@ -10,7 +10,7 @@ section: net
 priority: optional
 maintainer: Soapbox <contact@soapbox.pub>
 description: Self-hostable nsite gateway with a team dashboard
-homepage: https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel
+homepage: https://gitworkshop.dev/soapbox.pub/npanel
 license: AGPL-3.0-or-later
 
 # The binary is static; systemd is for the unit, and for the scripts, which
