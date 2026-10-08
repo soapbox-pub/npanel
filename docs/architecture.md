@@ -98,10 +98,12 @@ absolute URLs built from `dashboard_host` (`src/dashboard.rs`). A built static
 file cannot know its own origin, and link-preview crawlers are inconsistent
 about resolving relative ones.
 
-Where the files come from depends on the build. A release binary is built with
-the `embedded-dashboard` feature, and `build.rs` compiles every file of
-`dashboard/dist` into it, so a server and its dashboard can't come from
-different versions. Without the feature they are read off disk, from
+Where the files come from depends on the build. Every binary meant for a
+server — a release's, the Docker image's, one built by hand — comes from
+`contrib/release/build.sh`, which builds with the `embedded-dashboard`
+feature, and `build.rs` compiles every file of `dashboard/dist` into it, so a
+server and its dashboard can't come from different versions. Without the
+feature, in development, they are read off disk, from
 `dashboard/dist` under the working directory, beside the binary, or in the
 source tree, and the rewritten `index.html` is cached until its mtime changes,
 which is what lets a developer rebuild the dashboard under a running server.

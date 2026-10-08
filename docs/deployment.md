@@ -256,27 +256,25 @@ and [configuration](configuration.md) explains each.
 
 ### From source
 
-On another architecture, or to run unreleased code, build it. You need
+To run unreleased code, build it the way a release is built: the same script,
+which makes the same static binary with the dashboard compiled in. You need
 [rustup](https://rustup.rs), which installs the Rust `rust-toolchain.toml`
-names, and [Bun](https://bun.sh) 1.3 or newer:
+names, and [Bun](https://bun.sh) 1.3 or newer; `contrib/release/tools.sh`
+fetches the rest, on an x86_64 or aarch64 machine, and either builds both:
 
 ```sh
 git clone <your-repo-url> npanel && cd npanel
 (cd dashboard && bun install && bun run build)
-cargo build --release --features embedded-dashboard
-sudo install -m 755 target/release/npanel /usr/local/bin/npanel
+export PATH="$(contrib/release/tools.sh ~/.cache/npanel-release-tools):$PATH"
+contrib/release/build.sh dist x86_64           # or aarch64
+sudo install -m 755 dist/npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
 sudo install -m 644 contrib/npanel.service /etc/systemd/system/npanel.service
 ```
 
-and carry on from `useradd` above. The dashboard has to be built first:
-`embedded-dashboard` compiles `dashboard/dist` into the binary and refuses to
-build without it.
-
-Leave the feature off and npanel reads the dashboard from disk instead —
-`dashboard/dist` under its working directory, beside the binary, or in the
-source tree it was built from — and picks up a rebuild without a restart. That
-is what development wants; a server is better off with one file that can't
-disagree with itself.
+and carry on from `useradd` above. A plain `cargo build --release` is not the
+same thing: without the `embedded-dashboard` feature npanel reads the dashboard
+from `dashboard/dist` on disk, which is what development wants and a server
+doesn't — one file can't disagree with itself.
 
 ## 3. Bootstrap the first admin
 
@@ -787,10 +785,11 @@ there is no harm in leaving it in a maintenance script.
 
 **The dashboard returns 503 "The dashboard has not been built."** Only a
 binary built without `embedded-dashboard` can say this, and it means it found
-no `dashboard/dist`. Run `bun install && bun run build` in `dashboard/`. The
-server logs `dashboard_not_built` once with the directories it looked in. The
-image builds it, so on Docker this means the container is running a stale image
-— `docker compose up -d --build`.
+no `dashboard/dist`: a development build. Run `bun install && bun run build`
+in `dashboard/`. The server logs `dashboard_not_built` once with the
+directories it looked in. A server should run a binary from
+`contrib/release/build.sh`, as releases and the image do, which can't say
+this.
 
 **A site returns 503 "This site has not finished deploying yet."** No version is
 ready. Check the version list and its deploy log in the dashboard.

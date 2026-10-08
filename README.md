@@ -88,11 +88,13 @@ $EDITOR npanel.toml   # set dashboard_host at minimum
 ./npanel-0.5.0-linux-x86_64 -c npanel.toml
 ```
 
-To build it instead:
+To build it instead, the way a release is built (see
+[deployment](docs/deployment.md#from-source)):
 
 ```sh
 (cd dashboard && bun install && bun run build)
-cargo build --release --features embedded-dashboard
+export PATH="$(contrib/release/tools.sh ~/.cache/npanel-release-tools):$PATH"
+contrib/release/build.sh dist x86_64
 ```
 
 Then put Caddy in front of it:

@@ -210,22 +210,24 @@ be signed by it, and `pubkey` in `.ngit/release.yaml` refuses any other. The
 binaries are uploaded as the run's artifacts before anything is published, so a
 failed publish still leaves them on the CI result.
 
-To build the release binaries locally, which needs [zig](https://ziglang.org)
-and [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild) (the
-workflow pins both):
+There is one way to build npanel for a server, and the workflow, the
+Dockerfile and a build by hand all use it: `contrib/release/build.sh`, which
+makes a static musl binary with the dashboard compiled in, cross-compiling with
+[zig](https://ziglang.org) through
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild).
+`contrib/release/tools.sh` installs both, and
+[nfpm](https://nfpm.goreleaser.com) for the packages, pinned with their
+checksums, into a directory of your choosing:
 
 ```sh
 (cd dashboard && bun run build)
-ulimit -n "$(ulimit -Hn)"   # zig's linker holds every object file open at once
-cargo zigbuild --release --target x86_64-unknown-linux-musl --features embedded-dashboard
-cargo zigbuild --release --target aarch64-unknown-linux-musl --features embedded-dashboard
+export PATH="$(contrib/release/tools.sh ~/.cache/npanel-release-tools):$PATH"
+contrib/release/build.sh dist                  # both architectures, or name one
+contrib/package/build.sh 0.5.0 x86_64 dist/npanel-0.5.0-linux-x86_64 dist
 ```
 
-and to package one, which needs [nfpm](https://nfpm.goreleaser.com):
-
-```sh
-contrib/package/build.sh 0.5.0 x86_64 target/x86_64-unknown-linux-musl/release/npanel dist
-```
+A plain `cargo build --release` is a development build that reads the
+dashboard from disk; don't deploy one.
 
 The package's install scripts are `contrib/package/*.sh`, each run by both
 dpkg and rpm, which pass them different arguments.
