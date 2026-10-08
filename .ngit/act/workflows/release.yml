@@ -3,8 +3,9 @@ name: Release
 # A version tag (vX.Y.Z) publishes:
 #
 #   - static Linux binaries for x86_64 and aarch64 with the dashboard compiled
-#     in, their SHA256SUMS, and the sample systemd unit, as a NIP-82 release
-#     (.ngit/release.yaml, notes from CHANGELOG.md);
+#     in, and the same binaries as .deb and .rpm packages (contrib/package/),
+#     as a NIP-82 release (.ngit/release.yaml, notes from CHANGELOG.md), whose
+#     asset events carry each file's SHA-256;
 #   - the same dashboard build as the named nsite "npanel" (.nsite/config.json),
 #     which manages any npanel server across origins.
 #
@@ -42,6 +43,8 @@ jobs:
       ZIG_SHA256: 70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00
       ZIGBUILD_VERSION: 0.23.4
       ZIGBUILD_SHA256: 9e3cf73485edbd45905c8aadbc0fdf869c7ddc3848f0c898229f2680db52e44b
+      NFPM_VERSION: 2.47.0
+      NFPM_SHA256: 0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783
     steps:
       - uses: actions/checkout@v4
 
@@ -70,8 +73,8 @@ jobs:
 
       # rust-toolchain.toml says which Rust; rustup installs it, and both musl
       # targets with it. zig is the C compiler and linker for both, since ring,
-      # the bundled SQLite and QuickJS are C.
-      - name: Install Rust, zig and cargo-zigbuild
+      # the bundled SQLite and QuickJS are C. nfpm builds the packages.
+      - name: Install Rust, zig, cargo-zigbuild and nfpm
         run: |
           set -eu
           if ! command -v rustup >/dev/null; then
@@ -90,8 +93,13 @@ jobs:
           curl -fsSL -o zigbuild.tar.xz "https://github.com/rust-cross/cargo-zigbuild/releases/download/v$ZIGBUILD_VERSION/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz"
           echo "$ZIGBUILD_SHA256  zigbuild.tar.xz" | sha256sum -c -
           tar -xJf zigbuild.tar.xz
+          curl -fsSL -o nfpm.tar.gz "https://github.com/goreleaser/nfpm/releases/download/v$NFPM_VERSION/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "$NFPM_SHA256  nfpm.tar.gz" | sha256sum -c -
+          mkdir nfpm
+          tar -xzf nfpm.tar.gz -C nfpm
           echo "$tools/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
           echo "$tools/cargo-zigbuild-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+          echo "$tools/nfpm" >> "$GITHUB_PATH"
 
       - name: Restore the Rust build cache
         continue-on-error: true
@@ -141,9 +149,16 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Build the packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          for arch in x86_64 aarch64; do
+            contrib/package/build.sh "$VERSION" "$arch" "dist/npanel-$VERSION-linux-$arch" dist
+          done
           ls -lh dist
-          (cd dist && sha256sum npanel-* > SHA256SUMS)
-          cat dist/SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:

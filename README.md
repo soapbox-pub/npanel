@@ -75,8 +75,9 @@ Point DNS at the box first — certificates are issued on the first visit.
 ## Quick start from a release
 
 Releases are published over Nostr with [ngit](https://ngit.dev): the binaries,
-`npanel-<version>-linux-x86_64` and `npanel-<version>-linux-aarch64`, their
-`SHA256SUMS`, and a systemd unit.
+`npanel-<version>-linux-x86_64` and `npanel-<version>-linux-aarch64`, and the
+same as `.deb` and `.rpm` packages that set up the user and the systemd unit
+(see [deployment](docs/deployment.md#from-a-package)).
 
 ```sh
 chmod +x npanel-0.5.0-linux-x86_64

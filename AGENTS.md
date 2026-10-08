@@ -61,7 +61,8 @@ assets/                 data compiled into the binary: the PSL, Matomo's
                         the error reporter
 dashboard/              the SPA (React, Vite, its own package.json)
 docs/                   deployment, configuration, architecture, api, development
-contrib/npanel.service  the systemd unit each release ships
+contrib/npanel.service  the systemd unit, for an install by hand
+contrib/package/        the .deb and .rpm each release ships (nfpm)
 .ngit/                  CI workflows, and what a release publishes
 .nsite/config.json      where the dashboard's nsite is published
 CHANGELOG.md            release notes, one section per version

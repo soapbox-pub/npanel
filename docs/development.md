@@ -194,10 +194,11 @@ dashboard's Content Security Policy admits `http://localhost:*` and
 ## Releasing
 
 A tag `vX.Y.Z` runs `.ngit/act/workflows/release.yml`, which tests, builds
-static binaries for x86_64 and aarch64, publishes them and their `SHA256SUMS`
-as a NIP-82 release with `ngit release publish` (what to publish is in
-`.ngit/release.yaml`), and publishes the dashboard nsite with `ngit nsite
-publish` (`.nsite/config.json`). Before tagging:
+static binaries for x86_64 and aarch64, packages each as a `.deb` and an `.rpm`
+with `contrib/package/build.sh`, publishes them all as a NIP-82 release with
+`ngit release publish` (what to publish is in `.ngit/release.yaml`), and
+publishes the dashboard nsite with `ngit nsite publish`
+(`.nsite/config.json`). Before tagging:
 
 1. Bump `version` in `Cargo.toml`. The workflow refuses a tag that disagrees
    with it, and the dashboard stamps it in at build time to compare with the
@@ -223,6 +224,15 @@ ulimit -n "$(ulimit -Hn)"   # zig's linker holds every object file open at once
 cargo zigbuild --release --target x86_64-unknown-linux-musl --features embedded-dashboard
 cargo zigbuild --release --target aarch64-unknown-linux-musl --features embedded-dashboard
 ```
+
+and to package one, which needs [nfpm](https://nfpm.goreleaser.com):
+
+```sh
+contrib/package/build.sh 0.5.0 x86_64 target/x86_64-unknown-linux-musl/release/npanel dist
+```
+
+The package's install scripts are `contrib/package/*.sh`, each run by both
+dpkg and rpm, which pass them different arguments.
 
 The `release` profile builds with fat LTO and one codegen unit (see
 `Cargo.toml`): a smaller, faster binary, from a build that takes several

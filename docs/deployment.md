@@ -142,7 +142,7 @@ docker run --rm -v npanel_npanel-data:/data -v "$PWD:/backup" alpine:3 sh -c \
 
 npanel is one static binary, with the dashboard compiled in. Each release
 publishes one for x86_64 Linux and one for aarch64, which run on any
-distribution, alongside their `SHA256SUMS` and a sample systemd unit. Find them
+distribution, and the same binaries as `.deb` and `.rpm` packages. Find them
 under the repository's releases on
 [gitworkshop.dev](https://gitworkshop.dev/alex@gleasonator.com/git.shakespeare.diy/npanel),
 or with [ngit](https://ngit.dev) from a clone:
@@ -151,9 +151,50 @@ or with [ngit](https://ngit.dev) from a clone:
 ngit release view npanel@0.5.0 --verify
 ```
 
-The release is signed, and every file in it is addressed by its SHA-256, so any
-Blossom server holding a copy serves the same bytes. Download
-`npanel-<version>-linux-x86_64` (or `-aarch64`) and `npanel.service`, then:
+The release is signed, and names every file in it by its SHA-256, which
+`--verify` checks; any Blossom server holding a copy serves the same bytes.
+
+### From a package
+
+On Debian, Ubuntu, Fedora, RHEL and their relatives, install the package for
+your architecture:
+
+```sh
+sudo apt install ./npanel-0.5.0-linux-x86_64.deb    # or
+sudo dnf install ./npanel-0.5.0-linux-x86_64.rpm
+```
+
+It does everything the rest of this section and [section 4](#4-systemd) do by
+hand, with the binary at `/usr/bin/npanel` rather than `/usr/local/bin`: the
+`npanel` user, `/var/lib/npanel`, the unit, the fonts below (as recommended
+packages), and an `/etc/npanel/.env` with `DATA_DIR` set and `DASHBOARD_HOST`
+empty. Set `DASHBOARD_HOST` there, then start it:
+
+```sh
+sudo $EDITOR /etc/npanel/.env
+sudo systemctl enable --now npanel
+```
+
+The service is left stopped and disabled until then, since it refuses to start
+without `DASHBOARD_HOST`. An upgrade keeps your `.env` and restarts npanel if it
+was running. Removing the package stops and disables it but keeps
+`/var/lib/npanel` and the `npanel` user; purging it also removes `.env`. For
+`AmbientCapabilities` or another change to the unit, use `sudo systemctl edit
+npanel` rather than editing it, so the next upgrade doesn't undo it.
+
+Moving from an install by hand, remove `/etc/systemd/system/npanel.service` and
+`/usr/local/bin/npanel` after installing the package: that unit overrides the
+package's and runs the old binary. If `/etc/npanel/.env` is already there, apt
+asks whether to replace it: keep yours, the default. dnf keeps it without
+asking and puts the package's beside it as `.env.rpmnew`.
+
+Then carry on from [section 3](#3-bootstrap-the-first-admin).
+
+### By hand
+
+Download `npanel-<version>-linux-x86_64` (or `-aarch64`), and
+[`contrib/npanel.service`](../contrib/npanel.service) from the repository at
+the release's tag, then:
 
 ```sh
 sudo install -m 755 npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
@@ -247,8 +288,9 @@ they're already there. Everyone after that is added from the Users page.
 
 ## 4. systemd
 
-The release's `npanel.service`, also at `contrib/npanel.service` in the
-repository, installed above as `/etc/systemd/system/npanel.service`:
+`contrib/npanel.service` in the repository, installed above as `/etc/systemd/system/npanel.service`. The
+packages install it as `/usr/lib/systemd/system/npanel.service`, with
+`ExecStart=/usr/bin/npanel`.
 
 ```ini
 [Unit]
@@ -633,6 +675,9 @@ Install the new release's binary over the old one and restart:
 sudo install -m 755 npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
 sudo systemctl restart npanel
 ```
+
+From a package, install the new release's package the same way as the first;
+it restarts npanel itself.
 
 From source, `git pull`, rebuild the dashboard and the binary as in
 [section 2](#from-source), and install it the same way.
