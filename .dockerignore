@@ -4,12 +4,11 @@
 dashboard/node_modules/
 dashboard/dist/
 
-# Host state and secrets, which must never end up in a layer: npanel loads .env
-# from its working directory, so a copied one would silently override the
-# environment compose passes in.
+# Host state, which must never end up in a layer: the development config,
+# compose's variables, and the data directory.
+npanel.toml
 .env
 .env.*
-!.env.example
 data/
 
 .git/

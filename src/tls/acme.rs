@@ -92,7 +92,7 @@ pub async fn account(
         account.update_contacts(&contact).await.context("Could not update the ACME account's email")?;
         return Ok((account, None));
     }
-    // Agreeing to the CA's terms is what setting HTTPS_PORT does; the
+    // Agreeing to the CA's terms is what setting https_port does; the
     // deployment guide says so.
     let new = NewAccount { contact: &contact, terms_of_service_agreed: true, only_return_existing: false };
     let (account, credentials) =

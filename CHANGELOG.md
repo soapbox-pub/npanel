@@ -4,6 +4,32 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## Unreleased
+
+- **Breaking:** npanel reads its configuration from a TOML file instead of
+  `.env` and the environment. It uses the file `--config` names, or else
+  `~/.config/npanel/npanel.toml` or `/etc/npanel/npanel.toml`, and refuses to
+  start with none. The settings are the same seven, named in lowercase:
+  `DASHBOARD_HOST="panel.example.com"` becomes
+  `dashboard_host = "panel.example.com"`, and ports are numbers. A key npanel
+  doesn't know is refused. `npanel.example.toml` replaces `.env.example`, and
+  "From `.env` to `npanel.toml`" in docs/deployment.md says how to move an
+  install across. The sample unit names the file with `--config` and no
+  longer sets a working directory, so `sudo -u npanel npanel make-admin`
+  works from anywhere.
+- **Breaking:** with no `data_dir`, data goes in `/var/lib/npanel` as root
+  and `~/.local/share/npanel` otherwise, rather than `./data`. A relative
+  `data_dir` is relative to the config file.
+- On Docker, `compose.yaml` writes npanel's config file, from `DASHBOARD_HOST`
+  and `LOG_LEVEL` in compose's `.env` as before; the image sets no environment
+  variables, and the health check moved from the image to `compose.yaml`.
+- Each release publishes `.deb` and `.rpm` packages for x86_64 and aarch64,
+  which install the binary, the systemd unit and `/etc/npanel/npanel.toml`,
+  and create the `npanel` user and `/var/lib/npanel`. `SHA256SUMS` and the
+  sample unit are no longer published as assets: the release's asset events
+  carry each file's SHA-256, and the unit is `contrib/npanel.service`.
+- `npanel --help` and `npanel --version`, and help for each command.
+
 ## [0.5.0]
 
 - Analytics can be counted on the server instead of by a script. Turn off

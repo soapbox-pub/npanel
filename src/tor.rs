@@ -455,7 +455,7 @@ impl<'a> Actor<'a> {
 /// through `tracing`, and without this everything it has to say — a
 /// descriptor that wouldn't upload, an introduction point that failed — would
 /// go nowhere. Its warnings are kept at their level; its info lines, which
-/// narrate every service's routine, only show at `LOG_LEVEL=debug`.
+/// narrate every service's routine, only show at `log_level = "debug"`.
 ///
 /// `tracing` has one subscriber for the whole process. The first call
 /// installs it, and any later one finds it there, which is fine: every

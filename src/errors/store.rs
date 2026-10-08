@@ -1,7 +1,7 @@
 //! Where error reports are kept: issues, with running counts, and a bounded
 //! sample of each one's events.
 //!
-//! A database of its own, `DATA_DIR/errors.sqlite3`, beside npanel's and the
+//! A database of its own, `data_dir/errors.sqlite3`, beside npanel's and the
 //! analytics', for the same reason analytics have one: what grows with every
 //! report a broken page sends stays away from what serving reads. Reports are
 //! written in batches every few seconds, never one request at a time.

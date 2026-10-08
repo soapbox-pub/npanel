@@ -1,6 +1,9 @@
 target/
 # The development data directory.
 /data/
+# The development config.
+/npanel.toml
+# compose.yaml's variables.
 .env
 dashboard/node_modules/
 dashboard/dist/

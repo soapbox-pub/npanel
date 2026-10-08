@@ -24,13 +24,13 @@ if [ -n "$upgrade" ]; then
     exit 0
 fi
 
-# Not started, nor enabled: until DASHBOARD_HOST is set it would only fail and
+# Not started, nor enabled: until dashboard_host is set it would only fail and
 # restart, every five seconds.
 cat <<'EOF'
-npanel is installed. Set DASHBOARD_HOST in /etc/npanel/.env, then:
+npanel is installed. Set dashboard_host in /etc/npanel/npanel.toml, then:
 
     sudo systemctl enable --now npanel
-    cd /etc/npanel && sudo -u npanel npanel make-admin npub1yourkeyhere
+    sudo -u npanel npanel make-admin npub1yourkeyhere
 
 See docs/deployment.md for the reverse proxy, or for serving HTTPS without one.
 EOF

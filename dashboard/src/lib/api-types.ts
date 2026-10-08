@@ -87,7 +87,7 @@ export interface Host {
   onion: string | null;
   /**
    * The certificates for its name and its redirected `www`, when npanel gets
-   * certificates itself (`HTTPS_PORT`). Null behind a proxy, and missing
+   * certificates itself (`https_port`). Null behind a proxy, and missing
    * from servers before it was added.
    */
   certificates?: CertificateStatus[] | null;

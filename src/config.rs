@@ -1,22 +1,33 @@
-//! Type-safe configuration backed by an injectable environment provider.
+//! The configuration file: TOML, from the path `--config` names, or else the
+//! first of `$XDG_CONFIG_HOME/npanel/npanel.toml` (`~/.config/...`) and
+//! [`SYSTEM_PATH`] that exists. A file `--config` names has to exist, since
+//! naming it meant something.
 //!
-//! npanel keeps file-based configuration deliberately tiny: only values that
-//! are system-level, or that could lock an admin out of the dashboard if set
-//! wrong, live here. Which ports are bound is the clearest case: whether npanel
-//! terminates TLS itself, `HTTPS_PORT`, needs a restart however it is set. Relays, Blossom fallbacks, file size limits and the resync
-//! interval are stored in the database and edited from the dashboard — see
-//! `settings.rs`.
+//! npanel keeps it deliberately tiny: only values that are system-level, or
+//! that could lock an admin out of the dashboard if set wrong, live here.
+//! Which ports are bound is the clearest case: whether npanel terminates TLS
+//! itself, `https_port`, needs a restart however it is set. Relays, Blossom
+//! fallbacks, file size limits and the resync interval are stored in the
+//! database and edited from the dashboard — see `settings.rs`.
 
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
 
 use crate::log::LogLevel;
 
-/// The seven variables, resolved and validated.
+/// Where a packaged npanel's configuration is.
+pub const SYSTEM_PATH: &str = "/etc/npanel/npanel.toml";
+/// `data_dir` when the file doesn't say, for root.
+const SYSTEM_DATA_DIR: &str = "/var/lib/npanel";
+
+/// The file, resolved and validated.
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// The file it was read from.
+    pub source: PathBuf,
     /// Port the HTTP server listens on. With `https_port` set, plain HTTP is
     /// only for ACME challenges and redirects to HTTPS.
     pub port: u16,
@@ -42,66 +53,136 @@ pub struct Config {
     pub data_dir: PathBuf,
 }
 
+/// The file as written. Every key is optional but `dashboard_host`, and a key
+/// npanel doesn't know is refused rather than ignored, since it is a typo or
+/// a setting that belongs on the dashboard.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct File {
+    port: Option<u16>,
+    bind_address: Option<String>,
+    tls_check_port: Option<u16>,
+    https_port: Option<u16>,
+    dashboard_host: Option<String>,
+    log_level: Option<String>,
+    data_dir: Option<PathBuf>,
+}
+
+/// What the defaults depend on, read once so that tests can supply their own.
+#[derive(Clone, Debug, Default)]
+pub struct Environment {
+    pub root: bool,
+    pub home: Option<PathBuf>,
+    pub xdg_config_home: Option<PathBuf>,
+    pub xdg_data_home: Option<PathBuf>,
+}
+
+impl Environment {
+    pub fn current() -> Environment {
+        // The XDG spec has relative values ignored, and an empty one is unset.
+        let absolute = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
+        Environment {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            root: unsafe { libc::geteuid() } == 0,
+            home: absolute("HOME"),
+            xdg_config_home: absolute("XDG_CONFIG_HOME"),
+            xdg_data_home: absolute("XDG_DATA_HOME"),
+        }
+    }
+
+    /// The files looked for when `--config` names none, in the order tried.
+    pub fn config_candidates(&self) -> Vec<PathBuf> {
+        let user = self.xdg_config_home.clone().or_else(|| self.home.as_ref().map(|home| home.join(".config")));
+        user.map(|dir| dir.join("npanel/npanel.toml")).into_iter().chain([PathBuf::from(SYSTEM_PATH)]).collect()
+    }
+
+    fn default_data_dir(&self) -> Result<PathBuf> {
+        if self.root {
+            return Ok(PathBuf::from(SYSTEM_DATA_DIR));
+        }
+        match self.xdg_data_home.clone().or_else(|| self.home.as_ref().map(|home| home.join(".local/share"))) {
+            Some(dir) => Ok(dir.join("npanel")),
+            None => bail!("Neither HOME nor XDG_DATA_HOME is set, so there is no default place to keep data. Set data_dir."),
+        }
+    }
+}
+
 impl Config {
-    /// Read the configuration from `env`, failing with a sentence that says
-    /// which variable is wrong and how.
-    pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Result<Self> {
-        let get = |key: &str| env(key).filter(|value| !value.is_empty());
-
-        let port = match get("PORT") {
-            None => 3000,
-            Some(value) => parse_port(&value).ok_or_else(|| anyhow::anyhow!("PORT must be a valid port number (1-65535)."))?,
+    /// Read the file `path` names, or else the first of the candidates that
+    /// exists, failing with a sentence that says what to do.
+    pub fn load(path: Option<&Path>, env: &Environment) -> Result<Self> {
+        let source = match path {
+            Some(path) => path.to_path_buf(),
+            // One this user can't look into, like /etc/npanel/npanel.toml to
+            // anyone but root and npanel, is there all the same: reading it
+            // says so, where skipping it would quietly find another.
+            None => env
+                .config_candidates()
+                .into_iter()
+                .find(|candidate| match candidate.metadata() {
+                    Ok(metadata) => metadata.is_file(),
+                    Err(error) => error.kind() == std::io::ErrorKind::PermissionDenied,
+                })
+                .ok_or_else(|| not_found(env))?,
         };
+        let text = std::fs::read_to_string(&source).map_err(|error| {
+            let hint = if error.kind() == std::io::ErrorKind::PermissionDenied { "; run this as root or as npanel, with sudo" } else { "" };
+            anyhow!("Could not read the config file {}: {error}{hint}.", source.display())
+        })?;
+        let file: File = toml::from_str(&text).with_context(|| format!("{} is not a valid config file", source.display()))?;
+        Self::from_file(file, source.clone(), env).with_context(|| format!("In {}", source.display()))
+    }
 
-        let https_port = match get("HTTPS_PORT") {
-            None => None,
-            Some(value) => {
-                Some(parse_port(&value).ok_or_else(|| anyhow::anyhow!("HTTPS_PORT must be a valid port number (1-65535)."))?)
-            }
+    fn from_file(file: File, source: PathBuf, env: &Environment) -> Result<Self> {
+        let nonzero = |key: &str, port: Option<u16>| match port {
+            Some(0) => Err(anyhow!("{key} must be a port number from 1 to 65535.")),
+            _ => Ok(port),
         };
+        let port = nonzero("port", file.port)?.unwrap_or(3000);
+        let https_port = nonzero("https_port", file.https_port)?;
+        let tls_check_port = nonzero("tls_check_port", file.tls_check_port)?.unwrap_or(3001);
+        match https_port {
+            Some(https_port) if https_port == port => bail!("https_port must be different from port."),
+            None if tls_check_port == port => bail!("tls_check_port must be different from port."),
+            _ => {}
+        }
 
-        let bind_address = match get("BIND_ADDRESS") {
+        let bind_address = match file.bind_address {
             // Facing the internet, every address: `::` takes IPv4 as well on
             // Linux unless the host has turned that off.
             None if https_port.is_some() => IpAddr::from([0u16; 8]),
             None => IpAddr::from([127, 0, 0, 1]),
             Some(value) => match value.trim().parse() {
                 Ok(address) => address,
-                Err(_) => bail!("BIND_ADDRESS must be an IP address, eg 127.0.0.1 or 0.0.0.0."),
+                Err(_) => bail!("bind_address must be an IP address, eg \"127.0.0.1\" or \"0.0.0.0\"."),
             },
         };
 
-        let tls_check_port = match get("TLS_CHECK_PORT") {
-            None => 3001,
-            Some(value) => parse_port(&value)
-                .ok_or_else(|| anyhow::anyhow!("TLS_CHECK_PORT must be a valid port number (1-65535)."))?,
-        };
-        match https_port {
-            Some(https_port) if https_port == port => bail!("HTTPS_PORT must be different from PORT."),
-            None if tls_check_port == port => bail!("TLS_CHECK_PORT must be different from PORT."),
-            _ => {}
+        let dashboard_host = file.dashboard_host.unwrap_or_default().trim().to_lowercase();
+        if dashboard_host.is_empty() {
+            bail!("dashboard_host must be set, eg dashboard_host = \"panel.example.com\".");
         }
-
-        let Some(dashboard_host) = get("DASHBOARD_HOST") else {
-            bail!("DASHBOARD_HOST must be set, eg panel.example.com.");
-        };
-        let dashboard_host = dashboard_host.trim().to_lowercase();
-        if dashboard_host.is_empty() || dashboard_host.contains(|c: char| c == '/' || c.is_whitespace()) {
-            bail!("DASHBOARD_HOST must be a bare hostname, without a scheme or path.");
+        if dashboard_host.contains(|c: char| c == '/' || c.is_whitespace()) {
+            bail!("dashboard_host must be a bare hostname, without a scheme or path.");
         }
         let dashboard_host = strip_port(&dashboard_host).to_string();
 
-        let log_level = match get("LOG_LEVEL") {
+        let log_level = match file.log_level {
             None => LogLevel::Info,
             Some(value) => match LogLevel::parse(&value.to_lowercase()) {
                 Some(level) => level,
-                None => bail!("LOG_LEVEL must be one of: debug, info, warn, error."),
+                None => bail!("log_level must be one of: debug, info, warn, error."),
             },
         };
 
-        let data_dir = absolute(Path::new(&get("DATA_DIR").unwrap_or_else(|| "./data".into())));
+        let data_dir = match file.data_dir {
+            // Against the file, so the setting means one place however npanel
+            // was started.
+            Some(dir) => absolute(&source.parent().unwrap_or(Path::new("")).join(dir)),
+            None => env.default_data_dir()?,
+        };
 
-        Ok(Self { port, bind_address, tls_check_port, https_port, dashboard_host, log_level, data_dir })
+        Ok(Self { source, port, bind_address, tls_check_port, https_port, dashboard_host, log_level, data_dir })
     }
 
     /// Path of the SQLite database file.
@@ -115,12 +196,19 @@ impl Config {
     }
 }
 
-/// A port the way `Number.parseInt` reads one: leading digits, anything after
-/// them ignored.
-fn parse_port(value: &str) -> Option<u16> {
-    let digits: String = value.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
-    let port: u32 = digits.parse().ok()?;
-    (1..=65535).contains(&port).then_some(port as u16)
+fn not_found(env: &Environment) -> anyhow::Error {
+    let tried: Vec<String> = env.config_candidates().iter().map(|path| path.display().to_string()).collect();
+    // Up to 0.5, configuration was a .env in the working directory, which the
+    // old unit set to /etc/npanel.
+    let old = if Path::new(".env").is_file() {
+        " npanel no longer reads .env: move its settings to npanel.toml, as lowercase keys (DASHBOARD_HOST=\"x\" is dashboard_host = \"x\")."
+    } else {
+        ""
+    };
+    anyhow!(
+        "No config file at {}. Write one with dashboard_host set (npanel.example.toml lists every setting), or name one with --config.{old}",
+        tried.join(" or ")
+    )
 }
 
 /// Drop a trailing `:port`.
@@ -152,79 +240,93 @@ fn absolute(path: &Path) -> PathBuf {
     out
 }
 
-/// Load `.env` from the working directory into the process environment,
-/// without overriding anything already set.
-pub fn load_dotenv() {
-    let Ok(text) = std::fs::read_to_string(".env") else {
-        return;
-    };
-
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let key = key.trim();
-        let mut value = value.trim();
-        if value.len() >= 2
-            && ((value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\'')))
-        {
-            value = &value[1..value.len() - 1];
-        } else if let Some((before, _)) = value.split_once(" #") {
-            value = before.trim_end();
-        }
-        if std::env::var_os(key).is_none() {
-            // SAFETY: called from `main` before any other thread exists.
-            unsafe { std::env::set_var(key, value) };
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn config(vars: &[(&str, &str)]) -> Result<Config> {
-        let map: HashMap<String, String> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        Config::from_env(|key| map.get(key).cloned())
+    fn env() -> Environment {
+        Environment { root: false, home: Some("/home/someone".into()), ..Default::default() }
+    }
+
+    fn config(text: &str) -> Result<Config> {
+        let file: File = toml::from_str(text)?;
+        Config::from_file(file, "/etc/npanel/npanel.toml".into(), &env())
     }
 
     #[test]
     fn defaults() {
-        let c = config(&[("DASHBOARD_HOST", "Panel.Example.com:443")]).unwrap();
+        let c = config(r#"dashboard_host = "Panel.Example.com:443""#).unwrap();
         assert_eq!(c.port, 3000);
         assert_eq!(c.tls_check_port, 3001);
         assert_eq!(c.dashboard_host, "panel.example.com");
         assert_eq!(c.bind_address.to_string(), "127.0.0.1");
         assert_eq!(c.log_level, LogLevel::Info);
         assert_eq!(c.https_port, None);
+        assert_eq!(c.data_dir, Path::new("/home/someone/.local/share/npanel"));
     }
 
     #[test]
     fn https() {
-        let c = config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("PORT", "80")]).unwrap();
+        let c = config("dashboard_host = \"x\"\nhttps_port = 443\nport = 80").unwrap();
         assert_eq!(c.https_port, Some(443));
         assert_eq!(c.bind_address.to_string(), "::");
         // The check port isn't bound, so it may be anything.
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("PORT", "3001")]).is_ok());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "80"), ("PORT", "80")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "0")]).is_err());
-        let pinned = config(&[("DASHBOARD_HOST", "x"), ("HTTPS_PORT", "443"), ("BIND_ADDRESS", "0.0.0.0")]).unwrap();
+        assert!(config("dashboard_host = \"x\"\nhttps_port = 443\nport = 3001").is_ok());
+        assert!(config("dashboard_host = \"x\"\nhttps_port = 80\nport = 80").is_err());
+        assert!(config("dashboard_host = \"x\"\nhttps_port = 0").is_err());
+        let pinned = config("dashboard_host = \"x\"\nhttps_port = 443\nbind_address = \"0.0.0.0\"").unwrap();
         assert_eq!(pinned.bind_address.to_string(), "0.0.0.0");
     }
 
     #[test]
-    fn refuses_bad_values() {
-        assert!(config(&[]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "https://x")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("PORT", "0")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("PORT", "3001")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("BIND_ADDRESS", "localhost")]).is_err());
-        assert!(config(&[("DASHBOARD_HOST", "x"), ("LOG_LEVEL", "loud")]).is_err());
+    fn data_dir_is_relative_to_the_file() {
+        assert_eq!(config("dashboard_host = \"x\"\ndata_dir = \"data\"").unwrap().data_dir, Path::new("/etc/npanel/data"));
+        assert_eq!(config("dashboard_host = \"x\"\ndata_dir = \"/srv/npanel\"").unwrap().data_dir, Path::new("/srv/npanel"));
+        let root = Environment { root: true, ..env() };
+        let file: File = toml::from_str("dashboard_host = \"x\"").unwrap();
+        assert_eq!(Config::from_file(file, "/x/npanel.toml".into(), &root).unwrap().data_dir, Path::new("/var/lib/npanel"));
+    }
+
+    #[test]
+    fn refuses_mistakes() {
+        assert!(config("").is_err());
+        assert!(config("dashboard_host = \"\"").is_err());
+        assert!(config("dashboard_host = \"https://x\"").is_err());
+        assert!(config("dashboard_host = \"x\"\nport = 0").is_err());
+        assert!(config("dashboard_host = \"x\"\nport = 70000").is_err());
+        assert!(config("dashboard_host = \"x\"\nport = \"3000\"").is_err());
+        assert!(config("dashboard_host = \"x\"\nport = 3001").is_err());
+        assert!(config("dashboard_host = \"x\"\nbind_address = \"localhost\"").is_err());
+        assert!(config("dashboard_host = \"x\"\nlog_level = \"loud\"").is_err());
+        // Unknown keys, and the old environment variables' names.
+        assert!(config("dashboard_host = \"x\"\nrelays = []").is_err());
+        assert!(config("DASHBOARD_HOST = \"x\"").is_err());
+    }
+
+    #[test]
+    fn the_example_is_valid() {
+        let c = config(include_str!("../npanel.example.toml")).unwrap();
+        assert_eq!(c.dashboard_host, "panel.example.com");
+        assert_eq!(c.port, 3000);
+    }
+
+    #[test]
+    fn finds_the_user_config_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Environment { xdg_config_home: Some(dir.path().into()), ..env() };
+        assert_eq!(env.config_candidates(), [dir.path().join("npanel/npanel.toml"), PathBuf::from(SYSTEM_PATH)]);
+
+        std::fs::create_dir(dir.path().join("npanel")).unwrap();
+        std::fs::write(dir.path().join("npanel/npanel.toml"), "dashboard_host = \"mine\"\ndata_dir = \"d\"").unwrap();
+        let c = Config::load(None, &env).unwrap();
+        assert_eq!(c.dashboard_host, "mine");
+        assert_eq!(c.data_dir, dir.path().join("npanel/d"));
+    }
+
+    #[test]
+    fn a_named_file_has_to_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = Config::load(Some(&dir.path().join("missing.toml")), &env()).unwrap_err();
+        assert!(error.to_string().starts_with("Could not read the config file"), "{error}");
     }
 }

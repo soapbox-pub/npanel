@@ -1,8 +1,7 @@
 # npanel under systemd, for the release binary. See docs/deployment.md.
 #
-# Expects /usr/local/bin/npanel, an `npanel` system user, its configuration in
-# /etc/npanel/.env (read from the working directory), and DATA_DIR set there to
-# /var/lib/npanel.
+# Expects /usr/local/bin/npanel, an `npanel` system user, and its
+# configuration in /etc/npanel/npanel.toml with data_dir set to /var/lib/npanel.
 
 [Unit]
 Description=npanel
@@ -13,8 +12,7 @@ Wants=network-online.target
 Type=simple
 User=npanel
 Group=npanel
-WorkingDirectory=/etc/npanel
-ExecStart=/usr/local/bin/npanel
+ExecStart=/usr/local/bin/npanel --config /etc/npanel/npanel.toml
 Restart=on-failure
 RestartSec=5s
 
@@ -22,7 +20,7 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
-# With HTTPS_PORT set, npanel binds 80 and 443 itself, which needs this.
+# With https_port set, npanel binds 80 and 443 itself, which needs this.
 #AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 NoNewPrivileges=true

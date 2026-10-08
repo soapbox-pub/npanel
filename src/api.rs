@@ -1,4 +1,4 @@
-//! The dashboard's JSON API, served only on `DASHBOARD_HOST`.
+//! The dashboard's JSON API, served only on `dashboard_host`.
 //!
 //! Every route except `/api/instance` and `/api/sites` requires NIP-98 auth
 //! from a pubkey that exists in the `users` table. The dashboard is a client

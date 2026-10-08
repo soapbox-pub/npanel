@@ -91,11 +91,11 @@ settings! {
     /// Domains hostnames may sit under, or empty to allow any hostname.
     allowed_host_suffixes: Vec<String>,
     /// Certificates authorized for one hostname per hour: by `/tls-check`
-    /// behind a proxy, or as ACME orders with `HTTPS_PORT`.
+    /// behind a proxy, or as ACME orders with `https_port`.
     tls_check_limit_per_host: i64,
     /// Certificates authorized across all hostnames per hour, the same way.
     tls_check_limit_total: i64,
-    /// The ACME directory certificates come from, with `HTTPS_PORT`.
+    /// The ACME directory certificates come from, with `https_port`.
     acme_directory: String,
     /// Who the CA writes to about certificates, or empty for nobody.
     acme_email: String,

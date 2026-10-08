@@ -1,6 +1,6 @@
 //! HTTPS served by npanel itself, with certificates it gets over ACME.
 //!
-//! Optional: only with `HTTPS_PORT` set. Otherwise a reverse proxy terminates
+//! Optional: only with `https_port` set. Otherwise a reverse proxy terminates
 //! TLS, and all npanel does about certificates is answer its `/tls-check`.
 //!
 //! Certificates are reconciled, not tracked, like builds and onions. Every

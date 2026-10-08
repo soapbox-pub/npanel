@@ -1,5 +1,5 @@
 //! The images sites' preview scripts drew, by version: in memory, on disk in
-//! `DATA_DIR/preview-images/`, and still being drawn.
+//! `data_dir/preview-images/`, and still being drawn.
 //!
 //! A version names everything its image was drawn from, so an image never
 //! goes stale under its name, and nothing has to invalidate one. Each tier

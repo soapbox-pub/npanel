@@ -1,0 +1,41 @@
+# npanel configuration. npanel reads the file --config names, or else the
+# first of ~/.config/npanel/npanel.toml and /etc/npanel/npanel.toml.
+#
+# These seven settings are the whole file. Everything else (relays, Blossom
+# fallbacks, file size limits, resync interval) is configured by an admin from
+# the dashboard and stored in the database. Only dashboard_host is required;
+# the rest are shown with their defaults.
+
+# Hostname that serves the dashboard and the JSON API. Requests arriving with
+# any other Host header are served as nsites. Use "localhost" for local
+# development; see docs/development.md.
+dashboard_host = "panel.example.com"
+
+# Directory holding npanel.sqlite3 and the content-addressed blob store. A
+# relative path is relative to this file. Defaults to /var/lib/npanel as root,
+# else ~/.local/share/npanel.
+# data_dir = "/var/lib/npanel"
+
+# Port the HTTP server listens on. The reverse proxy forwards to this.
+# port = 3000
+
+# Address the HTTP server listens on. Loopback by default: npanel is meant to
+# be reachable only by the reverse proxy. Set "0.0.0.0" if the proxy is on
+# another machine, and firewall the port.
+# bind_address = "127.0.0.1"
+
+# Port answering the reverse proxy's certificate questions, on bind_address.
+# Separate from port because the proxy asks without a hostname to route on, so
+# on the public port the answer would be reachable through every site npanel
+# serves. Only the proxy should be able to reach it.
+# tls_check_port = 3001
+
+# Serve HTTPS on this port without a proxy, with a certificate from Let's
+# Encrypt for every site, renewed on its own. Setting it agrees to the
+# certificate authority's terms of service. Use 443, with port = 80 for the
+# challenges and the redirect to HTTPS; bind_address then defaults to every
+# address, and tls_check_port isn't used. See docs/deployment.md.
+# https_port = 443
+
+# One of: debug, info, warn, error
+# log_level = "info"

@@ -51,20 +51,22 @@ of the repository, with Caddy in front of it for TLS.
 git clone <your-repo-url> npanel
 cd npanel
 
-cp .env.example .env
-$EDITOR .env          # DASHBOARD_HOST is the only one that applies here
+echo 'DASHBOARD_HOST=panel.example.com' > .env
 
 docker compose up -d
 ```
 
-Compose reads `DASHBOARD_HOST` from `.env` and gives it to both containers —
-npanel to route on, Caddy as the name of the dashboard's site. It refuses to
-start without it. The other variables in that file don't apply, because the
-image fixes them: `PORT` is 3000, `TLS_CHECK_PORT` is 3001,
-`BIND_ADDRESS` is `0.0.0.0`, and `DATA_DIR` is `/data` on a named volume. `LOG_LEVEL` is honoured
-if you set it.
+That `.env` is compose's own, read by compose rather than npanel. Compose
+gives `DASHBOARD_HOST` to both containers — to npanel as `dashboard_host` in
+the config file it writes for it (the `configs` block at the end of
+`compose.yaml`), to Caddy as the name of the dashboard's site — and refuses to
+start without it. `LOG_LEVEL` sets npanel's `log_level` if you add it. The rest
+of that config file is fixed for the container: `port` is 3000,
+`tls_check_port` is 3001, `bind_address` is `"0.0.0.0"`, and `data_dir` is
+`/data` on a named volume. To set anything else from
+[configuration](configuration.md#the-config-file), add it to that block.
 
-`0.0.0.0` looks like the opposite of the advice in
+`"0.0.0.0"` looks like the opposite of the advice in
 [configuration](configuration.md#bind_address), and is only safe because of what
 compose does *not* do: nothing publishes any of its ports, so they are reachable
 only by Caddy over the project's internal network. Loopback inside the container would
@@ -122,7 +124,7 @@ Migrations run at startup, so back up the database first.
 
 ### The volumes
 
-`npanel-data` is `DATA_DIR`: the database, the blob store, and Tor's state
+`npanel-data` is `data_dir`: the database, the blob store, and Tor's state
 once it is turned on. `caddy-data` holds
 the certificates and the ACME account key — losing it means re-issuing every
 certificate, which Let's Encrypt rate limits, so it is worth backing up even
@@ -167,34 +169,37 @@ sudo dnf install ./npanel-0.5.0-linux-x86_64.rpm
 It does everything the rest of this section and [section 4](#4-systemd) do by
 hand, with the binary at `/usr/bin/npanel` rather than `/usr/local/bin`: the
 `npanel` user, `/var/lib/npanel`, the unit, the fonts below (as recommended
-packages), and an `/etc/npanel/.env` with `DATA_DIR` set and `DASHBOARD_HOST`
-empty. Set `DASHBOARD_HOST` there, then start it:
+packages), and `/etc/npanel/npanel.toml`, which is `npanel.example.toml` with
+`data_dir` set and `dashboard_host` empty. Set `dashboard_host` there, then
+start it:
 
 ```sh
-sudo $EDITOR /etc/npanel/.env
+sudo $EDITOR /etc/npanel/npanel.toml
 sudo systemctl enable --now npanel
 ```
 
 The service is left stopped and disabled until then, since it refuses to start
-without `DASHBOARD_HOST`. An upgrade keeps your `.env` and restarts npanel if it
-was running. Removing the package stops and disables it but keeps
-`/var/lib/npanel` and the `npanel` user; purging it also removes `.env`. For
+without `dashboard_host`. An upgrade keeps your `npanel.toml` and restarts
+npanel if it was running. Removing the package stops and disables it but keeps
+`/var/lib/npanel` and the `npanel` user; purging it also removes
+`npanel.toml`. For
 `AmbientCapabilities` or another change to the unit, use `sudo systemctl edit
 npanel` rather than editing it, so the next upgrade doesn't undo it.
 
 Moving from an install by hand, remove `/etc/systemd/system/npanel.service` and
 `/usr/local/bin/npanel` after installing the package: that unit overrides the
-package's and runs the old binary. If `/etc/npanel/.env` is already there, apt
-asks whether to replace it: keep yours, the default. dnf keeps it without
-asking and puts the package's beside it as `.env.rpmnew`.
+package's and runs the old binary. Move the settings in `/etc/npanel/.env`
+into `npanel.toml` as in [Upgrading](#from-env-to-npaneltoml), then delete
+`.env`.
 
 Then carry on from [section 3](#3-bootstrap-the-first-admin).
 
 ### By hand
 
 Download `npanel-<version>-linux-x86_64` (or `-aarch64`), and
-[`contrib/npanel.service`](../contrib/npanel.service) from the repository at
-the release's tag, then:
+[`contrib/npanel.service`](../contrib/npanel.service) and
+[`npanel.example.toml`](../npanel.example.toml) from the repository at the
+release's tag, then:
 
 ```sh
 sudo install -m 755 npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
@@ -202,7 +207,7 @@ sudo install -m 644 npanel.service /etc/systemd/system/npanel.service
 
 sudo useradd --system --home /var/lib/npanel --shell /usr/sbin/nologin npanel
 sudo install -d -o npanel -g npanel /var/lib/npanel
-sudo install -d /etc/npanel
+sudo install -D -m 644 npanel.example.toml /etc/npanel/npanel.toml
 ```
 
 Nothing else is needed at runtime: the dashboard, the Matomo device database,
@@ -233,21 +238,21 @@ Previews**: an image already drawn doesn't change when the fonts do. The
 distribution's emoji font trails Google's; for the newest emoji, put Google's
 `NotoColorEmoji.ttf` in `/usr/local/share/fonts/` as well.
 
-Configure. npanel reads `.env` from its working directory, which the unit sets
-to `/etc/npanel`:
+Configure. The unit runs npanel with `--config /etc/npanel/npanel.toml`:
 
 ```sh
-sudo $EDITOR /etc/npanel/.env
+sudo $EDITOR /etc/npanel/npanel.toml
 ```
 
-```
-DASHBOARD_HOST="panel.example.com"
-DATA_DIR="/var/lib/npanel"
+```toml
+dashboard_host = "panel.example.com"
+data_dir = "/var/lib/npanel"
 ```
 
-`DASHBOARD_HOST` is the one you must set, and `DATA_DIR` has to match the
-unit's `ReadWritePaths`. The rest have sensible defaults; see
-[configuration](configuration.md) or `.env.example`.
+`dashboard_host` is the one you must set, and `data_dir` has to match the
+unit's `ReadWritePaths`: the default for a user other than root is under its
+home directory. The rest have sensible defaults; the example file lists them,
+and [configuration](configuration.md) explains each.
 
 ### From source
 
@@ -277,10 +282,11 @@ disagree with itself.
 
 npanel is not permissionless: an unknown pubkey gets a 403, and user management
 in the dashboard is admin-only. So the first account has to come from the
-command line, run where the unit runs npanel so that it finds the same `.env`:
+command line, as the `npanel` user so that it can write to the database. It
+finds `/etc/npanel/npanel.toml` as the service does:
 
 ```sh
-cd /etc/npanel && sudo -u npanel npanel make-admin npub1yourkeyhere
+sudo -u npanel npanel make-admin npub1yourkeyhere
 ```
 
 It accepts an npub, nprofile, or hex pubkey, and promotes an existing user if
@@ -288,9 +294,9 @@ they're already there. Everyone after that is added from the Users page.
 
 ## 4. systemd
 
-`contrib/npanel.service` in the repository, installed above as `/etc/systemd/system/npanel.service`. The
-packages install it as `/usr/lib/systemd/system/npanel.service`, with
-`ExecStart=/usr/bin/npanel`.
+`contrib/npanel.service` in the repository, installed above as
+`/etc/systemd/system/npanel.service`. The packages install it as
+`/usr/lib/systemd/system/npanel.service`, running `/usr/bin/npanel`.
 
 ```ini
 [Unit]
@@ -302,8 +308,7 @@ Wants=network-online.target
 Type=simple
 User=npanel
 Group=npanel
-WorkingDirectory=/etc/npanel
-ExecStart=/usr/local/bin/npanel
+ExecStart=/usr/local/bin/npanel --config /etc/npanel/npanel.toml
 Restart=on-failure
 RestartSec=5s
 
@@ -311,7 +316,7 @@ RestartSec=5s
 StandardOutput=journal
 StandardError=journal
 
-# With HTTPS_PORT set, npanel binds 80 and 443 itself, which needs this.
+# With https_port set, npanel binds 80 and 443 itself, which needs this.
 #AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 NoNewPrivileges=true
@@ -324,8 +329,9 @@ ReadWritePaths=/var/lib/npanel
 WantedBy=multi-user.target
 ```
 
-Adjust `ReadWritePaths` if your `DATA_DIR` is elsewhere. `.env` is read from
-the working directory, so `WorkingDirectory` is where the configuration lives.
+Adjust `ReadWritePaths` if your `data_dir` is elsewhere. The configuration is
+named outright rather than searched for, since `ProtectHome` hides the
+`~/.config` npanel would otherwise look in first.
 
 ```sh
 sudo systemctl daemon-reload
@@ -335,8 +341,10 @@ sudo journalctl -u npanel -f -o cat | jq
 
 An npanel installed from a checkout by an earlier version of this guide runs
 `/opt/npanel/target/release/npanel` with `/opt/npanel` as its working
-directory. That keeps working; to move to the release binary, copy its `.env`
-to `/etc/npanel/`, install the new unit, and restart.
+directory, and its configuration in `/opt/npanel/.env`. Write that
+configuration to `/etc/npanel/npanel.toml` as in
+[Upgrading](#from-env-to-npaneltoml), install the release binary and the new
+unit, and restart.
 
 ## 5. TLS with Caddy
 
@@ -345,7 +353,7 @@ TLS itself.
 
 The wrinkle is that staff add hostnames at runtime, so the set of certificates
 isn't known when the proxy starts. Caddy solves this with on-demand TLS, and
-npanel provides the authorization endpoint Caddy needs — on `TLS_CHECK_PORT`,
+npanel provides the authorization endpoint Caddy needs — on `tls_check_port`,
 which is a second listener, not a route on the public one. Copy the sample
 `Caddyfile` from the repository root and replace `panel.example.com` — it is
 written as `{$DASHBOARD_HOST:panel.example.com}` so that the same file can be
@@ -420,8 +428,8 @@ budget was gone and Caddy started refusing to renew. On its own port nothing
 routes to it, and only the proxy can ask.
 
 It is unauthenticated, necessarily so, and reveals only whether a hostname is
-configured — which DNS already tells you. **Keep `TLS_CHECK_PORT` reachable only
-by the proxy**, as `BIND_ADDRESS` does by default. Nothing else is served there.
+configured — which DNS already tells you. **Keep `tls_check_port` reachable only
+by the proxy**, as `bind_address` does by default. Nothing else is served there.
 
 Caddy has deprecated the `ask` sub-directive in favour of the `permission`
 module. Newer versions accept:
@@ -449,23 +457,23 @@ npanel can serve HTTPS itself, with a certificate from Let's Encrypt for every
 name it serves: the dashboard, each enabled site, and the `www` of each site
 that redirects it. Each is ordered as soon as the name is added and renewed
 with a third of its lifetime left, and nothing restarts for either. Set
-`HTTPS_PORT` in `.env`:
+`https_port` in `npanel.toml`:
 
-```
-DASHBOARD_HOST="panel.example.com"
-DATA_DIR="/var/lib/npanel"
-HTTPS_PORT="443"
-PORT="80"
+```toml
+dashboard_host = "panel.example.com"
+data_dir = "/var/lib/npanel"
+https_port = 443
+port = 80
 ```
 
 Port 443 serves everything, over HTTP/2 or HTTP/1.1. Port 80 answers the
 certificate authority's HTTP-01 challenges and sends everything else to HTTPS;
-nothing is served in the clear. `BIND_ADDRESS` defaults to every address, IPv6
-and IPv4 both, and `TLS_CHECK_PORT` isn't used. Both ports must be open to the
+nothing is served in the clear. `bind_address` defaults to every address, IPv6
+and IPv4 both, and `tls_check_port` isn't used. Both ports must be open to the
 internet: the certificate authority validates over 443 (TLS-ALPN-01) and 80
 (HTTP-01), alternating from one attempt to the next.
 
-**Setting `HTTPS_PORT` agrees to the certificate authority's terms of
+**Setting `https_port` agrees to the certificate authority's terms of
 service** — [Let's Encrypt's](https://letsencrypt.org/repository/), by default.
 
 Binding ports below 1024 needs a capability the `npanel` user doesn't have.
@@ -478,22 +486,28 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 then `sudo systemctl daemon-reload && sudo systemctl restart npanel`. Stop any
 web server already holding 80 or 443 first.
 
-On Docker, drop the `caddy` service and publish npanel's ports instead. Docker
-lets a container's own user bind low ports, so nothing else is needed:
+On Docker, drop the `caddy` service and publish npanel's ports instead. In
+the `configs` block, set `port = 80` and `https_port = 443` in place of `port`
+and `tls_check_port`. Docker lets a container's own user bind low ports, so
+nothing else is needed but a health check that fits — with no proxy there is no
+check port, and plain HTTP only redirects:
 
 ```yaml
 services:
   npanel:
-    environment:
-      HTTPS_PORT: "443"
-      PORT: "80"
     ports:
       - "80:80"
       - "443:443"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -S -q -O /dev/null --max-redirect=0 --header "host: ${DASHBOARD_HOST}"
+          http://127.0.0.1:80/ 2>&1 | grep -q " 308 "
 ```
 
 Keep the published ports the same as the container's: the redirect to HTTPS
-names `HTTPS_PORT`, so `443:8443` would send visitors to `:8443`.
+names `https_port`, so `443:8443` would send visitors to `:8443`.
 
 DNS works as [section 1](#1-dns) describes, and has to point here before a site
 is added: npanel orders the certificate at once, and a name the certificate
@@ -543,8 +557,8 @@ reach the dashboard and the whole JSON API by adding one header to a request.
 
 That is one hole closed, not a licence to expose npanel: it still speaks plain
 HTTP and still authorizes certificates without authentication, so keep it off
-the internet. It listens on `127.0.0.1` unless you change `BIND_ADDRESS`; if
-the proxy is on another machine, set `BIND_ADDRESS=0.0.0.0` and firewall the
+the internet. It listens on `127.0.0.1` unless you change `bind_address`; if
+the proxy is on another machine, set `bind_address = "0.0.0.0"` and firewall the
 port to it.
 
 ## Tor
@@ -561,11 +575,11 @@ once it has; each site's shows on its own page.
 
 npanel keeps the key each address is made of in its database, which is what
 makes an address survive a restart. Tor's own state — its directory cache and
-its guards — goes in `DATA_DIR/tor`. It is not
+its guards — goes in `data_dir/tor`. It is not
 worth backing up on its own: losing it costs a slower start and no addresses.
 
 Tor checks the permissions of the directories it writes to, and refuses to
-start in one that another user could change: `DATA_DIR/tor`, and every
+start in one that another user could change: `data_dir/tor`, and every
 directory above it, must not be writable by anyone but npanel's user and root.
 The layouts in this guide already are. If Tor won't start, the Settings page
 and the log (`tor_unavailable`) both say why.
@@ -598,7 +612,7 @@ offers the onion on its own. A newly published address can take a minute or two
 to become reachable while its descriptor spreads through the network.
 
 **Tor's own messages** are in npanel's log as `tor_log` entries. Its warnings
-are always there; set `LOG_LEVEL=debug` to see the rest of what it is doing.
+are always there; set `log_level = "debug"` to see the rest of what it is doing.
 
 **Tor is stuck joining the network.** The Settings page shows the reason Tor
 gives. npanel needs to make outbound connections to Tor relays, on whatever
@@ -649,7 +663,7 @@ log — it records each blob attempt, the servers tried, and why it gave up.
 
 ## Backups
 
-Everything is in `DATA_DIR`. The blob store is content-addressed and re-fetchable
+Everything is in `data_dir`. The blob store is content-addressed and re-fetchable
 from Blossom servers, so the database is the part that actually matters — losing
 blobs costs a re-download, losing the database costs your configuration.
 
@@ -663,7 +677,7 @@ sqlite3 /var/lib/npanel/npanel.sqlite3 ".backup '/backup/npanel-$(date +%F).sqli
 On Docker the same call runs in a throwaway container against the volume — see
 [The volumes](#the-volumes).
 
-To back up blobs too, `rsync` `DATA_DIR/blobs` — files there are immutable and
+To back up blobs too, `rsync` `data_dir/blobs` — files there are immutable and
 named by hash, so incremental syncs are cheap. `previews.sqlite3` is a cache of
 what relays said, and needn't be backed up at all.
 
@@ -685,6 +699,34 @@ From source, `git pull`, rebuild the dashboard and the binary as in
 Migrations run automatically at startup. Back up the database first. On Docker
 this is [`docker compose up -d --build`](#upgrading-the-containers) instead.
 
+### From `.env` to `npanel.toml`
+
+Up to 0.5, npanel read its configuration from `.env` in its working directory.
+It now reads only `npanel.toml` and refuses to start without one, saying so if
+it sees a `.env` beside it. Move each setting across with its name in lowercase,
+numbers unquoted:
+
+```
+DASHBOARD_HOST="panel.example.com"      dashboard_host = "panel.example.com"
+DATA_DIR="/var/lib/npanel"         →    data_dir = "/var/lib/npanel"
+HTTPS_PORT="443"                        https_port = 443
+```
+
+Write the result to `/etc/npanel/npanel.toml`, install the new unit from
+[section 4](#4-systemd), which names that file instead of setting a working
+directory, and delete the `.env`:
+
+```sh
+sudo install -m 644 npanel.service /etc/systemd/system/npanel.service
+sudo systemctl daemon-reload
+sudo systemctl restart npanel
+sudo rm /etc/npanel/.env
+```
+
+On Docker, put `DASHBOARD_HOST` in compose's `.env` as before; `compose.yaml`
+writes npanel's config from it. Any other variable you set for npanel goes in
+its `configs` block instead.
+
 An upgrade that changes what npanel builds for a site rebuilds every host at
 startup, in the background. Each keeps serving its previous build until the new
 one is ready — except on the upgrade that introduces builds, where there is no
@@ -702,7 +744,6 @@ is waiting to be cleaned up and what the last cleanup freed. See
 To clean up now rather than wait for the day's run:
 
 ```sh
-cd /etc/npanel
 sudo -u npanel npanel prune-blobs --dry-run
 sudo -u npanel npanel prune-blobs
 ```
@@ -724,7 +765,6 @@ deployed have no reason to deploy again and would otherwise go on being served
 raw indefinitely.
 
 ```sh
-cd /etc/npanel
 sudo -u npanel npanel compress-blobs --dry-run
 sudo -u npanel npanel compress-blobs
 ```
@@ -747,7 +787,7 @@ image builds it, so on Docker this means the container is running a stale image
 **A site returns 503 "This site has not finished deploying yet."** No version is
 ready. Check the version list and its deploy log in the dashboard.
 
-**Login fails with "Auth event was signed for … not …".** `DASHBOARD_HOST`
+**Login fails with "Auth event was signed for … not …".** `dashboard_host`
 doesn't match the hostname in the browser. It must be the public name, not the
 proxy's upstream address.
 
@@ -758,7 +798,7 @@ is off by more than a minute. Run NTP.
 valid but the pubkey isn't a user. Add it from the Users page, or bootstrap with
 `make-admin`.
 
-**A site has no certificate, with `HTTPS_PORT` set.** Its page in the dashboard
+**A site has no certificate, with `https_port` set.** Its page in the dashboard
 says why, in the certificate authority's words, and the log has it as
 `tls_certificate_failed`. Usually DNS doesn't point here yet, or a firewall
 blocks port 80 or 443. npanel keeps trying on its own. A browser connecting

@@ -2,62 +2,76 @@
 
 npanel splits configuration in two.
 
-**Environment variables** cover things the process needs before it can talk to a
+**The config file** covers things the process needs before it can talk to a
 database, plus anything that could lock an admin out of the dashboard if it were
-set wrong. There are seven of them, and they require a restart.
+set wrong. It has seven settings, and changing them needs a restart.
 
 **Runtime settings** cover everything else. They live in the `settings` table,
 are edited by admins on the dashboard's Settings page, take effect immediately
 without a restart, and are recorded in the audit log.
 
-## Environment variables
+## The config file
 
-Copy `.env.example` to `.env` and edit it. npanel loads `.env` from its working
-directory at startup, without overriding anything already set in the environment.
+TOML, read from the file `--config` (`-c`) names, or else the first of these
+that exists:
 
-On Docker only `DASHBOARD_HOST` and `LOG_LEVEL` are read from that file, by
-compose, which passes them to the containers; the image fixes the rest.
-See [deployment](deployment.md#docker-compose).
+1. `$XDG_CONFIG_HOME/npanel/npanel.toml` (`~/.config/npanel/npanel.toml`)
+2. `/etc/npanel/npanel.toml`, where the packages put it
 
-### `PORT`
+`--config` works with every command, before or after its name. A file it names
+has to exist, and with none named and none found npanel refuses to start. One
+that can't be read is an error rather than skipped, so that `make-admin` run as
+the wrong user says so instead of quietly using another file. Besides `HOME`
+and the XDG variables, which only say where to look, npanel reads no
+environment variables.
+
+[`npanel.example.toml`](../npanel.example.toml) lists every setting. Only
+[`dashboard_host`](#dashboard_host) is required. A key npanel doesn't know is
+refused, naming the key, so a typo can't go unnoticed.
+
+On Docker, `compose.yaml` writes the file, filling in `dashboard_host` and
+`log_level` from `DASHBOARD_HOST` and `LOG_LEVEL` in compose's own `.env`. See
+[deployment](deployment.md#docker-compose).
+
+### `port`
 
 Default `3000`. The port the HTTP server binds. Your reverse proxy forwards
 here. Must be 1–65535 or startup fails.
 
-With [`HTTPS_PORT`](#https_port) set there is no proxy, and this is plain HTTP
+With [`https_port`](#https_port) set there is no proxy, and this is plain HTTP
 facing the internet — `80`, since that is where a certificate authority's
 HTTP-01 challenge connects. It then answers those challenges and redirects
 everything else to HTTPS, and serves nothing in the clear.
 
-### `BIND_ADDRESS`
+### `bind_address`
 
-Default `127.0.0.1`. The address the HTTP server listens on. Must be an IP
+Default `"127.0.0.1"`. The address the HTTP server listens on. Must be an IP
 address, not a hostname, or startup fails.
 
 Loopback by default because npanel is only ever meant to be reachable by the
 reverse proxy: it speaks plain HTTP with no certificate of its own, and
-certificate authorization on [`TLS_CHECK_PORT`](#tls_check_port) answers
+certificate authorization on [`tls_check_port`](#tls_check_port) answers
 without authentication. Exposed directly, either of those is a hole.
 
-Set `0.0.0.0` when the proxy runs on another machine or in another container,
+Set `"0.0.0.0"` when the proxy runs on another machine or in another container,
 and firewall the port to it.
 
-Both listeners bind here: the public one on `PORT`, and certificate
-authorization on [`TLS_CHECK_PORT`](#tls_check_port).
+Both listeners bind here: the public one on `port`, and certificate
+authorization on [`tls_check_port`](#tls_check_port).
 
-The Docker image sets `0.0.0.0` for the reason above — a container's loopback is
-reachable by nothing else, not even the proxy beside it — and `compose.yaml`
-takes the place of the firewall by never publishing either port.
+`compose.yaml` sets `"0.0.0.0"` for the reason above — a container's loopback
+is reachable by nothing else, not even the proxy beside it — and takes the place
+of the firewall by never publishing either port.
 
-With [`HTTPS_PORT`](#https_port) set the default is `::` instead, every address,
+With [`https_port`](#https_port) set the default is `::` instead, every address,
 IPv6 and IPv4 alike: there is no proxy, and visitors connect directly. On a host
-with IPv6 turned off entirely, set `0.0.0.0`.
+with IPv6 turned off entirely, set `"0.0.0.0"`.
 
-### `TLS_CHECK_PORT`
+### `tls_check_port`
 
 Default `3001`. The port that answers your reverse proxy's certificate
 authorization requests — Caddy's `on_demand_tls ask` — on the same address as
-`PORT`. Must be a valid port, and must differ from `PORT`, or startup fails
+`port`. Must be a valid port, and must differ from `port`, or startup fails
 rather than leaving you to decode an `EADDRINUSE`.
 
 It is a second listener because the request has nowhere to say which hostname it
@@ -71,23 +85,24 @@ the sites that need them.
 Nothing else is served there, and it must be reachable only by the proxy. See
 [deployment](deployment.md#5-tls-with-caddy).
 
-Not bound with [`HTTPS_PORT`](#https_port) set: there is no proxy to ask.
+Not bound with [`https_port`](#https_port) set: there is no proxy to ask.
 
-### `HTTPS_PORT`
+### `https_port`
 
 Unset by default, and a reverse proxy terminates TLS. Set it — to `443` — and
 npanel serves HTTPS itself on that port, getting a certificate for every name
 it serves from an ACME certificate authority, Let's Encrypt unless
 [`acme_directory`](#acme_directory) says otherwise, and renewing each before it
-expires. [`PORT`](#port) becomes the plain-HTTP side, which must be `80`. Must
-differ from `PORT`, or startup fails.
+expires. [`port`](#port) becomes the plain-HTTP side, which must be `80`. Must
+differ from `port`, or startup fails.
 
 Setting it agrees to the certificate authority's terms of service. See
 [deployment](deployment.md#without-a-proxy).
 
 The port is named in the redirects plain HTTP sends, so if anything forwards
 ports to npanel, forward them unchanged.
-### `DASHBOARD_HOST`
+
+### `dashboard_host`
 
 Required, with no default. The hostname that serves the dashboard and the JSON
 API — for example `panel.example.com`. Give it a bare hostname: no scheme, no
@@ -100,20 +115,24 @@ This one value does a lot of work:
 - NIP-98 auth events are checked against it, so a signature made for a different
   hostname is rejected.
 - It is always approved for a certificate — by `/tls-check`, or by npanel's own
-  ACME client with `HTTPS_PORT` — and never counts against the limits below.
+  ACME client with `https_port` — and never counts against the limits below.
 
 Because it's compared to the *public* hostname, it must be the name users type
 in the browser, not the address your proxy forwards to.
 
-### `LOG_LEVEL`
+### `log_level`
 
-Default `info`. One of `debug`, `info`, `warn`, `error`. Logs are one flat JSON
+Default `"info"`. One of `debug`, `info`, `warn`, `error`. Logs are one flat JSON
 object per line on stdout, which `journalctl -o cat | jq` reads nicely. `debug`
 adds per-request lines for served sites and is loud on a busy gateway.
 
-### `DATA_DIR`
+### `data_dir`
 
-Default `./data`, resolved to an absolute path. Contains:
+Default `/var/lib/npanel` when npanel runs as root, otherwise
+`$XDG_DATA_HOME/npanel` (`~/.local/share/npanel`). The packages set
+`/var/lib/npanel`, since they run npanel as its own user. A relative path is
+relative to the config file, so it means the same directory however npanel was
+started. Contains:
 
 - `npanel.sqlite3` — hosts, users, versions, settings, audit log
 - `blobs/` — the content-addressed file store
@@ -272,7 +291,7 @@ the *Add site* dialog. Each value becomes one record:
 A hostname must be the only entry, because DNS doesn't allow a CNAME beside any
 other record for the same name. Up to eight values otherwise.
 
-Left empty — the default — npanel resolves `DASHBOARD_HOST` and repeats its A
+Left empty — the default — npanel resolves `dashboard_host` and repeats its A
 and AAAA records. Nobody reaches the dashboard without having pointed that name
 at this server already, so the answer is right without anyone configuring it.
 The result is cached for five minutes.
@@ -314,7 +333,7 @@ exist keep working, so tightening it never takes a site offline.
 ### `tls_check_limit_per_host`
 
 Default `60`, allowed range 1–10000. How many certificates `/tls-check` will
-authorize for a single hostname in an hour. With [`HTTPS_PORT`](#https_port) it
+authorize for a single hostname in an hour. With [`https_port`](#https_port) it
 is how many certificates npanel orders for one hostname in an hour instead.
 
 Caddy asks before every TLS handshake for a name it holds no certificate for, so
@@ -344,7 +363,7 @@ out of npanel itself.
 
 Throttled asks are logged as `tls_check_throttled`.
 
-With [`HTTPS_PORT`](#https_port), the same two limits meter npanel's own orders,
+With [`https_port`](#https_port), the same two limits meter npanel's own orders,
 logged as `tls_order_throttled` when one is held back. They matter less there:
 npanel waits longer after each failed attempt for a name — two minutes, then
 four, eight, and so on to an hour — so a name whose DNS points elsewhere costs
@@ -357,7 +376,7 @@ names failing at once.
 ### `acme_directory`
 
 Default `https://acme-v02.api.letsencrypt.org/directory`, Let's Encrypt. The
-ACME directory npanel gets certificates from with [`HTTPS_PORT`](#https_port);
+ACME directory npanel gets certificates from with [`https_port`](#https_port);
 ignored behind a proxy. Must be an `https://` URL.
 
 Point it at Let's Encrypt's staging CA,
@@ -429,7 +448,7 @@ answer; the Settings page shows how far along it is.
 The addresses are stable, because npanel stores the keys in its database. Tor
 keeps them only in memory, which is what stops an onion from answering at an
 address whose server is gone. What Tor writes to disk lives under
-`DATA_DIR/tor`, and losing it costs a slower start and no address.
+`data_dir/tor`, and losing it costs a slower start and no address.
 
 Off by default because an upgrade shouldn't start publishing a gateway's sites
 somewhere their admin never asked for. See [deployment](deployment.md#tor).
@@ -495,13 +514,13 @@ is answered from what is cached, if anything.
 ### `link_preview_max_entries`
 
 Default `100000`. How many previews are kept on disk, in
-`DATA_DIR/previews.sqlite3`. Past it, the least recently made go first. A
+`data_dir/previews.sqlite3`. Past it, the least recently made go first. A
 preview is a few kilobytes, one with an article up to a few hundred.
 
 ### `errors_retention_days`
 
 Default `90`, between 1 and 365. How long error reports are kept, in
-`DATA_DIR/errors.sqlite3`: an older report is forgotten, and so is an issue
+`data_dir/errors.sqlite3`: an older report is forgotten, and so is an issue
 with none newer — along with its counts. Checked hourly.
 
 ## Not a setting: the Content Security Policy
@@ -524,6 +543,10 @@ to configure here — the site decides, per deploy, and the host page in the
 dashboard shows which policy each one ended up with.
 
 ## Precedence and validation
+
+The config file is checked whole at startup: a bad value, an unknown key or a
+missing `dashboard_host` stops npanel with a sentence naming the key, before
+anything is bound.
 
 Runtime settings are read from the database at startup and cached in memory. A
 row that fails validation — say, a relay URL that was valid under an older

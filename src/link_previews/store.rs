@@ -1,5 +1,5 @@
 //! The previews sites' scripts made, in a database of their own,
-//! `DATA_DIR/previews.sqlite3`.
+//! `data_dir/previews.sqlite3`.
 //!
 //! A file apart from `npanel.sqlite3` so that clearing it — and the `VACUUM`
 //! that gives the space back — never touches the gateway's own data, and so

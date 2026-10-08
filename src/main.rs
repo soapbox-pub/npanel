@@ -50,9 +50,12 @@ mod tor;
 mod util;
 
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
 use crate::analytics::{Analytics, AnalyticsConfig};
@@ -66,35 +69,71 @@ use crate::log::Logger;
 use crate::serve::{ServeCache, SiteServer, SiteServerDeps};
 use crate::settings::Settings;
 
+#[derive(Parser)]
+#[command(name = "npanel", version, about = "A self-hostable nsite gateway with a team dashboard")]
+struct Cli {
+    /// Configuration file [default: the first that exists of
+    /// $XDG_CONFIG_HOME/npanel/npanel.toml (~/.config/npanel/npanel.toml)
+    /// and /etc/npanel/npanel.toml]
+    #[arg(short, long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Run the gateway (the default)
+    Serve,
+    /// Make a pubkey an admin, adding it if it isn't a user yet
+    MakeAdmin {
+        /// An npub, nprofile, or hex pubkey
+        pubkey: String,
+    },
+    /// Forget old versions of sites and delete the files nothing uses, as the
+    /// server does once a day
+    PruneBlobs {
+        /// Ready versions to keep per site, in place of the setting
+        #[arg(long, value_name = "N")]
+        keep: Option<NonZeroUsize>,
+        /// Say what would go, and remove nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Store compressed copies of files downloaded before npanel made them
+    CompressBlobs {
+        /// Say what would be compressed, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
 fn main() {
     // A preview script's process, which reads no configuration: nothing of
     // the gateway's is any business of a site's script.
     if std::env::args().nth(1).as_deref() == Some(link_previews::script::WORKER_COMMAND) {
         link_previews::script::worker_main();
     }
-    config::load_dotenv();
+    let cli = Cli::parse();
     // rustls needs one crypto provider chosen for the process; relays and
     // blob downloads both go through it.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let config = match Config::from_env(|key| std::env::var(key).ok()) {
+    let config = match Config::load(cli.config.as_deref(), &config::Environment::current()) {
         Ok(config) => config,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("{error:#}");
             std::process::exit(1);
         }
     };
     let log = Logger::new(config.log_level);
 
-    let result = match args.first().map(String::as_str) {
-        None | Some("serve") => serve(config, log),
-        Some("make-admin") => scripts::make_admin(&config, &log, args.get(1).map(String::as_str)),
-        Some("prune-blobs") => scripts::prune_blobs(&config, &log, &args[1..]),
-        Some("compress-blobs") => scripts::compress_blobs(&config, &log, &args[1..]),
-        Some(other) => Err(anyhow::anyhow!(
-            "Unknown command {other}. Use serve, make-admin <npub>, prune-blobs [--keep N] [--dry-run], or compress-blobs [--dry-run]."
-        )),
+    let result = match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => serve(config, log),
+        Command::MakeAdmin { pubkey } => scripts::make_admin(&config, &log, &pubkey),
+        Command::PruneBlobs { keep, dry_run } => scripts::prune_blobs(&config, &log, keep, dry_run),
+        Command::CompressBlobs { dry_run } => scripts::compress_blobs(&config, &log, dry_run),
     };
 
     if let Err(error) = result {
@@ -306,6 +345,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
             "tls_check_port" => config.https_port.is_none().then_some(config.tls_check_port),
             "dashboard_host" => config.dashboard_host.as_str(),
             "data_dir" => config.data_dir.display().to_string(),
+            "config" => config.source.display().to_string(),
         },
     );
 

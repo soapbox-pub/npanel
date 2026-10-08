@@ -1,8 +1,9 @@
 //! The maintenance commands: `make-admin`, `prune-blobs`, `compress-blobs`.
 
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 
 use crate::hash::BlobHash;
@@ -21,10 +22,7 @@ use crate::util::format_bytes;
 /// Bootstrap the first admin, or promote someone from the command line. There
 /// is no other way to get the first account in: the dashboard's user
 /// management is admin-only.
-pub fn make_admin(config: &Config, log: &Logger, input: Option<&str>) -> Result<()> {
-    let Some(input) = input else {
-        bail!("Usage: npanel make-admin <npub or hex pubkey>");
-    };
+pub fn make_admin(config: &Config, log: &Logger, input: &str) -> Result<()> {
     let pubkey = parse_pubkey(input).map_err(anyhow::Error::msg)?;
     let npub = npub_encode(&pubkey);
 
@@ -60,20 +58,11 @@ pub fn make_admin(config: &Config, log: &Logger, input: Option<&str>) -> Result<
 /// newest N ready versions — N from `--keep`, or else the `keep_versions`
 /// setting. Then every blob no remaining version or build references is
 /// deleted.
-pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()> {
-    let dry_run = args.iter().any(|a| a == "--dry-run");
-    let keep_arg = match args.iter().position(|a| a == "--keep") {
-        None => None,
-        Some(index) => match args.get(index + 1).and_then(|v| v.parse::<usize>().ok()).filter(|n| *n >= 1) {
-            Some(n) => Some(n),
-            None => bail!("--keep requires a positive integer."),
-        },
-    };
-
+pub fn prune_blobs(config: &Config, log: &Logger, keep: Option<NonZeroUsize>, dry_run: bool) -> Result<()> {
     let db = Db::open(&config.database_path(), Some(log))?;
     let blobs = BlobStore::new(&config.blobs_dir());
-    let keep = match keep_arg {
-        Some(keep) => Some(keep),
+    let keep = match keep {
+        Some(keep) => Some(keep.get()),
         None => usize::try_from(Settings::load(&db, None)?.get().keep_versions).ok().filter(|keep| *keep > 0),
     };
 
@@ -93,8 +82,7 @@ pub fn prune_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()>
 
 /// Store compressed copies of blobs that predate npanel making them, and
 /// record every blob's sidecar sizes so serving skips the disk. Safe to re-run.
-pub fn compress_blobs(config: &Config, log: &Logger, args: &[String]) -> Result<()> {
-    let dry_run = args.iter().any(|a| a == "--dry-run");
+pub fn compress_blobs(config: &Config, log: &Logger, dry_run: bool) -> Result<()> {
     let db = Db::open(&config.database_path(), Some(log))?;
     let blobs = BlobStore::new(&config.blobs_dir());
 

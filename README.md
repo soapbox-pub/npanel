@@ -63,8 +63,7 @@ Or just Docker, if you'd rather not install any of that.
 hostname your staff add:
 
 ```sh
-cp .env.example .env
-$EDITOR .env          # set DASHBOARD_HOST
+echo 'DASHBOARD_HOST=panel.example.com' > .env
 
 docker compose up -d
 docker compose exec npanel npanel make-admin npub1yourkeyhere
@@ -82,11 +81,11 @@ same as `.deb` and `.rpm` packages that set up the user and the systemd unit
 ```sh
 chmod +x npanel-0.5.0-linux-x86_64
 
-cp .env.example .env
-$EDITOR .env          # set DASHBOARD_HOST at minimum
+cp npanel.example.toml npanel.toml
+$EDITOR npanel.toml   # set dashboard_host at minimum
 
-./npanel-0.5.0-linux-x86_64 make-admin npub1yourkeyhere
-./npanel-0.5.0-linux-x86_64
+./npanel-0.5.0-linux-x86_64 -c npanel.toml make-admin npub1yourkeyhere
+./npanel-0.5.0-linux-x86_64 -c npanel.toml
 ```
 
 To build it instead:
@@ -118,19 +117,23 @@ way — DNS, TLS, backups, and a systemd unit.
 | `npanel prune-blobs [--keep N] [--dry-run]`     | Runs the daily prune now                      |
 | `npanel compress-blobs [--dry-run]`             | Stores compressed copies of older blobs       |
 
+Each takes `-c, --config <PATH>` to name the config file.
+
 ## Configuration
 
-Seven environment variables, and that's the whole file:
+One TOML file, `npanel.toml`: the one `--config` names, or else
+`~/.config/npanel/npanel.toml` or `/etc/npanel/npanel.toml`.
+[`npanel.example.toml`](npanel.example.toml) lists all seven settings:
 
-| Variable          | Default     | Meaning                                     |
+| Setting           | Default     | Meaning                                     |
 | ----------------- | ----------- | ------------------------------------------- |
-| `PORT`            | `3000`      | Port the HTTP server listens on             |
-| `BIND_ADDRESS`    | `127.0.0.1` | Address it listens on; only the proxy should reach it |
-| `TLS_CHECK_PORT`  | `3001`      | Port answering the proxy's certificate questions, kept off the public one |
-| `HTTPS_PORT`      | —           | Serve HTTPS here, with certificates from Let's Encrypt, instead of behind a proxy |
-| `DASHBOARD_HOST`  | —           | Hostname that serves the dashboard and API  |
-| `LOG_LEVEL`       | `info`      | `debug`, `info`, `warn`, or `error`         |
-| `DATA_DIR`        | `./data`    | Holds the SQLite database and the blob store |
+| `dashboard_host`  | —           | Hostname that serves the dashboard and API; required |
+| `data_dir`        | `/var/lib/npanel` as root, else `~/.local/share/npanel` | Holds the SQLite database and the blob store |
+| `port`            | `3000`      | Port the HTTP server listens on             |
+| `bind_address`    | `127.0.0.1` | Address it listens on; only the proxy should reach it |
+| `tls_check_port`  | `3001`      | Port answering the proxy's certificate questions, kept off the public one |
+| `https_port`      | —           | Serve HTTPS here, with certificates from Let's Encrypt, instead of behind a proxy |
+| `log_level`       | `info`      | `debug`, `info`, `warn`, or `error`         |
 
 Relays, Blossom fallbacks, the file size limit, and the resync interval are
 edited by admins in the dashboard, take effect without a restart, and are

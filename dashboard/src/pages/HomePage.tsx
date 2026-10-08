@@ -268,7 +268,10 @@ function Terminal() {
           <span className="text-[#28c840]">$</span> (cd dashboard && bun install && bun run build)
         </p>
         <p>
-          <span className="text-[#28c840]">$</span> DASHBOARD_HOST=panel.example.com ./target/release/npanel
+          <span className="text-[#28c840]">$</span> {`echo 'dashboard_host = "panel.example.com"' > npanel.toml`}
+        </p>
+        <p>
+          <span className="text-[#28c840]">$</span> ./target/release/npanel -c npanel.toml
         </p>
         <p className="text-[#8e8e93]">listening on 127.0.0.1:3000</p>
       </div>

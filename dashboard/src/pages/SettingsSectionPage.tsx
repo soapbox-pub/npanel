@@ -326,7 +326,7 @@ export function SettingsSectionPage() {
           <TlsSummary status={status.data.tls} />
           <Section
             title="Certificate authority"
-            footer="Setting HTTPS_PORT agrees to the certificate authority's terms of service. Try a new setup against Let's Encrypt's staging CA, whose certificates browsers don't trust, before it counts against the real one's limits."
+            footer="Setting https_port in npanel.toml agrees to the certificate authority's terms of service. Try a new setup against Let's Encrypt's staging CA, whose certificates browsers don't trust, before it counts against the real one's limits."
           >
             <FieldRow label="ACME directory" htmlFor="acme-directory">
               <Input

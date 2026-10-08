@@ -6,10 +6,10 @@ its own, it keeps local storage in sync with Nostr.
 
 ```
         DNS ──► reverse proxy (TLS) ──► npanel :3000
-                 or, with HTTPS_PORT ──► npanel :443, its own TLS
+                 or, with https_port ──► npanel :443, its own TLS
                                           │
                     ┌─────────────────────┴────────────────────┐
-                    │  Host = DASHBOARD_HOST?                  │
+                    │  Host = dashboard_host?                  │
                     ├─────────────────────┬────────────────────┤
                     │ yes                 │ no                 │
                     ▼                     ▼                    │
@@ -27,13 +27,13 @@ its own, it keeps local storage in sync with Nostr.
    /_npanel/api/report on any site ──► errors thread ──► errors.sqlite3
    a crawler on a page ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
-   with HTTPS_PORT: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
+   with https_port: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
 
 ## Request routing
 
 Everything hangs off the `Host` header, checked in one middleware in
-`src/app.rs`. If it equals `DASHBOARD_HOST`, the request goes to the axum API at
+`src/app.rs`. If it equals `dashboard_host`, the request goes to the axum API at
 `/api` and otherwise to the built dashboard SPA. Any other hostname is served as
 an nsite.
 
@@ -66,7 +66,7 @@ address it proxies to, carrying no hostname npanel could route on: as a path
 here it would have to answer on every hostname npanel serves, putting a
 certificate-issuing decision on the public internet where a stranger could spend
 a real host's hourly budget. So it gets a listener of its own on
-`TLS_CHECK_PORT`, serving one path and nothing else (`src/tls_check.rs`). It
+`tls_check_port`, serving one path and nothing else (`src/tls_check.rs`). It
 approves the hostnames npanel serves, plus the `www` names it only redirects —
 a redirect is an HTTPS response like any other, and without a certificate the
 browser never gets far enough to be told where to go. It is a bare handler
@@ -94,7 +94,7 @@ the permanent answer.
 
 The dashboard is otherwise served as built, with one exception: `index.html`
 has its `og:image` and `og:url` tags rewritten from site-relative paths to
-absolute URLs built from `DASHBOARD_HOST` (`src/dashboard.rs`). A built static
+absolute URLs built from `dashboard_host` (`src/dashboard.rs`). A built static
 file cannot know its own origin, and link-preview crawlers are inconsistent
 about resolving relative ones.
 
@@ -124,7 +124,7 @@ page's, so a dashboard on another origin needs nothing else from the server.
 
 ## TLS without a proxy
 
-With `HTTPS_PORT` set npanel terminates TLS itself, and gets every certificate
+With `https_port` set npanel terminates TLS itself, and gets every certificate
 it serves from an ACME certificate authority (`src/tls/`). It is optional: the
 proxy path above is unchanged, and nothing about serving a site differs between
 the two beyond where the bytes are encrypted.
@@ -166,7 +166,7 @@ listener offers `h2` and `http/1.1`, and a CA validating TLS-ALPN-01 offers
 only `acme-tls/1`, which is answered with that name's challenge certificate
 and closed once the handshake is done.
 
-**Plain HTTP serves nothing.** `PORT` answers HTTP-01 challenges and sends
+**Plain HTTP serves nothing.** `port` answers HTTP-01 challenges and sends
 every name npanel would serve to the same path over HTTPS with a `308`, kept
 for an hour like the `www` redirect; any other name is a `404`, so the
 redirect can't be pointed elsewhere.
@@ -368,7 +368,7 @@ worst it costs is a dashboard save waiting a moment, never a visitor.
 ## Storage
 
 **SQLite** via `rusqlite`, with SQLite compiled in, at
-`DATA_DIR/npanel.sqlite3`. Migrations run at startup
+`data_dir/npanel.sqlite3`. Migrations run at startup
 (`src/db/migrations.rs`). Analytics live in a database of their own
 beside it — see [analytics](#analytics). Connections are pooled
 (`src/db/mod.rs`); each one maps the database into memory and keeps its
@@ -399,7 +399,7 @@ The tables:
 | `nip05_names` | The NIP-05 names a host answers for                        |
 | `host_env`    | The variables a host's pages read as `window.ENV`           |
 
-**Blobs** live on the filesystem at `DATA_DIR/blobs/<ab>/<cd>/<sha256>`, a
+**Blobs** live on the filesystem at `data_dir/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
 `blobs/tmp/` while being hashed and are renamed into place only if the hash
 matches, so a truncated transfer or a lying server can't leave a bad blob
@@ -796,7 +796,7 @@ happen there, never on the threads serving clearnet visitors.
 in-memory one, and each service is launched with the key stored in
 `onion_services`. The key is what an address is made of, so storing it is what
 makes the address survive a restart. What Arti does keep — under
-`DATA_DIR/tor`, its directory cache and its guards — makes coming back faster
+`data_dir/tor`, its directory cache and its guards — makes coming back faster
 and keeps the same guards, which is safer; losing it costs a slower start and
 no address. Arti also records each service's introduction points, but the keys
 those were made with lived in memory and are gone after a restart, so that
@@ -805,7 +805,7 @@ service that isn't detached does. Each restart therefore republishes every
 descriptor, and a visitor holding an old one fetches the new one on their own.
 
 Arti's own logs, which go through `tracing`, are forwarded to npanel's as
-`tor_log` entries: its warnings always, its info lines at `LOG_LEVEL=debug`. Keys are stored as C Tor spells
+`tor_log` entries: its warnings always, its info lines at `log_level = "debug"`. Keys are stored as C Tor spells
 them in `ADD_ONION` (`ED25519-V3:` and the expanded secret key), which is how
 they were stored when npanel drove a separate Tor daemon, so every address from
 then carried over unchanged.
@@ -918,7 +918,7 @@ user agent is a bot, or if the referrer is on Matomo's spam list. Browsers and
 operating systems are read with the same Matomo database Plausible uses;
 sources and channels are ports of Plausible's rules over its own data files;
 locations come from DB-IP's free City Lite database, downloaded into
-`DATA_DIR/geo` the first time a site counts visits and refreshed monthly.
+`data_dir/geo` the first time a site counts visits and refreshed monthly.
 
 **Privacy** is Plausible's model. No cookie is set and nothing identifying is
 stored. A visitor is a 48-bit hash of their user agent, address and the site
@@ -934,7 +934,7 @@ Engagement events — time on page and scroll depth — keep a visit alive witho
 counting as anything in it. Open visits live in memory, where each event is
 matched to one, and are written back as they change.
 
-**Storage** is SQLite, in `DATA_DIR/analytics.sqlite3`, apart from npanel's own
+**Storage** is SQLite, in `data_dir/analytics.sqlite3`, apart from npanel's own
 database so the tables that grow with every pageview are nowhere near the ones
 serving reads. Nothing is written per event: events collect in memory and are
 written with every changed visit in one transaction every two seconds, so a
@@ -1046,7 +1046,7 @@ minified bundle's names change with every deploy and the original's don't,
 so with maps one bug stays one issue across deploys; without them an issue
 groups by message instead.
 
-**Storage** is SQLite, in `DATA_DIR/errors.sqlite3`, apart from the others for
+**Storage** is SQLite, in `data_dir/errors.sqlite3`, apart from the others for
 the reason analytics are. Reports are written every two seconds in one
 transaction. An issue holds exact running counts — events, and visitors under
 the daily salts analytics use (in this database, so the two can't be joined),
@@ -1281,7 +1281,7 @@ connection idle for half a minute is closed and forgotten, so the relays a
 stranger's paths name don't pile up.
 
 **Storage.** Previews are kept in memory, up to 32 MB of them, and in
-`DATA_DIR/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from
+`data_dir/previews.sqlite3` for `link_preview_ttl` seconds — a file apart from
 the gateway's database, so clearing it and `VACUUM`ing it touch nothing else,
 and what it takes up is its size. It's a cache, so its layout is versioned as a
 whole, and one an older npanel left is thrown away. A preview is kept by the
@@ -1292,7 +1292,7 @@ mean the relays were slow; for the same reason, a run that has nothing where it
 had something keeps what it had and tries again in ten minutes, as does a run
 that fails. Past `link_preview_max_entries`, the least recently made rows go.
 Drawn images are kept by version, 64 MB of them in memory and 512 MB in
-`DATA_DIR/preview-images/`.
+`data_dir/preview-images/`.
 
 **Settings → Link Previews** shows what is cached and how lookups have gone,
 runs one page's script again from its URL, and clears the lot, images
@@ -1308,7 +1308,7 @@ matching the body's sha256. The tag is required rather than checked only when
 present: it is the one thing tying a body to the signature, and without it a
 header seen once could be replayed within the minute with any body at all.
 
-The signed `u` tag is compared against `DASHBOARD_HOST`, not against the URL
+The signed `u` tag is compared against `dashboard_host`, not against the URL
 this process sees. Behind a proxy those differ: the client signs
 `https://panel.example.com/api/hosts` while the process receives
 `http://127.0.0.1:3000/api/hosts`. Comparing the raw request URL would reject
@@ -1349,5 +1349,5 @@ The deploy, analytics and Tor runtimes read the same settings and receive the sa
 change notices, so their subscribers reconfigure exactly as the rest do. The previews runtime reads them afresh for every lookup, so a
 change applies to the next one with nothing to reconfigure.
 
-Nothing in the settings UI requires a restart, which is the point: the six
-environment variables are the only things that do.
+Nothing in the settings UI requires a restart, which is the point: the config
+file's seven settings are the only things that do.

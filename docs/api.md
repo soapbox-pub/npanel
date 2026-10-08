@@ -3,7 +3,7 @@
 The dashboard is a client of this API and uses nothing private, so anything the
 UI can do, a script can do.
 
-Everything lives under `/api` on `DASHBOARD_HOST`. All responses are JSON,
+Everything lives under `/api` on `dashboard_host`. All responses are JSON,
 including `404`s for routes that don't exist. Errors are `{ "error": "..." }`
 with a 4xx or 5xx status. Request bodies are limited to 1 MB; anything larger
 is `413`, refused before the signature is checked.
@@ -28,7 +28,7 @@ The event needs:
 `created_at` must be within 60 seconds of the server's clock. Each event is for
 one request; sign a fresh one every time.
 
-The `u` tag is checked against `DASHBOARD_HOST` and the request path, not
+The `u` tag is checked against `dashboard_host` and the request path, not
 against the URL the process sees, so a reverse proxy rewriting the scheme or
 port is fine. Host and path must match exactly.
 
@@ -36,7 +36,7 @@ Every response allows any origin (`Access-Control-Allow-Origin: *`), and
 preflights are answered. The signature, not the origin, is what grants access,
 so a dashboard served from somewhere else — the [published
 nsite](deployment.md#the-dashboard-as-an-nsite), say — works against any
-server, as long as its `u` tags name that server's `DASHBOARD_HOST`.
+server, as long as its `u` tags name that server's `dashboard_host`.
 
 A valid signature from a pubkey that isn't in the `users` table gets `403`, not
 `401` — npanel is permissioned, and signing proves who you are, not that you're
@@ -52,7 +52,7 @@ Routes marked **admin** below return `403` for staff.
 ## Certificates
 
 Certificate authorization for the reverse proxy is **not part of this API**. It
-answers on its own port, `TLS_CHECK_PORT`, because the proxy asks with no
+answers on its own port, `tls_check_port`, because the proxy asks with no
 hostname npanel could route on — see
 [deployment](deployment.md#5-tls-with-caddy).
 
@@ -60,12 +60,12 @@ hostname npanel could route on — see
 GET http://127.0.0.1:3001/tls-check?domain=<hostname>
 ```
 
-`200` with `ok` when the domain is `DASHBOARD_HOST` or an enabled host, `404`
+`200` with `ok` when the domain is `dashboard_host` or an enabled host, `404`
 otherwise, and `429` with a `Retry-After` once `tls_check_limit_per_host` or
-`tls_check_limit_total` is spent. Refusals aren't metered, and `DASHBOARD_HOST`
+`tls_check_limit_total` is spent. Refusals aren't metered, and `dashboard_host`
 is exempt. Nothing else is served on that port.
 
-With `HTTPS_PORT` set npanel gets certificates itself and that port isn't
+With `https_port` set npanel gets certificates itself and that port isn't
 bound; how they stand is in [`/api/status`](#get-apistatus) and each host's
 `certificates`.
 
@@ -154,7 +154,7 @@ while staff are adding one. Available to any authenticated user.
 ```
 
 `source` is `settings` when an admin set `dns_targets`, and `dashboard_host`
-when the answer was detected by resolving `DASHBOARD_HOST` — see
+when the answer was detected by resolving `dashboard_host` — see
 [configuration](configuration.md#dns_targets). `records` is empty when neither
 produced anything; `type` is `A`, `AAAA`, or `CNAME`.
 
@@ -208,7 +208,7 @@ republishes the same address. There is no field to set it and no per-host way to
 opt out.
 
 `certificates` is read-only, and `null` unless npanel gets certificates itself
-(`HTTPS_PORT`). It lists the host's own name and, if it redirects it, its `www`;
+(`https_port`). It lists the host's own name and, if it redirects it, its `www`;
 a disabled host has none. `expires_at` is when the certificate being served
 expires, `null` while there is none. `error` is why the last attempt failed,
 in the certificate authority's words, and `failures` how many have failed in a
@@ -259,7 +259,7 @@ empty for an admin, whose `hosts` already holds everything.
 those. It's stored decomposed into pubkey, kind, and identifier.
 
 `201` with `{ "host": {...} }`. `409` if the hostname is already configured or
-is `DASHBOARD_HOST`. `400` if it doesn't sit under one of
+is `dashboard_host`. `400` if it doesn't sit under one of
 `allowed_host_suffixes`, when that setting is non-empty. A staff user who
 creates a host is granted it automatically, so they aren't locked out of their
 own work.
@@ -459,7 +459,7 @@ asks, and runs code the site wrote. See
 [link previews](architecture.md#link-previews).
 
 `hostname` is validated exactly as on create: `409` if it's already configured
-or is `DASHBOARD_HOST`, `400` if it falls outside `allowed_host_suffixes`. A
+or is `dashboard_host`, `400` if it falls outside `allowed_host_suffixes`. A
 rename also moves the host: every subsequent request must use the new name.
 
 A change to `hostname`, `address`, `pinned_event_id`, `seo`,
@@ -1052,7 +1052,7 @@ as a percentage, and `services` how many onion services are running. `error` is
 empty while nothing is wrong and otherwise says what is, as a sentence — npanel
 keeps trying, so it describes a live condition rather than a permanent one. See [Tor](deployment.md#tor).
 
-`tls` is `null` behind a proxy. With `HTTPS_PORT` set, `names` is how many
+`tls` is `null` behind a proxy. With `https_port` set, `names` is how many
 names may have a certificate, `issued` how many have an unexpired one from
 `directory`, and `failing` every wanted name whose last attempt failed, shaped
 like a host's `certificates`. See [without a proxy](deployment.md#without-a-proxy).

@@ -5,10 +5,10 @@
 # certificate for a site can't be known when Caddy starts — so this uses
 # on-demand TLS, with npanel itself deciding which names deserve a certificate.
 #
-# The placeholders below take their defaults from a Caddy installed on the same
-# host as npanel. compose.yaml sets them as environment variables instead, so
-# the same file works for a container install; edit them in place if you'd
-# rather not use environment variables at all.
+# The placeholders below are Caddy's environment variables, not npanel's, and
+# take their defaults from a Caddy installed on the same host as npanel.
+# compose.yaml sets them instead, so the same file works for a container
+# install; edit them in place if you'd rather not use them at all.
 
 {
 	# Caddy asks npanel before issuing any certificate. npanel answers 200 for

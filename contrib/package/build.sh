@@ -30,17 +30,18 @@ esac
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 
-# contrib/npanel.service and .env.example are written for an install by hand;
-# the package puts the binary in /usr/bin and the data in /var/lib/npanel.
-# DASHBOARD_HOST is left empty, so the service refuses to start until it is set.
+# contrib/npanel.service and npanel.example.toml are written for an install by
+# hand; the package puts the binary in /usr/bin and the data in
+# /var/lib/npanel, which the npanel user's default wouldn't be. dashboard_host
+# is left empty, so the service refuses to start until it is set.
 sed 's|/usr/local/bin/npanel|/usr/bin/npanel|g' contrib/npanel.service > "$stage/npanel.service"
-sed -e 's|^DASHBOARD_HOST=.*|DASHBOARD_HOST=""|' \
-    -e 's|^DATA_DIR=.*|DATA_DIR="/var/lib/npanel"|' \
-    .env.example > "$stage/env"
-if ! grep -qx 'ExecStart=/usr/bin/npanel' "$stage/npanel.service" \
-    || ! grep -qx 'DASHBOARD_HOST=""' "$stage/env" \
-    || ! grep -qx 'DATA_DIR="/var/lib/npanel"' "$stage/env"; then
-    echo "contrib/npanel.service or .env.example changed shape; update $0 to match." >&2
+sed -e 's|^dashboard_host = .*|dashboard_host = ""|' \
+    -e 's|^# data_dir = "/var/lib/npanel"$|data_dir = "/var/lib/npanel"|' \
+    npanel.example.toml > "$stage/npanel.toml"
+if ! grep -qx 'ExecStart=/usr/bin/npanel --config /etc/npanel/npanel.toml' "$stage/npanel.service" \
+    || ! grep -qx 'dashboard_host = ""' "$stage/npanel.toml" \
+    || ! grep -qx 'data_dir = "/var/lib/npanel"' "$stage/npanel.toml"; then
+    echo "contrib/npanel.service or npanel.example.toml changed shape; update $0 to match." >&2
     exit 1
 fi
 

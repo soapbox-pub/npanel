@@ -1,7 +1,8 @@
 # The .deb and .rpm each release publishes, built by build.sh, which sets the
-# variables below and runs nfpm in a directory holding every file named here. They install what docs/deployment.md does by hand, in the
-# places a package belongs: the binary in /usr/bin rather than /usr/local/bin,
-# and the unit with the distribution's.
+# variables below and runs nfpm in a directory holding every file named here.
+# They install what docs/deployment.md does by hand, in the places a package
+# belongs: the binary in /usr/bin rather than /usr/local/bin, and the unit
+# with the distribution's.
 name: npanel
 version: ${NPANEL_VERSION}
 arch: ${NPANEL_ARCH}
@@ -14,7 +15,7 @@ homepage: https://gitworkshop.dev/soapbox.pub/npanel
 license: AGPL-3.0-or-later
 
 # The binary is static; systemd is for the unit, and for the scripts, which
-# create the user and DATA_DIR with systemd-sysusers and systemd-tmpfiles.
+# create the user and data_dir with systemd-sysusers and systemd-tmpfiles.
 # Fonts are what a site's link-preview script draws its text in; without any,
 # previews have none.
 depends:
@@ -47,8 +48,8 @@ contents:
     file_info:
       mode: 0644
   # Never replaced on upgrade once installed; dpkg removes it on purge.
-  - src: env
-    dst: /etc/npanel/.env
+  - src: npanel.toml
+    dst: /etc/npanel/npanel.toml
     type: config|noreplace
     file_info:
       mode: 0644

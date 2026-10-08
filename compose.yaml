@@ -1,7 +1,6 @@
 # npanel and a reverse proxy, which is the whole of a production install.
 #
-#   cp .env.example .env      # set DASHBOARD_HOST
-#   $EDITOR .env
+#   echo 'DASHBOARD_HOST=panel.example.com' > .env
 #   docker compose up -d
 #   docker compose exec npanel npanel make-admin npub1yourkeyhere
 #
@@ -21,12 +20,25 @@ services:
     expose:
       - "3000"
       - "3001"
-    environment:
-      # The public hostname of the dashboard. Required — it decides which
-      # requests are the dashboard rather than an nsite, and NIP-98 logins are
-      # checked against it.
-      DASHBOARD_HOST: ${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
+    configs:
+      - source: npanel
+        target: /etc/npanel/npanel.toml
+    # Both listeners, since either one being down is a broken gateway.
+    # /api/instance is unauthenticated but served only on the dashboard
+    # hostname, hence the Host header, and answering it means the database
+    # opened; the second call proves Caddy can still get certificates
+    # authorized. The dashboard hostname is never metered, so this spends no
+    # part of the issuance budget.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q -O /dev/null --header "host: ${DASHBOARD_HOST}" http://127.0.0.1:3000/api/instance &&
+          wget -q -O /dev/null "http://127.0.0.1:3001/tls-check?domain=${DASHBOARD_HOST}"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     volumes:
       # The database and the blob store, and Tor's state when it is on. This
       # is the volume to back up.
@@ -57,6 +69,23 @@ services:
       # certificate, which Let's Encrypt rate limits.
       - caddy-data:/data
       - caddy-config:/config
+
+# npanel's configuration file. bind_address is every address so that Caddy, in
+# another container, can reach it: safe only because nothing publishes these
+# ports, since npanel speaks plain HTTP and 3001 authorizes certificates for
+# anyone who asks. To set anything else npanel.example.toml lists, add it here.
+configs:
+  npanel:
+    content: |
+      # The public hostname of the dashboard. It decides which requests are
+      # the dashboard rather than an nsite, and NIP-98 logins are checked
+      # against it.
+      dashboard_host = "${DASHBOARD_HOST:?set DASHBOARD_HOST in .env, eg panel.example.com}"
+      log_level = "${LOG_LEVEL:-info}"
+      bind_address = "0.0.0.0"
+      port = 3000
+      tls_check_port = 3001
+      data_dir = "/data"
 
 volumes:
   npanel-data:

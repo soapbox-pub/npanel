@@ -3,7 +3,7 @@
 //!
 //! DB-IP publishes a new one at the start of each month under CC BY 4.0, which
 //! asks for attribution — the dashboard gives it wherever locations are shown.
-//! It is downloaded into `DATA_DIR/geo` the first time any site has analytics
+//! It is downloaded into `data_dir/geo` the first time any site has analytics
 //! on, and replaced once a month; until the first download lands, visits are
 //! counted without a location rather than waited on.
 //!
