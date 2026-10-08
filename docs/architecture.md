@@ -805,7 +805,13 @@ service that isn't detached does. Each restart therefore republishes every
 descriptor, and a visitor holding an old one fetches the new one on their own.
 
 Arti's own logs, which go through `tracing`, are forwarded to npanel's as
-`tor_log` entries: its warnings always, its info lines at `log_level = "debug"`. Keys are stored as C Tor spells
+`tor_log` entries: its warnings always, its info lines at `log_level = "debug"`.
+The exception is what comes from running onion services and the circuits kept
+ready for them, which is debug however severe Arti calls it: each line is one
+failure Arti retries, and a dozen healthy services make hundreds an hour. In
+their place npanel watches each service's state as Arti summarizes it, and
+warns with `tor_onion_unreachable` once one has been unreachable for ten
+minutes (`UNREACHABLE_GRACE`, `src/tor.rs`). Keys are stored as C Tor spells
 them in `ADD_ONION` (`ED25519-V3:` and the expanded secret key), which is how
 they were stored when npanel drove a separate Tor daemon, so every address from
 then carried over unchanged.

@@ -41,6 +41,7 @@ use tokio::task::JoinHandle;
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
 use tor_config::ExplicitOrAuto;
 use tor_hscrypto::pk::{HsIdKey, HsIdKeypair};
+use tor_hsservice::status::{OnionServiceStatusStream, Problem};
 use tor_hsservice::{HsIdKeypairSpecifier, HsNickname, RunningOnionService, StreamRequest};
 use tor_keymgr::config::ArtiKeystoreKind;
 use tor_keymgr::KeystoreSelector;
@@ -67,6 +68,12 @@ const ONION_PORT: u16 = 80;
 
 /// How C Tor spells an onion service key, and so how npanel stores one.
 const KEY_PREFIX: &str = "ED25519-V3:";
+
+/// How long a service may go unreachable before npanel says so. Arti spends
+/// minutes getting a new service published, and a working one dips out for a
+/// while whenever an introduction point dies or a directory won't take its
+/// descriptor; it recovers from both on its own.
+const UNREACHABLE_GRACE: Duration = Duration::from_secs(10 * 60);
 
 /// What the dashboard shows on the Settings page.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -190,6 +197,15 @@ struct Published {
     _service: Arc<RunningOnionService>,
     /// Accepting its streams.
     accepting: JoinHandle<()>,
+    /// Reporting whether it can be reached.
+    watching: JoinHandle<()>,
+}
+
+impl Published {
+    fn stop(&self) {
+        self.accepting.abort();
+        self.watching.abort();
+    }
 }
 
 struct Actor<'a> {
@@ -350,7 +366,7 @@ impl<'a> Actor<'a> {
         let stale: Vec<i64> = session.live.keys().filter(|id| !keep.contains(id)).copied().collect();
         for id in stale {
             if let Some(published) = session.live.remove(&id) {
-                published.accepting.abort();
+                published.stop();
                 self.deps.log.info("tor_onion_unpublished", fields! { "onion" => published.address });
             }
         }
@@ -374,7 +390,8 @@ impl<'a> Actor<'a> {
                         session.connections.clone(),
                         self.deps.log,
                     ));
-                    Published { address: key.address.clone(), _service: service, accepting }
+                    let watching = tokio::spawn(watch(service.status_events(), hostname.clone(), key.address.clone(), self.deps.log));
+                    Published { address: key.address.clone(), _service: service, accepting, watching }
                 }
                 Err(error) => {
                     self.deps.log.error("tor_onion_failed", with_err(fields! { "hostname" => hostname.as_str() }, format!("{error:#}")));
@@ -398,7 +415,7 @@ impl<'a> Actor<'a> {
                 if let Err(error) = stored {
                     // An address that isn't stored would change at the next
                     // restart, so it is not handed out at all.
-                    published.accepting.abort();
+                    published.stop();
                     self.deps.log.error("tor_onion_failed", with_err(fields! { "hostname" => hostname.as_str() }, error));
                     failed = true;
                     continue;
@@ -433,7 +450,14 @@ impl<'a> Actor<'a> {
             for task in &session.background {
                 task.abort();
             }
-            let accepting: Vec<JoinHandle<()>> = session.live.into_values().map(|published| published.accepting).collect();
+            let accepting: Vec<JoinHandle<()>> = session
+                .live
+                .into_values()
+                .map(|published| {
+                    published.watching.abort();
+                    published.accepting
+                })
+                .collect();
             for task in &accepting {
                 task.abort();
             }
@@ -452,10 +476,16 @@ impl<'a> Actor<'a> {
 }
 
 /// Send what Arti logs to npanel's log, as `tor_log` entries. Arti reports
-/// through `tracing`, and without this everything it has to say — a
-/// descriptor that wouldn't upload, an introduction point that failed — would
-/// go nowhere. Its warnings are kept at their level; its info lines, which
-/// narrate every service's routine, only show at `log_level = "debug"`.
+/// through `tracing`, and without this everything it has to say would go
+/// nowhere. Its warnings are kept at their level, except about onion
+/// services; its info lines, which narrate every service's routine, only show
+/// at `log_level = "debug"`.
+///
+/// Onion services' warnings are each a single failure Arti retries: an upload
+/// to one of the directories a descriptor goes to, a spare circuit, a
+/// visitor's rendezvous. A gateway with a dozen sites sees hundreds an hour
+/// while every one of them stays reachable, so they are debug lines, and
+/// [`watch`] says when a service has actually become unreachable.
 ///
 /// `tracing` has one subscriber for the whole process. The first call
 /// installs it, and any later one finds it there, which is fine: every
@@ -477,11 +507,18 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ArtiLogs {
         let mut fields = fields! { "target" => metadata.target() };
         event.record(&mut FieldVisitor(&mut fields));
         match *metadata.level() {
+            _ if is_onion_service_routine(metadata.target()) => self.0.debug("tor_log", fields),
             tracing::Level::ERROR => self.0.error("tor_log", fields),
             tracing::Level::WARN => self.0.warn("tor_log", fields),
             _ => self.0.debug("tor_log", fields),
         }
     }
+}
+
+/// Whether an Arti event comes from running onion services: the services
+/// themselves, and the pool of circuits kept ready for them.
+fn is_onion_service_routine(target: &str) -> bool {
+    target == "tor_hsservice" || target.starts_with("tor_hsservice::") || target == "tor_circmgr::hspool"
 }
 
 /// Flattens an event's fields into log fields, its message as `tor_msg` so it
@@ -578,6 +615,76 @@ fn publish(
         return Err(anyhow!("Tor launched {} as {address:?}", key.address));
     }
     Ok((service, requests))
+}
+
+/// Say when the onion `address` has been unreachable for longer than
+/// [`UNREACHABLE_GRACE`], and when it is back. Arti's view of the service is
+/// what decides: it knows whether its descriptor is published and its
+/// introduction points are up, which no single failure does.
+async fn watch(mut events: OnionServiceStatusStream, hostname: String, address: String, log: Logger) {
+    // When the service stopped being reachable, and whether that has been
+    // reported.
+    let mut down: Option<(tokio::time::Instant, bool)> = None;
+    let mut current = None;
+    loop {
+        let deadline = match down {
+            Some((since, false)) => Some(since + UNREACHABLE_GRACE),
+            _ => None,
+        };
+        let overdue = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            next = events.next() => {
+                let Some(status) = next else { return };
+                let state = status.state();
+                log.debug("tor_onion_state", fields! { "onion" => address.as_str(), "state" => format!("{state:?}") });
+                if state.is_fully_reachable() {
+                    if let Some((since, true)) = down {
+                        log.info(
+                            "tor_onion_reachable",
+                            fields! { "hostname" => hostname.as_str(), "onion" => address.as_str(), "after_secs" => since.elapsed().as_secs() },
+                        );
+                    }
+                    down = None;
+                } else if down.is_none() {
+                    down = Some((tokio::time::Instant::now(), false));
+                }
+                current = Some(status);
+            }
+            () = overdue => {
+                let Some((since, _)) = down else { continue };
+                let status = current.as_ref();
+                log.warn(
+                    "tor_onion_unreachable",
+                    fields! {
+                        "hostname" => hostname.as_str(),
+                        "onion" => address.as_str(),
+                        "state" => status.map(|status| format!("{:?}", status.state())),
+                        "for_secs" => since.elapsed().as_secs(),
+                        "problem" => status.and_then(|status| status.current_problem()).map(describe_problem),
+                    },
+                );
+                down = Some((since, true));
+            }
+        }
+    }
+}
+
+/// What is wrong with a service, as Arti's errors put it.
+fn describe_problem(problem: &Problem) -> String {
+    fn join<E: std::fmt::Display>(errors: &[E]) -> String {
+        errors.iter().map(|error| error.to_string()).collect::<Vec<_>>().join("; ")
+    }
+    match problem {
+        Problem::Runtime(error) => error.to_string(),
+        Problem::DescriptorUpload(errors) => format!("publishing the descriptor: {}", join(errors)),
+        Problem::Ipt(errors) => format!("introduction points: {}", join(errors)),
+        other => format!("{other:?}"),
+    }
 }
 
 /// Serve every stream that arrives at the onion `address`.
@@ -708,6 +815,16 @@ mod tests {
         assert!(swapped.keypair().unwrap_err().to_string().contains("not"));
         assert!(OnionKey { address: C_TOR_ADDRESS.into(), secret_key: "ED25519-V3:short".into() }.keypair().is_err());
         assert!(OnionKey { address: C_TOR_ADDRESS.into(), secret_key: "RSA1024:abc".into() }.keypair().is_err());
+    }
+
+    #[test]
+    fn onion_service_routine_is_told_apart() {
+        assert!(is_onion_service_routine("tor_hsservice::publish::reactor"));
+        assert!(is_onion_service_routine("tor_hsservice::helpers"));
+        assert!(is_onion_service_routine("tor_circmgr::hspool"));
+        assert!(!is_onion_service_routine("tor_circmgr"));
+        assert!(!is_onion_service_routine("tor_guardmgr::guard"));
+        assert!(!is_onion_service_routine("tor_hsservicex"));
     }
 
     #[test]

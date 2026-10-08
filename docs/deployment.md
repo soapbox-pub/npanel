@@ -612,7 +612,15 @@ offers the onion on its own. A newly published address can take a minute or two
 to become reachable while its descriptor spreads through the network.
 
 **Tor's own messages** are in npanel's log as `tor_log` entries. Its warnings
-are always there; set `log_level = "debug"` to see the rest of what it is doing.
+are always there, except those about onion services, which are each one
+failure Tor retries on its own — a directory that wouldn't take a descriptor, a
+visitor's circuit that didn't complete — and come by the hundred an hour while
+every site stays reachable. What matters about a service is whether it can be
+reached, so npanel says that itself: `tor_onion_unreachable`, a warning with
+Tor's account of the problem, once a site has been unreachable for ten
+minutes, and `tor_onion_reachable` when it is back. Set `log_level = "debug"`
+to see everything else Tor is doing, each service's state changes as
+`tor_onion_state` included.
 
 **Tor is stuck joining the network.** The Settings page shows the reason Tor
 gives. npanel needs to make outbound connections to Tor relays, on whatever
