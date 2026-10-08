@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## Unreleased
+## [0.6.0]
 
 - **Breaking:** npanel reads its configuration from a TOML file instead of
   `.env` and the environment. It uses the file `--config` names, or else
@@ -29,6 +29,15 @@ it is tagged.
   sample unit are no longer published as assets: the release's asset events
   carry each file's SHA-256, and the unit is `contrib/npanel.service`.
 - `npanel --help` and `npanel --version`, and help for each command.
+- Tor's warnings about onion services are debug lines: each was one failure
+  Tor retries on its own, and a gateway with a dozen sites logged hundreds an
+  hour while every one stayed reachable. In their place, npanel warns with
+  `tor_onion_unreachable` when a site's onion has been unreachable for ten
+  minutes, saying why, and logs `tor_onion_reachable` when it is back.
+- The Docker image runs the same static binary a release publishes, built by
+  the same script, `contrib/release/build.sh`, with the dashboard compiled in.
+  That script, with `contrib/release/tools.sh` for its pinned tools, is how to
+  build npanel for a server by hand too.
 
 ## [0.5.0]
 

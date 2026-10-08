@@ -150,7 +150,7 @@ under the repository's releases on
 or with [ngit](https://ngit.dev) from a clone:
 
 ```sh
-ngit release view npanel@0.5.0 --verify
+ngit release view npanel@0.6.0 --verify
 ```
 
 The release is signed, and names every file in it by its SHA-256, which
@@ -162,8 +162,8 @@ On Debian, Ubuntu, Fedora, RHEL and their relatives, install the package for
 your architecture:
 
 ```sh
-sudo apt install ./npanel-0.5.0-linux-x86_64.deb    # or
-sudo dnf install ./npanel-0.5.0-linux-x86_64.rpm
+sudo apt install ./npanel-0.6.0-linux-x86_64.deb    # or
+sudo dnf install ./npanel-0.6.0-linux-x86_64.rpm
 ```
 
 It does everything the rest of this section and [section 4](#4-systemd) do by
@@ -202,7 +202,7 @@ Download `npanel-<version>-linux-x86_64` (or `-aarch64`), and
 release's tag, then:
 
 ```sh
-sudo install -m 755 npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
+sudo install -m 755 npanel-0.6.0-linux-x86_64 /usr/local/bin/npanel
 sudo install -m 644 npanel.service /etc/systemd/system/npanel.service
 
 sudo useradd --system --home /var/lib/npanel --shell /usr/sbin/nologin npanel
@@ -267,7 +267,7 @@ git clone <your-repo-url> npanel && cd npanel
 (cd dashboard && bun install && bun run build)
 export PATH="$(contrib/release/tools.sh ~/.cache/npanel-release-tools):$PATH"
 contrib/release/build.sh dist x86_64           # or aarch64
-sudo install -m 755 dist/npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
+sudo install -m 755 dist/npanel-0.6.0-linux-x86_64 /usr/local/bin/npanel
 sudo install -m 644 contrib/npanel.service /etc/systemd/system/npanel.service
 ```
 
@@ -692,7 +692,7 @@ what relays said, and needn't be backed up at all.
 Install the new release's binary over the old one and restart:
 
 ```sh
-sudo install -m 755 npanel-0.5.0-linux-x86_64 /usr/local/bin/npanel
+sudo install -m 755 npanel-0.6.0-linux-x86_64 /usr/local/bin/npanel
 sudo systemctl restart npanel
 ```
 
