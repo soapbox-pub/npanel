@@ -14,7 +14,7 @@ description: |
   analytics, and onion addresses. One binary and one SQLite file.
 tags: [nostr, nsite, blossom, gateway]
 license: AGPL-3.0-or-later
-repository: nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel
+repository: nostr://npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj/git.shakespeare.diy/npanel
 icon: dashboard/public/icon-512.png
 release_notes: CHANGELOG.md
 publication:

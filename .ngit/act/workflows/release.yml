@@ -196,7 +196,7 @@ jobs:
           channel=main
           case "$VERSION" in *-*) channel=beta ;; esac
           ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" release publish "$VERSION" \
-            --repo nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel \
+            --repo nostr://npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj/git.shakespeare.diy/npanel \
             --commit "$GITHUB_SHA" \
             --channel "$channel" \
             --defaults
@@ -206,7 +206,7 @@ jobs:
         run: |
           set -eu
           ngit --nbunksec-file "$RUNNER_TEMP/nbunksec" nsite publish dashboard/dist \
-            --repo nostr://npub1q3sle0kvfsehgsuexttt3ugjd8xdklxfwwkh559wxckmzddywnws6cd26p/git.shakespeare.diy/npanel \
+            --repo nostr://npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj/git.shakespeare.diy/npanel \
             --defaults
 
       - name: Remove the signer
