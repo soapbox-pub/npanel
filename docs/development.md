@@ -223,7 +223,7 @@ checksums, into a directory of your choosing:
 (cd dashboard && bun run build)
 export PATH="$(contrib/release/tools.sh ~/.cache/npanel-release-tools):$PATH"
 contrib/release/build.sh dist                  # both architectures, or name one
-contrib/package/build.sh 0.6.0 x86_64 dist/npanel-0.6.0-linux-x86_64 dist
+contrib/package/build.sh 0.6.1 x86_64 dist/npanel-0.6.1-linux-x86_64 dist
 ```
 
 A plain `cargo build --release` is a development build that reads the

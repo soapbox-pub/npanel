@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.6.1]
 
 - A preview script can name the page's canonical URL with `canonical`, for
   sites where several paths show one thing — `/npub1…`, `/nprofile1…` and
