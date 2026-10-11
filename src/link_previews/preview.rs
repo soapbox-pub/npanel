@@ -4,6 +4,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::inject::{attributes, tags, Token};
 use crate::site_preview::clamp;
 
 const MAX_TITLE: usize = 200;
@@ -22,6 +23,9 @@ pub struct Preview {
     pub body: String,
     /// The page's image, as an http(s) URL.
     pub image: Option<String>,
+    /// The URL the page is one copy of, on the same site: the page's own when
+    /// it's missing.
+    pub canonical: Option<String>,
     /// The image the script drew, which `image` is the URL of.
     pub drawn: Option<Drawn>,
     /// `og:type`.
@@ -66,6 +70,7 @@ pub struct Extras {
     pub video: Option<RawMedia>,
     pub audio: Option<RawMedia>,
     pub published: Option<f64>,
+    pub canonical: Option<String>,
     #[serde(rename = "jsonLd")]
     pub json_ld: Option<serde_json::Value>,
 }
@@ -83,10 +88,7 @@ pub struct RawMedia {
 impl Preview {
     /// A preview from what a script returned, relative to the page at `url`.
     pub fn new(url: &str, title: Option<String>, description: Option<String>, body: Option<String>, extras: Extras) -> Preview {
-        let body = body.map(|body| {
-            let body = truncate(&body, MAX_BODY);
-            ammonia::Builder::default().link_rel(Some("nofollow ugc noopener")).clean(body).to_string()
-        });
+        let body = body.map(|body| vouch_for_none_elsewhere(&ammonia::Builder::default().link_rel(None).clean(truncate(&body, MAX_BODY)).to_string(), url));
         let media = |raw: Option<RawMedia>| {
             let raw = raw?;
             let size = |n: Option<f64>| n.filter(|n| *n >= 1.0 && *n <= 100_000.0).map(|n| n as u32);
@@ -103,6 +105,7 @@ impl Preview {
             description: description.map(|d| clamp(&d, MAX_DESCRIPTION)).filter(|d| !d.is_empty()),
             body: body.map(|body| format!("{body}\n")).unwrap_or_default(),
             image: None,
+            canonical: extras.canonical.and_then(|named| on_site(url, &named)).map(|url| url.to_string()),
             drawn: None,
             kind: extras.kind.map(|k| clamp(&k, 100)).filter(|k| !k.is_empty()),
             large: extras.twitter.as_deref().and_then(|card| match card {
@@ -127,6 +130,37 @@ impl Preview {
 pub fn absolute(page: &str, named: &str) -> Option<String> {
     let url = url::Url::parse(page).ok()?.join(named.trim()).ok()?;
     matches!(url.scheme(), "https" | "http").then(|| url.to_string())
+}
+
+/// `named`, taken relative to the page, if it's on the page's own site.
+fn on_site(page: &str, named: &str) -> Option<url::Url> {
+    let page = url::Url::parse(page).ok()?;
+    let url = page.join(named.trim()).ok()?;
+    (matches!(url.scheme(), "https" | "http") && url.origin() == page.origin()).then_some(url)
+}
+
+/// A sanitized article with `nofollow` on every link that leaves the site.
+/// What an article links to elsewhere is what Nostr's authors wrote, which
+/// the site doesn't vouch for; its links to its own pages are how a crawler
+/// finds them, and a crawler may not follow a `nofollow` one.
+fn vouch_for_none_elsewhere(body: &str, page: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut at = 0;
+    for (start, end, token) in tags(body.to_ascii_lowercase().as_bytes()) {
+        if token != Token::Start(b"a".to_vec()) {
+            continue;
+        }
+        let href = attributes(&body.as_bytes()[start..end], b"a").into_iter().find(|(name, _)| name == "href").map(|(_, href)| href);
+        if href.is_none_or(|href| on_site(page, &href).is_some()) {
+            continue;
+        }
+        // The sanitizer writes every tag out whole, ending in `>`.
+        out.push_str(&body[at..end - 1]);
+        out.push_str(" rel=\"nofollow ugc noopener\"");
+        at = end - 1;
+    }
+    out.push_str(&body[at..]);
+    out
 }
 
 /// Text cut to at most `max` bytes, on a character's boundary.
@@ -155,6 +189,7 @@ mod tests {
             "video": { "url": "/v.mp4", "type": "video/mp4", "width": 720, "height": -1 },
             "audio": { "url": "javascript:alert(1)" },
             "published": 1_600_000_000,
+            "canonical": "https://elsewhere.example/npub1",
             "jsonLd": "not an object",
         }))
         .unwrap();
@@ -168,5 +203,22 @@ mod tests {
         assert_eq!(preview.audio, None);
         assert_eq!(preview.published, Some(1_600_000_000));
         assert_eq!(preview.json_ld, None);
+        assert_eq!(preview.canonical, None);
+    }
+
+    #[test]
+    fn follows_links_on_the_site_only() {
+        let body = r#"<a href="/npub1x" rel="author">a</a><a href="https://site.example/nevent1y">b</a><a href="//elsewhere.example/">c</a><a href="https://x.example" rel="me">d</a><a>e</a>"#;
+        let extras = Extras { canonical: Some("/npub1x".into()), ..Default::default() };
+        let preview = Preview::new("https://site.example/alice@site.example", None, None, Some(body.into()), extras);
+        assert_eq!(
+            preview.body,
+            concat!(
+                r#"<a href="/npub1x">a</a><a href="https://site.example/nevent1y">b</a>"#,
+                r#"<a href="//elsewhere.example/" rel="nofollow ugc noopener">c</a><a href="https://x.example" rel="nofollow ugc noopener">d</a><a>e</a>"#,
+                "\n"
+            )
+        );
+        assert_eq!(preview.canonical.as_deref(), Some("https://site.example/npub1x"));
     }
 }

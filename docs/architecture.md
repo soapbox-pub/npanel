@@ -1157,12 +1157,13 @@ reading its headers.
 |---|---|
 | `title` | `<title>`, `og:title`, `twitter:title` |
 | `description` | `description`, `og:description`, `twitter:description` |
-| `body` | the `<article>` a crawler reads, as markup, cleaned by an HTML sanitizer of anything that runs |
+| `body` | the `<article>` a crawler reads, as markup, cleaned by an HTML sanitizer of anything that runs. Links that leave the site get `rel="nofollow ugc noopener"`; links to the site's own pages are left for a crawler to follow |
 | `image` | `og:image`, `twitter:image`: a URL, taken relative to the page; a PNG, JPEG, GIF or WebP as a `Uint8Array`, `ArrayBuffer` or `Blob`; or a promise of one |
 | `type` | `og:type`, `website` when it's missing |
 | `twitter` | `twitter:card`: `summary` for an image shown small, `summary_large_image` (the default) for one shown large |
 | `video`, `audio` | `og:video`, `og:audio`, from `{ url, type, width, height }` |
 | `published` | `article:published_time`, from seconds or a `Date` |
+| `canonical` | `<link rel="canonical">` and `og:url`: a URL on the same site, taken relative to the page, for a page that is one of several naming the same thing. The page's own URL when it's missing or elsewhere |
 | `jsonLd` | a schema.org object, written so no value can close its script element |
 
 Or `null`, for nothing. npanel writes only what's returned, and never a guess.

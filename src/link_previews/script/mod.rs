@@ -527,7 +527,7 @@ fn read(script: &Script, page: &Page, returned: sandbox::Returned, payload: Byte
     };
     let extras = match returned.extras {
         Some(extras) => serde_json::from_str::<Extras>(&extras)
-            .map_err(|_| "preview() returned a type, twitter, video, audio, published or jsonLd npanel can't read.".to_string())?,
+            .map_err(|_| "preview() returned a type, twitter, video, audio, published, canonical or jsonLd npanel can't read.".to_string())?,
         None => Extras::default(),
     };
     let preview = Returned { title: returned.title, description: returned.description, body: returned.body, image, extras };

@@ -11,7 +11,7 @@ use crate::inject::{attributes, head_end, tags, Token};
 
 /// Where the page is.
 pub struct Page<'a> {
-    /// The page's own URL, which is also its canonical one.
+    /// The page's own URL, which is its canonical one unless the preview names another.
     pub url: &'a str,
     /// The site's origin, `https://example.com`, with no trailing slash.
     pub origin: &'a str,
@@ -120,11 +120,13 @@ fn head(preview: &Preview, page: &Page, site: &Site) -> String {
         (None, image) => (image.as_ref(), true),
     };
 
+    let canonical = preview.canonical.as_deref().unwrap_or(page.url);
+
     let mut out = String::new();
     if let Some(title) = title {
         out.push_str(&format!("<title>{}</title>\n", escape(title)));
     }
-    out.push_str(&format!("<link rel=\"canonical\" href=\"{}\">\n", escape(page.url)));
+    out.push_str(&format!("<link rel=\"canonical\" href=\"{}\">\n", escape(canonical)));
     let mut meta = |attribute: &str, key: &str, value: &str| {
         out.push_str(&format!("<meta {attribute}=\"{key}\" content=\"{}\">\n", escape(value)));
     };
@@ -136,7 +138,7 @@ fn head(preview: &Preview, page: &Page, site: &Site) -> String {
         meta("property", "og:title", title);
         meta("name", "twitter:title", title);
     }
-    meta("property", "og:url", page.url);
+    meta("property", "og:url", canonical);
     if let Some(description) = &preview.description {
         meta("name", "description", description);
         meta("property", "og:description", description);
@@ -241,6 +243,15 @@ mod tests {
         // The article opens the body, and the app's root is left alone.
         assert!(out.contains("<body class=\"x\"><article>"), "{out}");
         assert!(out.contains("<div id=\"root\"></div>"), "{out}");
+    }
+
+    #[test]
+    fn names_the_canonical_copy() {
+        let preview = Preview { canonical: Some("https://ditto.example/npub1abc".into()), ..note() };
+        let out = spliced(DITTO, &preview);
+        assert!(out.contains(r#"<link rel="canonical" href="https://ditto.example/npub1abc">"#), "{out}");
+        assert!(out.contains(r#"<meta property="og:url" content="https://ditto.example/npub1abc">"#), "{out}");
+        assert!(!out.contains("nevent1abc"), "{out}");
     }
 
     #[test]

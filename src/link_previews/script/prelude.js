@@ -1364,6 +1364,7 @@ export default function (native, seed, now) {
         video: result.video ?? null,
         audio: result.audio ?? null,
         published: typeof published === "number" ? published : null,
+        canonical: result.canonical == null ? null : String(result.canonical),
         jsonLd: result.jsonLd ?? null,
       });
       out.headers = [...read];
