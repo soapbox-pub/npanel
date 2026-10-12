@@ -71,6 +71,31 @@ docker compose exec npanel npanel make-admin npub1yourkeyhere
 
 Point DNS at the box first — certificates are issued on the first visit.
 
+## Quick start from a package
+
+Debian and Ubuntu:
+
+```sh
+sudo curl -fsSL -o /etc/apt/sources.list.d/npanel.sources https://pkg.soapbox.pub/deb/soapbox.pub/npanel/source
+sudo apt update
+sudo apt install npanel
+```
+
+Fedora and RHEL:
+
+```sh
+sudo curl -fsSL -o /etc/yum.repos.d/npanel.repo https://pkg.soapbox.pub/rpm/soapbox.pub/npanel/repo
+sudo dnf install npanel
+```
+
+Then set `dashboard_host` and start it:
+
+```sh
+sudo $EDITOR /etc/npanel/npanel.toml
+sudo -u npanel npanel make-admin npub1yourkeyhere
+sudo systemctl enable --now npanel
+```
+
 ## Quick start from a release
 
 Releases are published over Nostr with [ngit](https://ngit.dev): the binaries,
