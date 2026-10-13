@@ -794,6 +794,17 @@ deploy runtime if it dies: building circuits, the directory work Arti does
 whenever a new consensus arrives, and serving the sites' onion traffic all
 happen there, never on the threads serving clearnet visitors.
 
+`tor-netdoc` comes from Soapbox's fork of Arti (`[patch.crates-io]` in
+`Cargo.toml`), on a branch named for the Arti release it patches. Upstream
+compares relay family members in constant time; path selection does that for
+every candidate relay against every member of its family, hundreds for large
+operators, and with a dozen sites the circuits that kept their services up cost
+both of the runtime's threads. The threads starved, circuits timed out, the
+pool of circuits kept ready for onion services grew to replace them, and the
+services were unreachable most of the time. The fork compares plain bytes;
+relay identities are public. Upgrading Arti means rebasing that patch onto the
+new release's tag as a new branch, and pointing `Cargo.toml` at it.
+
 **npanel keeps the keys and Tor keeps nothing.** Arti's keystore is its
 in-memory one, and each service is launched with the key stored in
 `onion_services`. The key is what an address is made of, so storing it is what
