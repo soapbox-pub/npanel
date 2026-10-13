@@ -4,6 +4,17 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [0.6.2]
+
+- Onion addresses stay reachable. Arti, the Tor built into npanel, now comes
+  from Soapbox's fork with two fixes. Choosing a relay compared every member
+  of the network's large relay families in constant time, ~0.4 s of CPU per
+  relay picked; with a dozen sites that kept Tor's threads busy until its
+  connections and circuits timed out, and the onions were unreachable most of
+  the time. And each descriptor upload now waits at least 120 seconds: Arti
+  gave up on slow directory relays after 30 and never published to them, so
+  sites whose descriptors belonged on several of those stayed unreachable.
+
 ## [0.6.1]
 
 - A preview script can name the page's canonical URL with `canonical`, for

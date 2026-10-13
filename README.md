@@ -104,13 +104,13 @@ same as `.deb` and `.rpm` packages that set up the user and the systemd unit
 (see [deployment](docs/deployment.md#from-a-package)).
 
 ```sh
-chmod +x npanel-0.6.1-linux-x86_64
+chmod +x npanel-0.6.2-linux-x86_64
 
 cp npanel.example.toml npanel.toml
 $EDITOR npanel.toml   # set dashboard_host at minimum
 
-./npanel-0.6.1-linux-x86_64 -c npanel.toml make-admin npub1yourkeyhere
-./npanel-0.6.1-linux-x86_64 -c npanel.toml
+./npanel-0.6.2-linux-x86_64 -c npanel.toml make-admin npub1yourkeyhere
+./npanel-0.6.2-linux-x86_64 -c npanel.toml
 ```
 
 To build it instead, the way a release is built (see
