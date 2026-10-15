@@ -1,4 +1,4 @@
-import { Globe, History, Lock, Settings as SettingsIcon, TriangleAlert, Users } from 'lucide-react';
+import { Cable, Globe, History, Lock, Settings as SettingsIcon, TriangleAlert, Users } from 'lucide-react';
 import { type ReactNode, Suspense } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 
@@ -17,6 +17,7 @@ import { HomePage } from '@/pages/HomePage';
 const NAV = [
   { to: '/', label: 'Sites', icon: Globe, adminOnly: false },
   { to: '/users', label: 'Users', icon: Users, adminOnly: true },
+  { to: '/tunnels', label: 'Tunnels', icon: Cable, adminOnly: true },
   { to: '/settings', label: 'Settings', icon: SettingsIcon, adminOnly: true },
   { to: '/audit', label: 'Activity', icon: History, adminOnly: true },
 ];

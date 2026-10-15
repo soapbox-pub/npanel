@@ -17,6 +17,8 @@ const IssuePage = lazy(() => import("@/pages/IssuePage"));
 const NotFound = lazy(() => import("@/pages/NotFound"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 const SettingsSectionPage = lazy(() => import("@/pages/SettingsSectionPage"));
+const TunnelAuthorizePage = lazy(() => import("@/pages/TunnelAuthorizePage"));
+const TunnelsPage = lazy(() => import("@/pages/TunnelsPage"));
 const UsersPage = lazy(() => import("@/pages/UsersPage"));
 
 export function AppRouter() {
@@ -32,6 +34,8 @@ export function AppRouter() {
           <Route path="/hosts/:hostname/errors/:id" element={<IssuePage />} />
           <Route path="/hosts/:hostname/:section" element={<HostSectionPage />} />
           <Route path="/users" element={<UsersPage />} />
+          <Route path="/tunnels" element={<TunnelsPage />} />
+          <Route path="/tunnels/authorize" element={<TunnelAuthorizePage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/settings/:section" element={<SettingsSectionPage />} />
           <Route path="/audit" element={<AuditLogPage />} />

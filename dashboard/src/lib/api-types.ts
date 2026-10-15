@@ -494,3 +494,51 @@ export interface ErrorSummary {
   unresolved: number;
   events_24h: number;
 }
+
+/** One connection a tunnel's agent holds open. */
+export interface TunnelConnection {
+  connected_at: number;
+  /** Where it came from, as far as the server can tell. */
+  remote: string | null;
+  /** The agent's own name for itself, like `npanel/0.7.0`. */
+  agent: string | null;
+}
+
+/** A hostname served by an agent on another machine, through `npanel tunnel`. */
+export interface Tunnel {
+  hostname: string;
+  /** What the agent was called when it was authorized: its machine's name. */
+  name: string;
+  /** The agent's key. */
+  pubkey: string;
+  /** What the agent says it forwards to. Settled on its machine, not here. */
+  target: string;
+  enabled: boolean;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+  /** When an agent last connected, or null if one never has. */
+  connected_at: number | null;
+  connections: TunnelConnection[];
+  /** Present only when npanel gets certificates itself. */
+  certificates?: CertificateStatus[] | null;
+}
+
+/** An agent waiting for an admin to authorize it. */
+export interface TunnelRequest {
+  /** What the agent shows, for the admin to check against. */
+  code: string;
+  pubkey: string;
+  name: string;
+  target: string;
+  remote: string | null;
+  created_at: number;
+  expires_at: number;
+}
+
+/** The parts of a tunnel an admin can change. */
+export interface TunnelPatch {
+  hostname?: string;
+  name?: string;
+  enabled?: boolean;
+}

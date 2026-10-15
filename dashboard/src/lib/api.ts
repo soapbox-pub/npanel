@@ -29,6 +29,9 @@ import type {
   SiteStorage,
   Sparkline,
   Storage,
+  Tunnel,
+  TunnelPatch,
+  TunnelRequest,
 } from './api-types.ts';
 import type { StatsQueryBody, StatsResponse } from './analytics/query.ts';
 
@@ -287,6 +290,31 @@ export class ApiClient {
 
   auditLog(limit = 100): Promise<{ entries: AuditEntry[] }> {
     return this.request('GET', `/api/audit-log?limit=${limit}`);
+  }
+
+  /** Every tunnel, and every agent waiting to become one. */
+  tunnels(): Promise<{ tunnels: Tunnel[]; requests: TunnelRequest[] }> {
+    return this.request('GET', '/api/tunnels');
+  }
+
+  tunnelRequest(code: string): Promise<{ request: TunnelRequest }> {
+    return this.request('GET', `/api/tunnels/requests/${path(code)}`);
+  }
+
+  approveTunnel(code: string, hostname: string): Promise<{ tunnel: Tunnel }> {
+    return this.request('POST', `/api/tunnels/requests/${path(code)}`, { hostname });
+  }
+
+  denyTunnel(code: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/tunnels/requests/${path(code)}`);
+  }
+
+  updateTunnel(hostname: string, patch: TunnelPatch): Promise<{ tunnel: Tunnel }> {
+    return this.request('PATCH', `/api/tunnels/${path(hostname)}`, patch);
+  }
+
+  deleteTunnel(hostname: string): Promise<{ ok: true }> {
+    return this.request('DELETE', `/api/tunnels/${path(hostname)}`);
   }
 }
 

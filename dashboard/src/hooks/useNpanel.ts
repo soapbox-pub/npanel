@@ -4,7 +4,7 @@ import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useServer } from '@/hooks/useServer';
 import { fetchInstance, fetchSites } from '@/lib/api';
-import type { HostPatch, Settings } from '@/lib/api-types';
+import type { HostPatch, Settings, TunnelPatch } from '@/lib/api-types';
 
 /** Poll while a deploy could be in progress, so progress bars actually move. */
 const LIVE_INTERVAL = 5000;
@@ -224,6 +224,32 @@ export function useAuditLog(enabled = true) {
   });
 }
 
+/** Every tunnel and every agent waiting to be one. Admins only. */
+export function useTunnels(enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('tunnels'),
+    queryFn: () => api!.tunnels(),
+    enabled: !!api && enabled,
+    // Agents connect, drop, and ask to be let in without the dashboard
+    // causing any of it.
+    refetchInterval: LIVE_INTERVAL,
+  });
+}
+
+/** The agent showing `code`, waiting to be authorized. */
+export function useTunnelRequest(code: string | undefined, enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('tunnel-request', code ?? ''),
+    queryFn: async () => (await api!.tunnelRequest(code!)).request,
+    enabled: !!api && !!code && enabled,
+    retry: false,
+  });
+}
+
 /** Invalidate every npanel query after a change. */
 function useInvalidate() {
   const queryClient = useQueryClient();
@@ -384,6 +410,47 @@ export function useClearLinkPreviews() {
 
   return useMutation({
     mutationFn: () => api!.clearLinkPreviews(),
+    onSuccess: invalidate,
+  });
+}
+
+export function useApproveTunnel() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: { code: string; hostname: string }) => api!.approveTunnel(input.code, input.hostname),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDenyTunnel() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (code: string) => api!.denyTunnel(code),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateTunnel() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    // As with hosts, `hostname` names the tunnel and the patch may rename it.
+    mutationFn: (input: { hostname: string; patch: TunnelPatch }) => api!.updateTunnel(input.hostname, input.patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteTunnel() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (hostname: string) => api!.deleteTunnel(hostname),
     onSuccess: invalidate,
   });
 }
