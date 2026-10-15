@@ -12,10 +12,10 @@ use axum::body::Body;
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use hyper_util::server::graceful::{GracefulShutdown, Watcher};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::{task_tracker::TaskTrackerToken, TaskTracker};
 
 use crate::fields;
 use crate::log::Logger;
@@ -78,11 +78,18 @@ pub async fn accept(listener: &TcpListener, shutdown: &CancellationToken, log: L
 
 /// Open HTTP connections, wherever they came from: a TCP listener, a TLS
 /// handshake, or a Tor stream that never touches a socket.
-pub struct Connections(GracefulShutdown);
+///
+/// Its own rather than hyper-util's `GracefulShutdown`, which can't watch an
+/// HTTP/1.1 connection that may be upgraded — and every one may be, since a
+/// tunnel carries WebSockets and its agent arrives by an upgrade itself.
+pub struct Connections {
+    shutdown: CancellationToken,
+    open: TaskTracker,
+}
 
 impl Connections {
     pub fn new() -> Connections {
-        Connections(GracefulShutdown::new())
+        Connections { shutdown: CancellationToken::new(), open: TaskTracker::new() }
     }
 
     /// Serve HTTP/1.1 on `io`, in a task of its own.
@@ -92,7 +99,7 @@ impl Connections {
         H: Fn(Request<Body>) -> F + Send + 'static,
         F: Future<Output = Response<Body>> + Send + 'static,
     {
-        tokio::spawn(http1(self.0.watcher(), io, handler));
+        tokio::spawn(http1(self.watcher(), io, handler));
     }
 
     /// Serve HTTP/1.1 on a TCP connection, which sends a large blob's body
@@ -102,19 +109,41 @@ impl Connections {
         H: Fn(Request<Body>) -> F + Send + 'static,
         F: Future<Output = Response<Body>> + Send + 'static,
     {
-        tokio::spawn(serve_http1(self.0.watcher(), TcpIo { stream: TokioIo::new(stream), corked: false }, handler));
+        tokio::spawn(serve_http1(self.watcher(), TcpIo { stream: TokioIo::new(stream), corked: false }, handler));
     }
 
     /// A claim on a connection that is still being set up — a TLS handshake —
     /// so that draining waits for it too.
     pub fn watcher(&self) -> Watcher {
-        self.0.watcher()
+        Watcher { shutdown: self.shutdown.clone(), _open: self.open.token() }
     }
 
-    /// Ask every connection to finish, and give them a moment to.
+    /// Ask every connection to finish, and give them a moment to. A
+    /// connection that was upgraded is no longer HTTP and isn't waited for.
     pub async fn drain(self, log: Logger) {
-        if tokio::time::timeout(DRAIN_TIMEOUT, self.0.shutdown()).await.is_err() {
+        self.shutdown.cancel();
+        self.open.close();
+        if tokio::time::timeout(DRAIN_TIMEOUT, self.open.wait()).await.is_err() {
             log.warn("drain_timed_out", fields! {});
+        }
+    }
+}
+
+/// One connection's claim on [`Connections`]: draining waits for it to be
+/// dropped, and tells it when to finish.
+pub struct Watcher {
+    shutdown: CancellationToken,
+    _open: TaskTrackerToken,
+}
+
+impl Watcher {
+    /// Run `connection` until it ends by itself, which is `false`, or until
+    /// shutdown asks it to finish, which is `true`: the caller then asks it
+    /// to wind down gracefully and waits for it to.
+    async fn until_shutdown<F: Future + Unpin>(&self, connection: &mut F) -> bool {
+        tokio::select! {
+            _ = connection => false,
+            _ = self.shutdown.cancelled() => true,
         }
     }
 }
@@ -139,9 +168,14 @@ where
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_TIMEOUT)
         .keep_alive(true)
-        .serve_connection(io, service(handler));
+        .serve_connection(io, service(handler))
+        .with_upgrades();
+    let mut connection = std::pin::pin!(connection);
     // Clients hang up mid-response all the time; that is not news.
-    let _ = watcher.watch(connection).await;
+    if watcher.until_shutdown(&mut connection).await {
+        connection.as_mut().graceful_shutdown();
+        let _ = connection.await;
+    }
 }
 
 /// A TCP connection for hyper, which sends a large blob with sendfile(2):
@@ -299,7 +333,11 @@ where
         .keep_alive_interval(H2_KEEP_ALIVE)
         .keep_alive_timeout(H2_KEEP_ALIVE)
         .serve_connection(TokioIo::new(io), service(handler));
-    let _ = watcher.watch(connection).await;
+    let mut connection = std::pin::pin!(connection);
+    if watcher.until_shutdown(&mut connection).await {
+        connection.as_mut().graceful_shutdown();
+        let _ = connection.await;
+    }
 }
 
 fn service<H, F>(

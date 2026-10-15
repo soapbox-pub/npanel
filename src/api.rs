@@ -1,9 +1,11 @@
 //! The dashboard's JSON API, served only on `dashboard_host`.
 //!
-//! Every route except `/api/instance` and `/api/sites` requires NIP-98 auth
-//! from a pubkey that exists in the `users` table. The dashboard is a client
-//! of this API and uses nothing private, so anything the UI can do, a script
-//! can do.
+//! Every route except `/api/instance`, `/api/sites` and the agent's requires
+//! NIP-98 auth from a pubkey that exists in the `users` table. The agent's —
+//! `/api/agent` and under it, where a tunnel agent asks to be authorized and
+//! connects — are NIP-98-signed too, by the agent's own key. The dashboard is
+//! a client of this API and uses nothing private, so anything the UI can do,
+//! a script can do.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +17,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, patch, post, put};
 use axum::{Extension, Router};
 use http::request::Parts;
-use http::{header, HeaderValue, Method, Response, StatusCode};
+use http::{header, HeaderMap, HeaderValue, Method, Response, StatusCode, Uri};
 use http_body_util::BodyExt;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
@@ -24,9 +26,10 @@ use serde_json::{json, Map, Value};
 
 use crate::analytics::query::engine::QueryHost;
 use crate::analytics::{Analytics, Answer};
+use crate::app::ClientAddress;
 use crate::auth::verify_nip98;
 use crate::builds::current_build;
-use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, HOST_COLUMNS, SITE_EVENT_COLUMNS};
+use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, Tunnel, HOST_COLUMNS, SITE_EVENT_COLUMNS, TUNNEL_COLUMNS};
 use crate::deploy::Deployments;
 use crate::dns::DnsTargets;
 use crate::errors::queries::STATUSES;
@@ -50,6 +53,8 @@ use crate::site_preview::{SitePreview, SitePreviews};
 use crate::sites::{find_host, host_by_id, load_host, newest_event, site_event, site_key};
 use crate::tls::{CertificateStatus, TlsService};
 use crate::tor::TorService;
+use crate::tunnel::gateway::{Pending, Tunnels, Waiting};
+use crate::tunnel::{AGENT_PATH, CONNECT_PATH, REQUEST_PATH, TARGET_HEADER};
 
 /// Largest request body the API accepts. Bodies are read before the caller is
 /// known — NIP-98 hashes the payload — so anyone able to sign an event could
@@ -79,6 +84,7 @@ pub struct ApiDeps {
     pub scripts: Arc<Scripts>,
     pub serve_cache: Arc<ServeCache>,
     pub last_prune: LastPrune,
+    pub tunnels: Arc<Tunnels>,
     pub dashboard_host: String,
 }
 
@@ -92,6 +98,8 @@ type ApiResult = Result<Reply, ApiError>;
 #[derive(Debug)]
 pub enum ApiError {
     BadRequest(String),
+    /// A signature that doesn't check out.
+    Unauthorized(String),
     Forbidden(&'static str),
     NotFound(String),
     Conflict(String),
@@ -118,9 +126,10 @@ struct Failure(Arc<anyhow::Error>);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Reply {
         let (status, message) = match &self {
-            ApiError::BadRequest(message) | ApiError::NotFound(message) | ApiError::Conflict(message) => {
+            ApiError::BadRequest(message) | ApiError::Unauthorized(message) | ApiError::NotFound(message) | ApiError::Conflict(message) => {
                 let status = match self {
                     ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+                    ApiError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
                     ApiError::NotFound(_) => StatusCode::NOT_FOUND,
                     _ => StatusCode::CONFLICT,
                 };
@@ -202,7 +211,12 @@ impl RawBody {
 
 /// Everything the API answers, with its middleware.
 pub fn router(deps: Deps) -> Router {
-    let public = Router::new().route("/api/instance", get(instance)).route("/api/sites", get(sites));
+    let public = Router::new()
+        .route("/api/instance", get(instance))
+        .route("/api/sites", get(sites))
+        .route(AGENT_PATH, get(agent_status))
+        .route(REQUEST_PATH, post(agent_request))
+        .route(CONNECT_PATH, get(agent_connect));
 
     let private = Router::new()
         .route("/api/me", get(me))
@@ -235,6 +249,9 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/storage", get(storage))
         .route("/api/link-previews", get(link_previews_status).delete(clear_link_previews))
         .route("/api/link-previews/refresh", post(refresh_link_preview))
+        .route("/api/tunnels", get(list_tunnels))
+        .route("/api/tunnels/requests/{code}", get(get_tunnel_request).post(approve_tunnel).delete(deny_tunnel))
+        .route("/api/tunnels/{hostname}", patch(update_tunnel).delete(delete_tunnel))
         .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
@@ -434,11 +451,13 @@ fn audit(conn: &Connection, actor: &str, action: &str, target: Option<&str>, old
     Ok(())
 }
 
-/// Whether a write failed on a `UNIQUE` constraint: two requests racing to
+/// Whether a write failed on a `UNIQUE` constraint, or on the triggers that
+/// make hostnames unique across hosts and tunnels: two requests racing to
 /// claim one name, where the loser should hear it is taken rather than that
 /// something broke.
 fn is_unique_violation(error: &rusqlite::Error) -> bool {
-    matches!(error, rusqlite::Error::SqliteFailure(e, _) if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
+    matches!(error, rusqlite::Error::SqliteFailure(e, _)
+        if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE || e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER)
 }
 
 fn version_json(row: &SiteEvent) -> Value {
@@ -1762,4 +1781,362 @@ fn preview_json(preview: &Preview) -> Value {
         "published": preview.published,
         "article": !preview.body.is_empty(),
     })
+}
+
+/// What an agent answering a stale or unknown code is told.
+const CODE_EXPIRED: &str = "That code has expired, or was already answered. Run npanel tunnel again for a new one.";
+
+/// The agent a request is signed by. Its key is proved the way a user's
+/// is, but there is no row in `users` to look for: a tunnel is its row.
+fn agent_key(headers: &HeaderMap, method: &Method, uri: &Uri, body: &RawBody, dashboard_host: &str) -> Result<String, ApiError> {
+    let path_and_query = uri.path_and_query().map_or(uri.path(), |pq| pq.as_str());
+    let header = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
+    match verify_nip98(header, method.as_str(), path_and_query, &body.0, dashboard_host, crate::util::now()) {
+        Ok(event) => Ok(event.pubkey),
+        Err(error) => Err(ApiError::Unauthorized(error.0)),
+    }
+}
+
+fn tunnel_where(conn: &Connection, column: &str, value: &str) -> rusqlite::Result<Option<Tunnel>> {
+    conn.prepare_cached(&format!("SELECT {TUNNEL_COLUMNS} FROM tunnels WHERE {column} = ?"))?.query_row([value], Tunnel::from_row).optional()
+}
+
+/// A name or target as an agent gave it: trimmed, and short enough to show.
+fn agent_label(value: &str, max: usize) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty() && value.chars().count() <= max && !value.chars().any(char::is_control)).then(|| value.to_string())
+}
+
+fn pending_status(deps: &Deps, pending: &Pending) -> Value {
+    json!({
+        "status": "pending",
+        "code": pending.code,
+        "url": format!("https://{}/tunnels/authorize?code={}", deps.dashboard_host, pending.code),
+        "expires_at": pending.expires_at,
+    })
+}
+
+/// Where the agent signing the request stands: a tunnel, waiting for an
+/// admin, refused, or unknown.
+async fn agent_status(State(deps): State<Deps>, method: Method, uri: Uri, headers: HeaderMap, Extension(body): Extension<RawBody>) -> ApiResult {
+    let pubkey = agent_key(&headers, &method, &uri, &body, &deps.dashboard_host)?;
+    let key = pubkey.clone();
+    if let Some(tunnel) = deps.db.call(move |conn| Ok(tunnel_where(conn, "pubkey", &key)?)).await? {
+        return ok(json!({ "status": "authorized", "hostname": tunnel.hostname, "enabled": tunnel.enabled }));
+    }
+    ok(match deps.tunnels.waiting(&pubkey) {
+        Some(Waiting::Pending(pending)) => pending_status(&deps, &pending),
+        Some(Waiting::Denied) => json!({ "status": "denied" }),
+        None => json!({ "status": "unknown" }),
+    })
+}
+
+/// An agent asking to be authorized, which gets a code to show.
+async fn agent_request(
+    State(deps): State<Deps>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    Extension(client): Extension<ClientAddress>,
+    Extension(body): Extension<RawBody>,
+) -> ApiResult {
+    #[derive(Deserialize)]
+    struct Ask {
+        name: String,
+        target: String,
+    }
+
+    let pubkey = agent_key(&headers, &method, &uri, &body, &deps.dashboard_host)?;
+    let Ask { name, target } = body.json("Expected a JSON body with name and target.")?;
+    let name = agent_label(&name, 64).ok_or_else(|| bad("Give the agent a name of up to 64 characters."))?;
+    let target = agent_label(&target, 200).ok_or_else(|| bad("Give the target as an address of up to 200 characters."))?;
+
+    let key = pubkey.clone();
+    if let Some(tunnel) = deps.db.call(move |conn| Ok(tunnel_where(conn, "pubkey", &key)?)).await? {
+        return ok(json!({ "status": "authorized", "hostname": tunnel.hostname, "enabled": tunnel.enabled }));
+    }
+    let pending = deps.tunnels.request(&pubkey, name, target, client.0);
+    deps.log.info("tunnel_requested", fields! { "code" => pending.code.as_str(), "name" => pending.name.as_str(), "remote" => pending.remote.clone() });
+    ok(pending_status(&deps, &pending))
+}
+
+/// An authorized agent connecting, which turns the connection into a tunnel.
+async fn agent_connect(State(deps): State<Deps>, Extension(client): Extension<ClientAddress>, Extension(body): Extension<RawBody>, request: Request) -> ApiResult {
+    let pubkey = agent_key(request.headers(), request.method(), request.uri(), &body, &deps.dashboard_host)?;
+    let target = request.headers().get(TARGET_HEADER).and_then(|v| v.to_str().ok()).and_then(|v| agent_label(v, 200));
+
+    let tunnel = deps
+        .db
+        .call(move |conn| {
+            let Some(tunnel) = tunnel_where(conn, "pubkey", &pubkey)? else { return Ok(None) };
+            if tunnel.enabled {
+                conn.execute(
+                    "UPDATE tunnels SET connected_at = ?, target = COALESCE(?, target) WHERE id = ?",
+                    params![crate::util::now(), target, tunnel.id],
+                )?;
+            }
+            Ok(Some(tunnel))
+        })
+        .await?;
+    let Some(tunnel) = tunnel else {
+        return Err(ApiError::NotFound("This tunnel was removed from the server. Run npanel tunnel again to ask for access anew.".into()));
+    };
+    if !tunnel.enabled {
+        return Err(ApiError::Forbidden("This tunnel is turned off in the dashboard."));
+    }
+    Ok(deps.tunnels.accept(&tunnel, request, client.0))
+}
+
+/// A tunnel as the API shows it, with the connections it has open.
+fn tunnel_json(deps: &Deps, tunnel: &Tunnel, certificates: Option<Vec<CertificateStatus>>) -> Value {
+    json!({
+        "hostname": tunnel.hostname,
+        "name": tunnel.name,
+        "pubkey": tunnel.pubkey,
+        "target": tunnel.target,
+        "enabled": tunnel.enabled,
+        "created_by": tunnel.created_by,
+        "created_at": tunnel.created_at,
+        "updated_at": tunnel.updated_at,
+        "connected_at": tunnel.connected_at,
+        "connections": deps.tunnels.connections(tunnel.id),
+        "certificates": certificates,
+    })
+}
+
+async fn serialize_tunnel(deps: &Deps, tunnel: Tunnel) -> anyhow::Result<Value> {
+    let certificates = match deps.tls.clone() {
+        Some(tls) => {
+            let t = tunnel.clone();
+            Some(deps.db.call(move |conn| Ok(tls.tunnel_certificates(conn, &t)?)).await?)
+        }
+        None => None,
+    };
+    Ok(tunnel_json(deps, &tunnel, certificates))
+}
+
+/// The fields of a tunnel the audit log records.
+fn tunnel_summary(tunnel: &Tunnel) -> Map<String, Value> {
+    let mut summary = Map::new();
+    for (key, value) in [
+        ("hostname", json!(tunnel.hostname)),
+        ("name", json!(tunnel.name)),
+        ("pubkey", json!(tunnel.pubkey)),
+        ("enabled", json!(i64::from(tunnel.enabled))),
+    ] {
+        summary.insert(key.into(), value);
+    }
+    summary
+}
+
+/// Tell everything that serves a tunnel's hostname that the tunnels changed.
+async fn tunnels_changed(deps: &Deps) -> Result<(), ApiError> {
+    deps.tunnels.reconcile().await?;
+    if let Some(tls) = &deps.tls {
+        tls.hosts_changed();
+    }
+    Ok(())
+}
+
+async fn list_tunnels(State(deps): State<Deps>, _: Admin) -> ApiResult {
+    let tls = deps.tls.clone();
+    let tunnels = deps
+        .db
+        .call(move |conn| {
+            let tunnels: Vec<Tunnel> = conn
+                .prepare_cached(&format!("SELECT {TUNNEL_COLUMNS} FROM tunnels ORDER BY hostname"))?
+                .query_map([], Tunnel::from_row)?
+                .collect::<rusqlite::Result<_>>()?;
+            tunnels
+                .into_iter()
+                .map(|tunnel| {
+                    let certificates = tls.as_ref().map(|tls| tls.tunnel_certificates(conn, &tunnel)).transpose()?;
+                    Ok((tunnel, certificates))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .await?;
+    let list: Vec<Value> = tunnels.into_iter().map(|(tunnel, certificates)| tunnel_json(&deps, &tunnel, certificates)).collect();
+    ok(json!({ "tunnels": list, "requests": deps.tunnels.pending() }))
+}
+
+async fn get_tunnel_request(State(deps): State<Deps>, _: Admin, Path(code): Path<String>) -> ApiResult {
+    match deps.tunnels.find(&code) {
+        Some(pending) => ok(json!({ "request": pending })),
+        None => Err(ApiError::NotFound(CODE_EXPIRED.into())),
+    }
+}
+
+/// Authorize a waiting agent, giving it a hostname no site or tunnel has.
+async fn approve_tunnel(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>, Path(code): Path<String>) -> ApiResult {
+    #[derive(Deserialize)]
+    struct Approval {
+        hostname: String,
+    }
+    enum Outcome {
+        Created(Tunnel),
+        Taken,
+        AlreadyAuthorized,
+    }
+
+    let Approval { hostname } = body.json("Expected a JSON body with a hostname.")?;
+    let hostname = parse_hostname(&hostname, &deps.settings.get().allowed_host_suffixes).map_err(bad)?;
+    if hostname == deps.dashboard_host {
+        return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
+    }
+    let Some(pending) = deps.tunnels.find(&code) else {
+        return Err(ApiError::NotFound(CODE_EXPIRED.into()));
+    };
+
+    let (p, name, actor) = (pending.clone(), hostname.clone(), user.pubkey.clone());
+    let outcome = deps
+        .db
+        .call(move |conn| {
+            let now = crate::util::now();
+            let tx = conn.transaction()?;
+            if tunnel_where(&tx, "pubkey", &p.pubkey)?.is_some() {
+                return Ok(Outcome::AlreadyAuthorized);
+            }
+            let inserted = tx.execute(
+                "INSERT INTO tunnels (hostname, pubkey, name, target, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+                params![name, p.pubkey, p.name, p.target, actor, now, now],
+            );
+            match inserted {
+                Err(error) if is_unique_violation(&error) => return Ok(Outcome::Taken),
+                inserted => inserted?,
+            };
+            let tunnel = tunnel_where(&tx, "hostname", &name)?.expect("the row just inserted");
+            audit(&tx, &actor, "tunnel.create", Some(&name), None, Some(&Value::Object(tunnel_summary(&tunnel))))?;
+            tx.commit()?;
+            Ok(Outcome::Created(tunnel))
+        })
+        .await?;
+
+    let tunnel = match outcome {
+        Outcome::Created(tunnel) => tunnel,
+        Outcome::Taken => return Err(ApiError::Conflict(format!("{hostname} is already configured."))),
+        Outcome::AlreadyAuthorized => {
+            deps.tunnels.resolve(&pending.pubkey);
+            return Err(ApiError::Conflict("This agent already has a tunnel.".into()));
+        }
+    };
+    deps.tunnels.resolve(&pending.pubkey);
+    deps.log.info("tunnel_created", fields! { "hostname" => hostname.as_str(), "name" => tunnel.name.as_str(), "actor" => user.pubkey.as_str() });
+    tunnels_changed(&deps).await?;
+
+    Ok(json_reply(StatusCode::CREATED, json!({ "tunnel": serialize_tunnel(&deps, tunnel).await? })))
+}
+
+/// Refuse a waiting agent, which hears so the next time it asks.
+async fn deny_tunnel(State(deps): State<Deps>, Admin(user): Admin, Path(code): Path<String>) -> ApiResult {
+    let Some(pending) = deps.tunnels.deny(&code) else {
+        return Err(ApiError::NotFound(CODE_EXPIRED.into()));
+    };
+    let actor = user.pubkey.clone();
+    deps.db
+        .call(move |conn| {
+            let refused = json!({ "name": pending.name, "pubkey": pending.pubkey, "target": pending.target });
+            audit(conn, &actor, "tunnel.deny", Some(&pending.name), None, Some(&refused))?;
+            Ok(())
+        })
+        .await?;
+    ok(json!({ "ok": true }))
+}
+
+async fn find_tunnel(deps: &Deps, hostname: String) -> Result<Tunnel, ApiError> {
+    let tunnel = deps.db.call(move |conn| Ok(tunnel_where(conn, "hostname", &hostname)?)).await?;
+    tunnel.ok_or_else(|| ApiError::NotFound("Tunnel not found.".into()))
+}
+
+async fn update_tunnel(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>, Path(hostname): Path<String>) -> ApiResult {
+    use rusqlite::types::Value as Sql;
+
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct TunnelPatch {
+        hostname: Option<String>,
+        name: Option<String>,
+        enabled: Option<bool>,
+    }
+
+    let tunnel = find_tunnel(&deps, hostname).await?;
+    let request: TunnelPatch = body.json("Expected a JSON body.")?;
+
+    let mut patch: Vec<Change> = Vec::new();
+    let mut renamed = None;
+    if let Some(new_hostname) = &request.hostname {
+        let parsed = parse_hostname(new_hostname, &deps.settings.get().allowed_host_suffixes).map_err(bad)?;
+        if parsed == deps.dashboard_host {
+            return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
+        }
+        if parsed != tunnel.hostname {
+            patch.push(("hostname", Sql::Text(parsed.clone())));
+            renamed = Some(parsed);
+        }
+    }
+    if let Some(name) = &request.name {
+        let name = agent_label(name, 64).ok_or_else(|| bad("Give the tunnel a name of up to 64 characters."))?;
+        patch.push(("name", Sql::Text(name)));
+    }
+    if let Some(enabled) = request.enabled {
+        patch.push(("enabled", Sql::Integer(i64::from(enabled))));
+    }
+    if patch.is_empty() {
+        return ok(json!({ "tunnel": serialize_tunnel(&deps, tunnel).await? }));
+    }
+
+    let summary = tunnel_summary(&tunnel);
+    let mut after = summary.clone();
+    for (column, value) in &patch {
+        let value = match value {
+            Sql::Text(text) => json!(text),
+            Sql::Integer(number) => json!(number),
+            _ => Value::Null,
+        };
+        after.insert(column.to_string(), value);
+    }
+
+    let (t, p, actor) = (tunnel.clone(), patch.clone(), user.pubkey.clone());
+    let updated = deps
+        .db
+        .call(move |conn| {
+            let tx = conn.transaction()?;
+            for (column, value) in &p {
+                match tx.execute(&format!("UPDATE tunnels SET {column} = ? WHERE id = ?"), params![value, t.id]) {
+                    Err(error) if is_unique_violation(&error) => return Ok(None),
+                    result => result?,
+                };
+            }
+            tx.execute("UPDATE tunnels SET updated_at = ? WHERE id = ?", params![crate::util::now(), t.id])?;
+            audit(&tx, &actor, "tunnel.update", Some(&t.hostname), Some(&Value::Object(summary)), Some(&Value::Object(after)))?;
+            let updated = tunnel_where(&tx, "id", &t.id.to_string())?.expect("the row just updated");
+            tx.commit()?;
+            Ok(Some(updated))
+        })
+        .await?;
+    let Some(updated) = updated else {
+        return Err(ApiError::Conflict(format!("{} is already configured.", renamed.unwrap_or_default())));
+    };
+
+    deps.log.info("tunnel_updated", fields! { "hostname" => tunnel.hostname.as_str(), "actor" => user.pubkey.as_str() });
+    tunnels_changed(&deps).await?;
+    ok(json!({ "tunnel": serialize_tunnel(&deps, updated).await? }))
+}
+
+/// Revoke a tunnel: its agent's key lets it in nowhere, and its open
+/// connections are dropped.
+async fn delete_tunnel(State(deps): State<Deps>, Admin(user): Admin, Path(hostname): Path<String>) -> ApiResult {
+    let tunnel = find_tunnel(&deps, hostname).await?;
+    let (t, actor) = (tunnel.clone(), user.pubkey.clone());
+    deps.db
+        .call(move |conn| {
+            conn.execute("DELETE FROM tunnels WHERE id = ?", [t.id])?;
+            audit(conn, &actor, "tunnel.delete", Some(&t.hostname), Some(&Value::Object(tunnel_summary(&t))), None)?;
+            Ok(())
+        })
+        .await?;
+
+    deps.log.info("tunnel_deleted", fields! { "hostname" => tunnel.hostname.as_str(), "actor" => user.pubkey.as_str() });
+    tunnels_changed(&deps).await?;
+    ok(json!({ "ok": true }))
 }

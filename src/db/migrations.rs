@@ -346,4 +346,35 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
             r#"ALTER TABLE hosts ADD COLUMN analytics_script INTEGER NOT NULL DEFAULT 1"#,
         ],
     ),
+    (
+        "026_tunnels",
+        &[
+            r#"CREATE TABLE tunnels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hostname TEXT NOT NULL UNIQUE,
+        pubkey TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        target TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        connected_at INTEGER
+      )"#,
+            // One namespace for hostnames across both tables, kept by the
+            // database rather than by every writer remembering to check.
+            r#"CREATE TRIGGER hosts_hostname_not_tunnel BEFORE INSERT ON hosts
+        WHEN EXISTS (SELECT 1 FROM tunnels WHERE hostname = NEW.hostname)
+        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a tunnel'); END"#,
+            r#"CREATE TRIGGER hosts_rename_not_tunnel BEFORE UPDATE OF hostname ON hosts
+        WHEN EXISTS (SELECT 1 FROM tunnels WHERE hostname = NEW.hostname)
+        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a tunnel'); END"#,
+            r#"CREATE TRIGGER tunnels_hostname_not_host BEFORE INSERT ON tunnels
+        WHEN EXISTS (SELECT 1 FROM hosts WHERE hostname = NEW.hostname)
+        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site'); END"#,
+            r#"CREATE TRIGGER tunnels_rename_not_host BEFORE UPDATE OF hostname ON tunnels
+        WHEN EXISTS (SELECT 1 FROM hosts WHERE hostname = NEW.hostname)
+        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site'); END"#,
+        ],
+    ),
 ];

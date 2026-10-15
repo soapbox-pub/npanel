@@ -92,8 +92,13 @@ impl Environment {
 
     /// The files looked for when `--config` names none, in the order tried.
     pub fn config_candidates(&self) -> Vec<PathBuf> {
+        self.user_config_dir().map(|dir| dir.join("npanel.toml")).into_iter().chain([PathBuf::from(SYSTEM_PATH)]).collect()
+    }
+
+    /// `$XDG_CONFIG_HOME/npanel`, or `~/.config/npanel`.
+    pub fn user_config_dir(&self) -> Option<PathBuf> {
         let user = self.xdg_config_home.clone().or_else(|| self.home.as_ref().map(|home| home.join(".config")));
-        user.map(|dir| dir.join("npanel/npanel.toml")).into_iter().chain([PathBuf::from(SYSTEM_PATH)]).collect()
+        user.map(|dir| dir.join("npanel"))
     }
 
     fn default_data_dir(&self) -> Result<PathBuf> {

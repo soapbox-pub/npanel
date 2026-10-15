@@ -1,5 +1,6 @@
 //! The whole public HTTP surface, routed by `Host`: the dashboard hostname
-//! serves the API and the dashboard SPA, every other hostname serves an nsite.
+//! serves the API and the dashboard SPA, a tunnel's hostname is passed to its
+//! agent, and every other hostname serves an nsite.
 //!
 //! Nothing here is exempt from that rule. Certificate authorization for the
 //! proxy needs to answer requests that carry no hostname to route on, so it
@@ -16,13 +17,21 @@ use crate::analytics::Peer;
 use crate::dashboard::Dashboard;
 use crate::hostname::request_hostname;
 use crate::serve::{RequestOrigin, SiteServer};
+use crate::tunnel::gateway::Tunnels;
 
 pub struct App {
     pub dashboard_host: String,
     pub site: Arc<SiteServer>,
+    pub tunnels: Arc<Tunnels>,
     pub dashboard: Dashboard,
     pub api: axum::Router,
 }
+
+/// Who an API request came from, as far as npanel can tell: the address that
+/// connected, or behind a proxy, the first one its `X-Forwarded-For` names.
+/// Shown to admins about agents, and believed for nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientAddress(pub Option<IpAddr>);
 
 /// How a request reached npanel, which decides which of its headers may be
 /// believed.
@@ -37,7 +46,7 @@ pub enum Via {
 }
 
 impl App {
-    pub async fn handle(&self, request: Request<Body>, via: Via) -> Response<Body> {
+    pub async fn handle(&self, mut request: Request<Body>, via: Via) -> Response<Body> {
         let hostname = request_host(&request);
 
         if hostname != self.dashboard_host {
@@ -45,8 +54,27 @@ impl App {
                 Via::Proxy(proxy) => (request_scheme(request.headers()), Peer::Proxy(proxy)),
                 Via::Tls(visitor) => ("https", Peer::Visitor(visitor)),
             };
-            return self.site.serve(request, RequestOrigin { hostname, scheme }, peer).await;
+            let origin = RequestOrigin { hostname, scheme };
+            if let Some(tunnel) = self.tunnels.route(&origin.hostname) {
+                let visitor = match via {
+                    Via::Proxy(_) => None,
+                    Via::Tls(visitor) => Some(visitor),
+                };
+                return self.tunnels.proxy(tunnel, request, &origin, visitor).await;
+            }
+            return self.site.serve(request, origin, peer).await;
         }
+
+        let client = match via {
+            Via::Proxy(_) => request
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .and_then(|v| v.trim().parse().ok()),
+            Via::Tls(visitor) => Some(visitor),
+        };
+        request.extensions_mut().insert(ClientAddress(client));
 
         let path = request.uri().path();
         let mut response = if path == "/api" || path.starts_with("/api/") {

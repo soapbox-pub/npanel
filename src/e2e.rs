@@ -119,7 +119,7 @@ async fn blossom(blobs: HashMap<String, Vec<u8>>) -> String {
 }
 
 struct Gateway {
-    app: App,
+    app: Arc<App>,
     db: Db,
     deployer: Deployer,
     analytics: Arc<Analytics>,
@@ -225,6 +225,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     })
     .unwrap();
 
+    let tunnels = Arc::new(crate::tunnel::gateway::Tunnels::new(db.clone(), log).unwrap());
     let api = crate::api::router(Arc::new(crate::api::ApiDeps {
         db: db.clone(),
         settings: settings.clone(),
@@ -241,14 +242,16 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         scripts,
         serve_cache,
         last_prune,
+        tunnels: tunnels.clone(),
         dashboard_host: "panel.example.com".into(),
     }));
-    let app = App {
+    let app = Arc::new(App {
         dashboard_host: "panel.example.com".into(),
         site,
+        tunnels,
         dashboard: crate::dashboard::Dashboard::new(crate::dashboard::Source::disk(vec![dir.path().join("no-dashboard")]), "panel.example.com", log),
         api,
-    };
+    });
 
     deployer.start().await;
     Gateway { app, db, deployer, analytics, errors, link_previews, events, _dir: dir }
@@ -1018,5 +1021,176 @@ async fn a_site_counted_on_the_server_loads_no_tracker() {
     assert!(headers.get("x-plausible-dropped").is_none());
     eventually("the tracker's pageview counted", async || pageviews().await == Some(serde_json::json!([3, 1]))).await;
 
+    gw.stop().await;
+}
+
+/// An origin on loopback for a tunnel to reach: `/hello` says what it was
+/// sent, `/echo` sends its body back, and `/ws` echoes WebSocket messages.
+async fn origin() -> std::net::SocketAddr {
+    use futures_util::{SinkExt, StreamExt};
+    use hyper_util::rt::TokioIo;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = hyper::service::service_fn(|mut request: Request<hyper::body::Incoming>| async move {
+                let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("-").to_string();
+                let response = match request.uri().path() {
+                    "/hello" => {
+                        let said = format!("{} {} {} {}", header("host"), header("x-forwarded-host"), header("x-forwarded-proto"), request.method());
+                        http::Response::new(Body::from(said))
+                    }
+                    "/echo" => http::Response::new(Body::from(request.into_body().collect().await.unwrap().to_bytes())),
+                    "/ws" => {
+                        let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(header("sec-websocket-key").as_bytes());
+                        let upgrade = hyper::upgrade::on(&mut request);
+                        tokio::spawn(async move {
+                            let io = TokioIo::new(upgrade.await.unwrap());
+                            let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(io, tokio_tungstenite::tungstenite::protocol::Role::Server, None).await;
+                            while let Some(Ok(message)) = ws.next().await {
+                                if message.is_text() {
+                                    ws.send(message).await.unwrap();
+                                }
+                            }
+                        });
+                        http::Response::builder()
+                            .status(StatusCode::SWITCHING_PROTOCOLS)
+                            .header("connection", "upgrade")
+                            .header("upgrade", "websocket")
+                            .header("sec-websocket-accept", accept)
+                            .body(Body::empty())
+                            .unwrap()
+                    }
+                    _ => http::Response::builder().status(StatusCode::NOT_FOUND).body(Body::empty()).unwrap(),
+                };
+                Ok::<_, std::convert::Infallible>(response)
+            });
+            tokio::spawn(hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).with_upgrades());
+        }
+    });
+    address
+}
+
+/// An agent authorized from the dashboard serves its hostname — requests,
+/// bodies and WebSockets — until it is turned off or revoked, and never on a
+/// name a site has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
+    use futures_util::{SinkExt, StreamExt};
+
+    use crate::tunnel::agent::{Agent, Config};
+
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(Vec::new()), server: String::new() });
+    let gw = gateway(nostr).await;
+    let listener = crate::server::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let shutdown = CancellationToken::new();
+    let app = gw.app.clone();
+    tokio::spawn(crate::server::serve(
+        listener,
+        move |request, remote| {
+            let app = app.clone();
+            async move { app.handle(request, crate::app::Via::Proxy(remote.ip())).await }
+        },
+        shutdown.clone(),
+        Logger::new(LogLevel::Error),
+    ));
+
+    let origin = origin().await;
+    let agent = Arc::new(
+        Agent::new(Config {
+            server: url::Url::parse(&format!("http://panel.example.com:{}", address.port())).unwrap(),
+            secret: "000000000000000000000000000000000000000000000000000000000000000b".into(),
+            target: origin.to_string().parse().unwrap(),
+            name: "laptop".into(),
+            preserve_host: false,
+            resolve: Some(address),
+            report: Arc::new(|_| {}),
+        })
+        .await
+        .unwrap(),
+    );
+    let npub = crate::nostr::nip19::npub_encode(&crate::nostr::event::public_key(AUTHOR));
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The agent asks, and an admin finds it waiting under its code.
+    let authorizing = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.authorize().await }
+    });
+    let mut code = String::new();
+    eventually("the agent asking", async || {
+        let (_, body) = gw.api("GET", "/api/tunnels", None).await;
+        code = body["requests"][0]["code"].as_str().unwrap_or_default().to_string();
+        !code.is_empty()
+    })
+    .await;
+    let (status, body) = gw.api("GET", &format!("/api/tunnels/requests/{}", code.to_lowercase().replace('-', "")), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["request"]["name"], "laptop");
+    assert_eq!(body["request"]["target"], format!("http://{origin}"));
+
+    // Not on a site's name, nor the dashboard's.
+    let approve = async |hostname: &str| gw.api("POST", &format!("/api/tunnels/requests/{code}"), Some(serde_json::json!({ "hostname": hostname }))).await;
+    let (status, body) = approve("docs.example.com").await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
+    assert_eq!(approve("panel.example.com").await.0, StatusCode::CONFLICT);
+    let (status, body) = approve("Dev.Example.com").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(authorizing.await.unwrap().unwrap(), "dev.example.com");
+    // Nor can a site take a tunnel's.
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "dev.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "hostname": "dev.example.com" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let visitor = reqwest::Client::builder().no_proxy().resolve("dev.example.com", address).build().unwrap();
+    let url = |path: &str| format!("http://dev.example.com:{}{path}", address.port());
+    assert_eq!(visitor.get(url("/hello")).send().await.unwrap().status(), StatusCode::BAD_GATEWAY);
+
+    let connected = async |count: usize| {
+        let (_, body) = gw.api("GET", "/api/tunnels", None).await;
+        body["tunnels"][0]["connections"].as_array().map(Vec::len) == Some(count)
+    };
+    let running = tokio::spawn(agent.clone().run());
+    eventually("the agent connecting", async || connected(2).await).await;
+
+    let response = visitor.get(url("/hello")).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.text().await.unwrap(), format!("{origin} dev.example.com https GET"));
+
+    let large: Vec<u8> = (0..2 * 1024 * 1024u32).map(|i| (i % 253) as u8).collect();
+    let response = visitor.post(url("/echo")).body(large.clone()).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.bytes().await.unwrap() == large);
+
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::client_async("ws://dev.example.com/ws", stream).await.unwrap();
+    for text in ["ping", "pong"] {
+        ws.send(tokio_tungstenite::tungstenite::Message::text(text)).await.unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap().as_str(), text);
+    }
+
+    // Turned off, the name is nobody's and the connections are dropped.
+    let (status, _) = gw.api("PATCH", "/api/tunnels/dev.example.com", Some(serde_json::json!({ "enabled": false }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(visitor.get(url("/hello")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+    assert!(connected(0).await);
+    running.abort();
+
+    // Revoked, the agent hears it has nowhere to go, and stops.
+    let (status, _) = gw.api("PATCH", "/api/tunnels/dev.example.com", Some(serde_json::json!({ "enabled": true }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let running = tokio::spawn(agent.clone().run());
+    eventually("the agent connecting again", async || connected(2).await).await;
+    let (status, _) = gw.api("DELETE", "/api/tunnels/dev.example.com", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let stopped = tokio::time::timeout(Duration::from_secs(20), running).await.expect("the agent stopping").unwrap();
+    assert!(stopped.unwrap_err().to_string().contains("removed"));
+
+    shutdown.cancel();
     gw.stop().await;
 }

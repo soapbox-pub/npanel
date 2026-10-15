@@ -1,7 +1,8 @@
 //! npanel: a self-hostable gateway for nsites, with a team dashboard.
 //!
 //! `npanel` (or `npanel serve`) runs the gateway; `make-admin`,
-//! `prune-blobs` and `compress-blobs` are the maintenance commands.
+//! `prune-blobs` and `compress-blobs` are the maintenance commands; and
+//! `npanel tunnel` is the agent that serves a hostname from another machine.
 
 mod analytics;
 mod api;
@@ -47,6 +48,7 @@ mod sync;
 mod tls;
 mod tls_check;
 mod tor;
+mod tunnel;
 mod util;
 
 use std::net::SocketAddr;
@@ -107,6 +109,19 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Serve a hostname on an npanel server from a web server on this machine
+    Tunnel {
+        /// The npanel server, by its dashboard's hostname
+        server: String,
+        /// What to forward to: a port on this machine, or a host and port
+        target: String,
+        /// What the dashboard calls this tunnel [default: this machine's name]
+        #[arg(long)]
+        name: Option<String>,
+        /// Send the public hostname in Host, rather than the target's address
+        #[arg(long)]
+        preserve_host: bool,
+    },
 }
 
 fn main() {
@@ -119,6 +134,16 @@ fn main() {
     // rustls needs one crypto provider chosen for the process; relays and
     // blob downloads both go through it.
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // The agent runs on another machine than the gateway, with nothing of
+    // the gateway's to configure.
+    if let Some(Command::Tunnel { server, target, name, preserve_host }) = cli.command {
+        if let Err(error) = tunnel::agent::main(tunnel::agent::Options { server, target, name, preserve_host }) {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let config = match Config::load(cli.config.as_deref(), &config::Environment::current()) {
         Ok(config) => config,
@@ -134,6 +159,7 @@ fn main() {
         Command::MakeAdmin { pubkey } => scripts::make_admin(&config, &log, &pubkey),
         Command::PruneBlobs { keep, dry_run } => scripts::prune_blobs(&config, &log, keep, dry_run),
         Command::CompressBlobs { dry_run } => scripts::compress_blobs(&config, &log, dry_run),
+        Command::Tunnel { .. } => unreachable!("handled before the config is read"),
     };
 
     if let Err(error) = result {
@@ -264,6 +290,8 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         None => server::bind(SocketAddr::new(config.bind_address, config.tls_check_port)).await?,
     };
 
+    let tunnels = Arc::new(tunnel::gateway::Tunnels::new(db.clone(), log)?);
+
     let api = api::router(Arc::new(api::ApiDeps {
         db: db.clone(),
         settings: settings.clone(),
@@ -280,11 +308,12 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         scripts,
         serve_cache,
         last_prune,
+        tunnels: tunnels.clone(),
         dashboard_host: config.dashboard_host.clone(),
     }));
     let dashboard = dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log);
     dashboard.warm();
-    let app = Arc::new(App { dashboard_host: config.dashboard_host.clone(), site, dashboard, api });
+    let app = Arc::new(App { dashboard_host: config.dashboard_host.clone(), site, tunnels, dashboard, api });
 
     let servers = match (&tls, config.https_port) {
         (Some(tls), Some(https_port)) => {

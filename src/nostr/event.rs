@@ -1,9 +1,7 @@
-//! Nostr events (NIP-01): parsing, verification, and — for tests and tools —
-//! signing.
+//! Nostr events (NIP-01): parsing, verification, and — for a tunnel agent's
+//! requests, and tests — signing.
 
-#[cfg(test)]
-use secp256k1::Keypair;
-use secp256k1::{schnorr, XOnlyPublicKey, SECP256K1};
+use secp256k1::{schnorr, Keypair, XOnlyPublicKey, SECP256K1};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -52,24 +50,42 @@ impl Event {
         self.tags.iter().find(|tag| tag.first().map(String::as_str) == Some(name)).and_then(|tag| tag.get(1)).map(String::as_str)
     }
 
-    /// Sign a new event with `secret` (hex). For tests.
-    #[cfg(test)]
+    /// Sign a new event with `secret`, a hex secret key the caller has
+    /// already checked with [`is_secret_key`].
     pub fn sign(secret: &str, created_at: i64, kind: i64, tags: Vec<Vec<String>>, content: &str) -> Event {
         let keypair = Keypair::from_seckey_str_global(secret).expect("a valid secret key");
         let pubkey = hex::encode(keypair.x_only_public_key().0.serialize());
         let id = Self::compute_id(&pubkey, created_at, kind, &tags, content);
         let digest = hex::decode(&id).expect("hex");
-        let sig = SECP256K1.sign_schnorr_no_aux_rand(&digest, &keypair);
+        // BIP-340's auxiliary randomness, which keeps the nonce safe from
+        // side channels that a deterministic one alone isn't.
+        let sig = SECP256K1.sign_schnorr_with_aux_rand(&digest, &keypair, &rand::random());
 
         Event { id, pubkey, created_at, kind, tags, content: content.to_string(), sig: hex::encode(sig.to_byte_array()) }
     }
 }
 
-/// The public key of a hex secret key.
+/// The public key of a hex secret key [`is_secret_key`] accepts.
 #[cfg(test)]
 pub fn public_key(secret: &str) -> String {
     let keypair = Keypair::from_seckey_str_global(secret).expect("a valid secret key");
     hex::encode(keypair.x_only_public_key().0.serialize())
+}
+
+/// Whether `secret` is a hex secret key that can sign.
+pub fn is_secret_key(secret: &str) -> bool {
+    Keypair::from_seckey_str_global(secret).is_ok()
+}
+
+/// A new secret key, in hex.
+pub fn generate_secret_key() -> String {
+    loop {
+        let secret = hex::encode(rand::random::<[u8; 32]>());
+        // All but a vanishing fraction of 32-byte strings are keys.
+        if is_secret_key(&secret) {
+            return secret;
+        }
+    }
 }
 
 /// Whether a string is 64 lowercase hex characters.

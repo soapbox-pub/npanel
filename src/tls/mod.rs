@@ -42,7 +42,7 @@ use serde::Serialize;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::db::{Db, Host};
+use crate::db::{Db, Host, Tunnel};
 use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::rate_limit::{RateLimit, RateLimiter};
@@ -238,9 +238,19 @@ impl TlsService {
     /// The certificates a host's names have, or are waiting for: its own,
     /// and its `www` if that is redirected.
     pub fn host_certificates(&self, conn: &Connection, host: &Host) -> rusqlite::Result<Vec<CertificateStatus>> {
+        self.certificates(conn, names::of_host(&host.hostname, host.enabled, host.redirect_www))
+    }
+
+    /// A tunnel's certificate, or the wait for one. Nothing redirects to a
+    /// tunnel, so it has only its own name.
+    pub fn tunnel_certificates(&self, conn: &Connection, tunnel: &Tunnel) -> rusqlite::Result<Vec<CertificateStatus>> {
+        self.certificates(conn, names::of_host(&tunnel.hostname, tunnel.enabled, false))
+    }
+
+    fn certificates(&self, conn: &Connection, names: Vec<String>) -> rusqlite::Result<Vec<CertificateStatus>> {
         let directory = self.deps.settings.get().acme_directory.clone();
         let now = now();
-        names::of_host(&host.hostname, host.enabled, host.redirect_www)
+        names
             .into_iter()
             .map(|name| {
                 let status = store::status(conn, &directory, &name, now)?;

@@ -79,6 +79,46 @@ impl Host {
     }
 }
 
+/// A hostname served by an agent on someone's own machine, through a tunnel
+/// it keeps open to npanel. Its hostname shares one namespace with hosts'.
+#[derive(Clone, Debug)]
+pub struct Tunnel {
+    pub id: i64,
+    pub hostname: String,
+    /// Hex pubkey of the agent's key, which it signs every request with.
+    pub pubkey: String,
+    /// What the agent was called when it was authorized: its machine's name.
+    pub name: String,
+    /// What the agent last said it forwards to. Its word, shown and nothing
+    /// more: where an agent sends traffic is settled on its own machine.
+    pub target: String,
+    pub enabled: bool,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    /// When an agent last connected.
+    pub connected_at: Option<i64>,
+}
+
+pub const TUNNEL_COLUMNS: &str = "id, hostname, pubkey, name, target, enabled, created_by, created_at, updated_at, connected_at";
+
+impl Tunnel {
+    pub fn from_row(row: &Row) -> rusqlite::Result<Tunnel> {
+        Ok(Tunnel {
+            id: row.get(0)?,
+            hostname: row.get(1)?,
+            pubkey: row.get(2)?,
+            name: row.get(3)?,
+            target: row.get(4)?,
+            enabled: row.get(5)?,
+            created_by: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            connected_at: row.get(9)?,
+        })
+    }
+}
+
 /// Lifecycle of a single site version. A host only serves versions that
 /// reached `ready`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

@@ -100,15 +100,15 @@ pub fn verify_nip98(
     Ok(event)
 }
 
-/// A signed `Authorization` header, for tests.
-#[cfg(test)]
+/// A signed `Authorization` header: a tunnel agent's, and tests'.
 pub fn sign_nip98(secret: &str, method: &str, url: &str, body: Option<&[u8]>, now: i64) -> String {
     let mut tags = vec![vec!["u".to_string(), url.to_string()], vec!["method".to_string(), method.to_string()]];
     if let Some(body) = body {
         tags.push(vec!["payload".into(), hex::encode(Sha256::digest(body))]);
     }
     let event = Event::sign(secret, now, NIP98_KIND, tags, "");
-    format!("Nostr {}", base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&event).unwrap()))
+    let json = serde_json::to_vec(&event).expect("an event serializes");
+    format!("Nostr {}", base64::engine::general_purpose::STANDARD.encode(json))
 }
 
 #[cfg(test)]
