@@ -13,7 +13,6 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -265,7 +264,9 @@ impl Agent {
 
     /// Hold the tunnel's connections open until it is removed.
     pub async fn run(self: Arc<Self>) -> Result<()> {
-        let open = Arc::new(AtomicUsize::new(0));
+        // Counted and reported under one lock, so two connections changing
+        // at once are reported in the order they changed.
+        let open = Arc::new(Mutex::new(0));
         let mut connections = tokio::task::JoinSet::new();
         for _ in 0..CONNECTIONS {
             let (agent, open) = (self.clone(), open.clone());
@@ -279,7 +280,7 @@ impl Agent {
     }
 
     /// Keep one connection open, making it again whenever it closes.
-    async fn hold(&self, open: &AtomicUsize) -> Result<()> {
+    async fn hold(&self, open: &Mutex<usize>) -> Result<()> {
         let mut backoff = Duration::from_secs(1);
         loop {
             match self.connect(open).await {
@@ -307,13 +308,13 @@ impl Agent {
 
     /// Open one connection and serve the requests that come down it until
     /// it closes, which is how long it lasted.
-    async fn connect(&self, open: &AtomicUsize) -> Result<Duration, Failure> {
+    async fn connect(&self, open: &Mutex<usize>) -> Result<Duration, Failure> {
         let other = |error: anyhow::Error| Failure::Other(error);
         let upgraded = tokio::time::timeout(CONNECT_TIMEOUT, self.upgrade())
             .await
             .map_err(|_| other(anyhow!("{} took too long to let the tunnel in", self.server_name())))??;
 
-        (self.report)(Event::Connections(open.fetch_add(1, Ordering::SeqCst) + 1));
+        self.count(open, |n| n + 1);
         let started = Instant::now();
         let origin = self.origin.clone();
         let service = hyper::service::service_fn(move |request| {
@@ -327,8 +328,14 @@ impl Agent {
             .enable_connect_protocol()
             .serve_connection(upgraded, service)
             .await;
-        (self.report)(Event::Connections(open.fetch_sub(1, Ordering::SeqCst) - 1));
+        self.count(open, |n| n - 1);
         Ok(started.elapsed())
+    }
+
+    fn count(&self, open: &Mutex<usize>, change: impl FnOnce(usize) -> usize) {
+        let mut open = open.lock();
+        *open = change(*open);
+        (self.report)(Event::Connections(*open));
     }
 
     /// Reach the server and have the connection upgraded to a tunnel.
