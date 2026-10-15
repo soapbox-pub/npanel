@@ -540,7 +540,15 @@ rewrites it to the upstream address, so it needs telling:
 ```nginx
 proxy_set_header Host $host;
 proxy_set_header X-Forwarded-Proto $scheme;
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
 ```
+
+The last three pass on an upgraded connection, which a [tunnel](#tunnels)'s
+agent connects with and its WebSockets are. `$connection_upgrade` needs the
+usual `map $http_upgrade $connection_upgrade { default upgrade; '' close; }`
+in the `http` block. Caddy does all of this by itself.
 
 Without the first, every hostname looks like the proxy's address and nothing
 resolves. The second only matters if you terminate plain HTTP: npanel assumes
@@ -636,6 +644,41 @@ affecting its clearnet sites.
 **A site has no address yet.** Only enabled hosts get one, and publishing is
 asynchronous — a newly added site takes a moment. If it never arrives, look for
 `tor_onion_failed` in the log.
+
+## Tunnels
+
+A tunnel serves a domain from a web server on another machine: a laptop, a
+box on a home network, anything that can reach your npanel server. Nothing on
+that machine needs a public address or an open port. Run this there, with the
+port the web server listens on:
+
+```sh
+npanel tunnel npanel.example.com 8080
+```
+
+The first time, it prints a link to your dashboard and a code. Open the link
+as an admin, check that it shows the same code, and give the tunnel a domain
+— one no site or tunnel here has yet, with its DNS pointed at npanel as for a
+site. The agent connects as soon as you approve it, and the domain serves
+whatever `localhost:8080` does, WebSockets included.
+
+The target can be a port, a host and port (`devbox:5173`), or an
+`http://` address; the agent forwards plain HTTP. It sends the origin its own
+address as `Host`, which development servers accept, and the public domain as
+`X-Forwarded-Host`; add `--preserve-host` to send the public domain as `Host`
+instead. `--name` sets what the dashboard calls it, which is otherwise the
+machine's name.
+
+The agent keeps its key under `~/.config/npanel/tunnels/`, one per server and
+target. Running the same command again is the same tunnel, with no approval,
+and a different port is a different tunnel. Keep it running however you keep
+anything running: a terminal, `tmux`, or a systemd user unit. It reconnects
+by itself when either end restarts.
+
+**Tunnels** in the dashboard shows each tunnel's connections, what it forwards
+to, and its certificate. Turning one off frees its domain at once, and the
+agent waits to be turned back on. Removing one disconnects it for good: its
+key works nowhere until it is approved again.
 
 ## The dashboard as an nsite
 

@@ -143,8 +143,10 @@ way — DNS, TLS, backups, and a systemd unit.
 | `npanel make-admin <npub>`                      | Adds or promotes an admin                     |
 | `npanel prune-blobs [--keep N] [--dry-run]`     | Runs the daily prune now                      |
 | `npanel compress-blobs [--dry-run]`             | Stores compressed copies of older blobs       |
+| `npanel tunnel <server> <port>`                 | Serves a domain from a web server on this machine ([tunnels](docs/deployment.md#tunnels)) |
 
-Each takes `-c, --config <PATH>` to name the config file.
+Each but `tunnel` takes `-c, --config <PATH>` to name the config file. `tunnel`
+runs on another machine than the server, and reads no config file.
 
 ## Configuration
 

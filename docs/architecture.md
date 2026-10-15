@@ -2,7 +2,9 @@
 
 npanel is one process that does three things: it serves nsites over HTTP, it
 serves a dashboard for configuring which nsites those are, and, on threads of
-its own, it keeps local storage in sync with Nostr.
+its own, it keeps local storage in sync with Nostr. It can also pass a
+hostname's requests on to a web server on another machine, through a
+[tunnel](#tunnels) that machine holds open.
 
 ```
         DNS ──► reverse proxy (TLS) ──► npanel :3000
@@ -27,6 +29,7 @@ its own, it keeps local storage in sync with Nostr.
    /_npanel/api/report on any site ──► errors thread ──► errors.sqlite3
    a crawler on a page ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
+   a tunnel's hostname ──► its agent's connection ──► a web server on its machine
    with https_port: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
 
@@ -34,8 +37,8 @@ its own, it keeps local storage in sync with Nostr.
 
 Everything hangs off the `Host` header, checked in one middleware in
 `src/app.rs`. If it equals `dashboard_host`, the request goes to the axum API at
-`/api` and otherwise to the built dashboard SPA. Any other hostname is served as
-an nsite.
+`/api` and otherwise to the built dashboard SPA. A tunnel's hostname is passed
+to its agent. Any other hostname is served as an nsite.
 
 Only `Host` is read — or, over HTTP/2, which has none, `:authority`, which is
 the same thing by another name (`request_host`). Ports and the trailing dot of an FQDN are stripped and the
@@ -400,6 +403,7 @@ The tables:
 | `onion_services` | A host's Tor address and the key it is named by          |
 | `nip05_names` | The NIP-05 names a host answers for                        |
 | `host_env`    | The variables a host's pages read as `window.ENV`           |
+| `tunnels`     | Hostname → the key of the agent serving it, and whether it's on |
 
 **Blobs** live on the filesystem at `data_dir/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
@@ -871,6 +875,83 @@ the address to a visitor without anyone having to hand it out. It is sent only
 over HTTPS, because on a plain-HTTP hop anything in the path could rewrite it
 and point the visitor at an onion of its own choosing.
 
+## Tunnels
+
+A tunnel is a hostname npanel serves by passing its requests to an agent on
+another machine, which passes them on to a web server there — what
+`cloudflared` does for Cloudflare. The agent is this same binary, run as
+`npanel tunnel <server> <port>` (`src/tunnel/agent.rs`); the gateway's half is
+`src/tunnel/gateway.rs`.
+
+**The agent dials out.** It connects to the dashboard host over HTTPS, as a
+browser would, and asks to upgrade the connection (`Upgrade: npanel-tunnel`
+on `/api/agent/connect`). So it works from behind NAT and a firewall, and
+through the proxy in front of npanel, which carries an upgrade as it carries a
+WebSocket. Once the connection is upgraded the roles reverse: npanel is the
+HTTP/2 client and the agent the server. Each visitor's request is a stream of
+its own, so one slow response holds up nobody else's, and HTTP/2's flow
+control keeps a large upload or download from swamping the connection. The
+agent holds two connections, so either end can lose one without the site
+going dark, and npanel sends requests down them in turn. Both ends ping every
+20 seconds, under the idle timeout of most NATs and proxies, and give a
+connection up when a ping goes unanswered.
+
+**A WebSocket is a stream too.** A visitor's `Upgrade: websocket` becomes an
+extended CONNECT stream (RFC 8441), which the agent opens to its origin as the
+ordinary HTTP/1.1 upgrade it was. Once the origin has switched protocols, each
+end copies bytes and parses nothing, so any subprotocol works. Nothing else
+that asks to upgrade is upgraded: it is passed on as the plain request it also
+is.
+
+**What is passed on.** Hop-by-hop headers are dropped, as a proxy drops them,
+and the origin is told `X-Forwarded-Host` and `X-Forwarded-Proto`. Behind a
+proxy, its `X-Forwarded-For` goes on as it came; when npanel terminates TLS
+itself, it is replaced with the address that connected, since a visitor's own
+would be a lie. The agent sends `Host` as the origin's own address unless
+it's run with `--preserve-host`. Development servers check `Host` against
+their own list (Vite, Django, Rails), and the public name is in
+`X-Forwarded-Host` either way. An origin has 100 seconds to start answering,
+as on Cloudflare. After that, bodies stream for as long as they take, so a
+server-sent event stream stays open.
+
+**An agent is its key.** The first time it is pointed at a server, the agent
+makes a secp256k1 key and keeps it under `~/.config/npanel/tunnels/`, one per
+server and target. Every request it makes to the API is NIP-98-signed with it,
+and `verify_nip98` checks it exactly as it checks a user's; the difference is
+that a tunnel is the row it is looked up in, not `users`. An agent with no
+tunnel asks to be authorized and is given a code, eight letters from a set no
+one misreads, which it prints with a link to `/tunnels/authorize` on the
+dashboard. An admin opens it, checks that the code matches, and gives the
+tunnel a hostname. The agent asks every two seconds, and connects as soon as
+it has been let in. From then on it connects with nobody's help.
+
+Waiting agents are kept in memory, not the database: a code lasts fifteen
+minutes, sixty-four agents may wait at once, and a restart only means the
+agent asks again. Asking costs nothing but a key, so the bound is what stops
+someone from filling the list, and the oldest is forgotten to make room.
+
+**Only admins authorize, and only the agent decides where traffic goes.**
+Approving a tunnel lets whoever runs the agent serve anything they like on a
+domain, so it is an admin's decision, like adding a user. What an admin
+controls is which hostname reaches the agent, whether it is on, and whether
+its key works at all. Where the agent forwards to is set on its own machine,
+and shown in the dashboard only as the agent reports it. If the server could
+set it, a compromised npanel could make every agent probe the network it
+sits on.
+
+**A tunnel can't take a site's hostname, nor a site a tunnel's.** The two live
+in tables of their own, because they have almost nothing in common: a tunnel
+has no versions, builds or flags. Triggers keep one namespace across both,
+so the database refuses a second claim to a hostname however it is written.
+Which hostnames are tunnels is reconciled like everything else: every change
+reads the enabled tunnels afresh into a map that requests read without
+waiting, and drops the connections of any tunnel no longer among them.
+Turning a tunnel off frees its hostname at once, and its agent waits to be
+turned back on. Deleting it does the same, and the agent stops, telling
+whoever runs it that the tunnel is gone. Tunnel hostnames get certificates
+by the same rule as sites' (`src/tls/names.rs`), but no `www` redirect and no
+onion address.
+
 ## Analytics
 
 A site with `analytics` on counts its visitors, and npanel is the analytics
@@ -1338,7 +1419,9 @@ tolerated.
 A valid signature proves identity, not authorization. npanel is not
 permissionless, so a pubkey with no row in `users` gets `403`. Admins see and
 change everything; staff see only the hosts they've been granted, and only
-admins manage users, grants, settings, and the audit log.
+admins manage users, grants, settings, tunnels, and the audit log. A tunnel
+agent signs the same way with a key of its own, and is looked up among the
+tunnels rather than the users (see [tunnels](#tunnels)).
 
 What a host is *named* is a weaker secret than what it holds, so it is governed
 separately. With `public_site_list` on, npanel will list its hostnames — to

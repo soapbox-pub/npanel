@@ -4,6 +4,18 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- Tunnels: `npanel tunnel npanel.example.com 8080`, run on any machine that
+  can reach the server, serves a domain from a web server on that machine,
+  WebSockets included, much as `cloudflared` does. The first run prints a
+  link and a code for an admin to approve in the dashboard's new **Tunnels**
+  page, where tunnels can be turned off, moved to another domain, or removed.
+  The agent dials out over HTTPS, so its machine needs no public address. See
+  [Tunnels](docs/deployment.md#tunnels).
+- Behind nginx, pass on upgraded connections (`Upgrade` and `Connection`) so
+  tunnel agents can connect. Caddy already does.
+
 ## [0.6.2]
 
 - Onion addresses stay reachable. Arti, the Tor built into npanel, now comes

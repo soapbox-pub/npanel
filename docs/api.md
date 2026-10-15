@@ -10,7 +10,9 @@ is `413`, refused before the signature is checked.
 
 ## Authentication
 
-Every route except `/api/instance` and `/api/sites` requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. Sign a
+Every route except `/api/instance` and `/api/sites` requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. The
+[agent routes](#agents) are signed by a tunnel agent's own key rather than a
+user's; the rest of this section applies to them as it is. Sign a
 kind `27235` event and send it base64-encoded:
 
 ```
@@ -871,6 +873,116 @@ Removes the user and their grants.
 Demoting or deleting the last admin is `409` — there is no way to lock every
 admin out of the dashboard through the API. (`npanel make-admin` is the way
 back in if it ever happens anyway.)
+
+## Tunnels — admin
+
+A tunnel serves a hostname from an agent on another machine. See
+[Tunnels](deployment.md#tunnels) for running one, and
+[the architecture](architecture.md#tunnels) for how it works.
+
+### `GET /api/tunnels`
+
+Every tunnel, and every agent waiting to be authorized.
+
+```json
+{
+  "tunnels": [
+    {
+      "hostname": "dev.example.com",
+      "name": "laptop",
+      "pubkey": "<hex>",
+      "target": "http://localhost:8080",
+      "enabled": true,
+      "created_by": "<hex>",
+      "created_at": 1754000000,
+      "updated_at": 1754000000,
+      "connected_at": 1754000300,
+      "connections": [
+        { "connected_at": 1754000300, "remote": "203.0.113.7", "agent": "npanel/0.7.0" }
+      ],
+      "certificates": null
+    }
+  ],
+  "requests": [
+    {
+      "code": "BCDF-GHJK",
+      "pubkey": "<hex>",
+      "name": "devbox",
+      "target": "http://localhost:5173",
+      "remote": "203.0.113.9",
+      "created_at": 1754000400,
+      "expires_at": 1754001300
+    }
+  ]
+}
+```
+
+`target` is what the agent says it forwards to. It is set on the agent's
+machine and can't be changed here. `connected_at` is when an agent last
+connected, or `null` if one never has. `certificates` is as on a host: `null`
+unless npanel gets certificates itself.
+
+### `GET /api/tunnels/requests/:code`
+
+`{ "request": { ... } }`, one of the `requests` above. The code may be typed in
+any case, with or without its dash. `404` once it has expired (after fifteen
+minutes) or been answered.
+
+### `POST /api/tunnels/requests/:code`
+
+```json
+{ "hostname": "dev.example.com" }
+```
+
+Authorizes the agent, which connects within a couple of seconds. `201` with
+`{ "tunnel": { ... } }`. `409` if a site or tunnel already has the hostname, or
+it is the dashboard's.
+
+### `DELETE /api/tunnels/requests/:code`
+
+Refuses the agent, which is told so and stops.
+
+### `PATCH /api/tunnels/:hostname`
+
+```json
+{ "hostname": "staging.example.com", "name": "laptop", "enabled": false }
+```
+
+Every field is optional. Turning a tunnel off frees its hostname at once and
+drops its connections; the agent waits to be turned back on. `409` if the new
+hostname is taken.
+
+### `DELETE /api/tunnels/:hostname`
+
+Revokes the tunnel. Its connections are dropped, its agent stops, and its key
+works nowhere until it is approved again.
+
+## Agents
+
+What `npanel tunnel` calls. Each is signed by the agent's key, and none needs a
+user. They are documented for completeness; the agent is the only client.
+
+### `GET /api/agent`
+
+Where the agent stands: `{ "status": "authorized", "hostname": "...", "enabled":
+true }`, `{ "status": "pending", "code": "...", "url": "...", "expires_at": ...
+}`, `{ "status": "denied" }` (said once), or `{ "status": "unknown" }`.
+
+### `POST /api/agent/request`
+
+```json
+{ "name": "laptop", "target": "http://localhost:8080" }
+```
+
+Asks to be authorized, and answers as `GET /api/agent` does. Asking again while
+waiting keeps the same code.
+
+### `GET /api/agent/connect`
+
+With `Connection: upgrade` and `Upgrade: npanel-tunnel` over HTTP/1.1, answered
+with `101`, after which the connection is HTTP/2 with npanel as the client. `404`
+if the agent has no tunnel, `403` if the tunnel is off, and `429` if it already
+has four connections.
 
 ## Settings — admin
 
