@@ -49,6 +49,22 @@ pub fn is_code(code: &str) -> bool {
 /// dashboard, and nothing else.
 pub const TARGET_HEADER: &str = "npanel-target";
 
+/// The flow-control windows both ends of a tunnel connection open with: how
+/// much may be in flight on the whole connection, and on one stream, before
+/// the sender waits to hear it was read. A window caps throughput at its size
+/// per round trip, so these are large: 4 MiB is 80 MB/s for one stream over
+/// 50 ms, 20 MB/s over 200 ms.
+///
+/// Fixed rather than hyper's adaptive window, which grows to fit the link but
+/// always opens at 64 KiB. h2 sizes its guard against floods of small DATA
+/// frames from the opening connection window — half of it, the frames not yet
+/// read — so an adaptive window left room for about 130 of them across the
+/// whole connection. A WebSocket message is a small frame, and a few hundred
+/// sockets each sending one at once closed the connection with every socket
+/// on it. Half of 16 MiB is room for some 32,000.
+pub const CONNECTION_WINDOW: u32 = 16 * 1024 * 1024;
+pub const STREAM_WINDOW: u32 = 4 * 1024 * 1024;
+
 /// The buffer each direction of a WebSocket is copied through, on either end
 /// of the tunnel. Under tokio's 8 KiB: an open socket mostly sits idle, and a
 /// server holding thousands keeps two of these each; a large message only

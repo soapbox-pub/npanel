@@ -1304,6 +1304,8 @@ async fn a_tunnel_holds_hundreds_of_websockets_on_one_connection() {
     }
     for (i, ws) in sockets.iter_mut().enumerate() {
         ws.send(tokio_tungstenite::tungstenite::Message::text(i.to_string())).await.unwrap();
+    }
+    for (i, ws) in sockets.iter_mut().enumerate() {
         assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap().as_str(), i.to_string());
     }
     let visitor = reqwest::Client::builder().no_proxy().resolve("dev.example.com", address).build().unwrap();

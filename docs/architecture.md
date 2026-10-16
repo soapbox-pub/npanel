@@ -890,10 +890,19 @@ through the proxy in front of npanel, which carries an upgrade as it carries a
 WebSocket. Once the connection is upgraded the roles reverse: npanel is the
 HTTP/2 client and the agent the server. Each visitor's request is a stream of
 its own, so one slow response holds up nobody else's, and HTTP/2's flow
-control keeps a large upload or download from swamping the connection. Both
-ends grow their flow-control windows to fit the link (hyper's adaptive
-window), since a fixed window caps a connection at its size per round trip:
-1 MB over a 50 ms link is 20 MB/s, however fast the link. The agent holds two
+control keeps a large upload or download from swamping the connection. A
+flow-control window caps a connection at its size per round trip, so both
+ends open with large ones: 16 MiB for a connection and 4 MiB for a stream,
+which is 80 MB/s for one download over a 50 ms link. They are fixed rather
+than hyper's adaptive window, which grows to fit the link but opens at
+64 KiB, because h2 sizes its guard against floods of small DATA frames from
+the opening window: room for about 130 unread at once across the
+connection. Every WebSocket message is a small frame, and a few hundred
+sockets each sending one together closed the connection, with every socket
+on it. Half of 16 MiB is room for some 32,000. A window is also as much as
+one end will hold for the other before it is read, so it bounds what a slow
+visitor can leave buffered in npanel, as the adaptive window's own ceiling
+of 16 MiB did. The agent holds two
 connections, so either end can lose one without the site going dark. npanel
 sends each request down whichever has the fewest streams open, taking turns
 between equals, so a connection carrying a large download or holding many

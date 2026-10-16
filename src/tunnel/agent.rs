@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use url::Url;
 
-use super::{is_code, strip_hop_by_hop, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, STATUS_PATH, TARGET_HEADER, WEBSOCKET_BUFFER};
+use super::{is_code, strip_hop_by_hop, CONNECTION_WINDOW, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, STATUS_PATH, STREAM_WINDOW, TARGET_HEADER, WEBSOCKET_BUFFER};
 use crate::auth::sign_nip98;
 use crate::nostr::event::{generate_secret_key, is_secret_key};
 
@@ -354,7 +354,8 @@ impl Agent {
             .timer(TokioTimer::new())
             .keep_alive_interval(KEEP_ALIVE)
             .keep_alive_timeout(KEEP_ALIVE)
-            .adaptive_window(true)
+            .initial_connection_window_size(CONNECTION_WINDOW)
+            .initial_stream_window_size(STREAM_WINDOW)
             .max_concurrent_streams(MAX_STREAMS)
             .enable_connect_protocol()
             .serve_connection(upgraded, service)

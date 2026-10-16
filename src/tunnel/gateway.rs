@@ -29,7 +29,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{is_websocket, strip_hop_by_hop, CODE_ALPHABET, KEEP_ALIVE, PROTOCOL, WEBSOCKET_BUFFER};
+use super::{is_websocket, strip_hop_by_hop, CODE_ALPHABET, CONNECTION_WINDOW, KEEP_ALIVE, PROTOCOL, STREAM_WINDOW, WEBSOCKET_BUFFER};
 use crate::db::{Db, Tunnel};
 use crate::fields;
 use crate::log::Logger;
@@ -215,7 +215,8 @@ impl Tunnels {
                 .keep_alive_interval(KEEP_ALIVE)
                 .keep_alive_timeout(KEEP_ALIVE)
                 .keep_alive_while_idle(true)
-                .adaptive_window(true)
+                .initial_connection_window_size(CONNECTION_WINDOW)
+                .initial_stream_window_size(STREAM_WINDOW)
                 .handshake::<_, Body>(upgraded)
                 .await;
             let (send, connection) = match handshake {
