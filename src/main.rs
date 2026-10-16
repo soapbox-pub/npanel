@@ -140,7 +140,8 @@ fn main() {
     // the gateway's to configure.
     if let Some(Command::Tunnel { server, target, name, connections }) = cli.command {
         if let Err(error) = tunnel::agent::main(tunnel::agent::Options { server, target, name, connections }) {
-            eprintln!("{error:#}");
+            // Much of what can go wrong is the server's to say.
+            eprintln!("{}", tunnel::agent::printable(&format!("{error:#}")));
             std::process::exit(1);
         }
         return;

@@ -34,6 +34,17 @@ pub const REQUEST_PATH: &str = "/api/tunnel/request";
 /// Where an agent connects.
 pub const CONNECT_PATH: &str = "/api/tunnel/connect";
 
+/// The letters a code is made of: consonants that can't be misread as one
+/// another, or spell anything.
+pub const CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+
+/// Whether `code` is one the gateway makes: two groups of four letters from
+/// [`CODE_ALPHABET`], joined by a dash.
+pub fn is_code(code: &str) -> bool {
+    let bytes = code.as_bytes();
+    bytes.len() == 9 && bytes.iter().enumerate().all(|(i, b)| if i == 4 { *b == b'-' } else { CODE_ALPHABET.contains(b) })
+}
+
 /// What the agent forwards to, as it says when it connects. Shown in the
 /// dashboard, and nothing else.
 pub const TARGET_HEADER: &str = "npanel-target";

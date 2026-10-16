@@ -540,12 +540,16 @@ rewrites it to the upstream address, so it needs telling:
 ```nginx
 proxy_set_header Host $host;
 proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-For $remote_addr;
 proxy_http_version 1.1;
 proxy_set_header Upgrade $http_upgrade;
 proxy_set_header Connection $connection_upgrade;
 ```
 
-The last three pass on an upgraded connection, which a [tunnel](#tunnels)'s
+npanel takes the visitor's address from the first `X-Forwarded-For` entry, so
+it is `$remote_addr` here rather than `$proxy_add_x_forwarded_for`, which
+would keep whatever the visitor sent in front of it. The last three pass on an
+upgraded connection, which a [tunnel](#tunnels)'s
 agent connects with and its WebSockets are. `$connection_upgrade` needs the
 usual `map $http_upgrade $connection_upgrade { default upgrade; '' close; }`
 in the `http` block. Caddy does all of this by itself.
@@ -667,9 +671,12 @@ The target can be a port, a host and port (`devbox:5173`), or an
 as it would behind any reverse proxy: the public domain in `Host`, and
 `X-Forwarded-Proto: https`. A server that checks hostnames (Vite, Django's
 `ALLOWED_HOSTS`, Rails' `config.hosts`) needs the domain allowed. Every request
-arrives from the agent, so the visitor's address is only in
-`X-Forwarded-For`: an app that logs or limits by address should trust that
-header from the agent's address, usually `127.0.0.1`. `--name` sets what the
+arrives from the agent, so the visitor's address is in `X-Forwarded-For` and
+`X-Real-IP`, the only headers naming it that npanel lets through: an app that
+logs or limits by address should trust them from the agent's address, usually
+`127.0.0.1`. That makes the domain as public as any other site, so tunnel a
+server you'd put on the internet, not one in debug mode: Rails, Django and
+Flask's debug pages run code for whoever reaches them. `--name` sets what the
 dashboard calls the tunnel, which is otherwise the machine's name.
 
 The agent holds two connections to the server and uses every core. For a busy

@@ -912,10 +912,15 @@ that asks to upgrade is upgraded: it is passed on as the plain request it also
 is.
 
 **What is passed on.** Hop-by-hop headers are dropped, as a proxy drops them,
-and the origin is told `X-Forwarded-Host` and `X-Forwarded-Proto`. Behind a
-proxy, its `X-Forwarded-For` goes on as it came; when npanel terminates TLS
-itself, it is replaced with the address that connected, since a visitor's own
-would be a lie. `Host` is the hostname the visitor asked for, as any reverse
+and the origin is told `X-Forwarded-Host` and `X-Forwarded-Proto`. It is told
+one visitor address, in both `X-Forwarded-For` and `X-Real-IP`: the one
+analytics would count (`client_address`, `src/app.rs`), which is the address
+that connected when npanel terminates TLS, and the proxy's word for it
+otherwise. Every other header that names a client — `Forwarded`,
+`True-Client-IP`, `CF-Connecting-IP` and their like — is removed. The origin
+sees every request arrive from the agent, which it is right to trust as a
+proxy, so a visitor's own copy of one of those reaching it would be believed:
+`X-Real-IP: 127.0.0.1` would make a request from anywhere look local. `Host` is the hostname the visitor asked for, as any reverse
 proxy passes it on; the target is only where the agent dials. A tunnel is for
 production servers, which route, redirect and build URLs by `Host`, and an
 origin told its own address would send visitors to `localhost`. A
@@ -939,10 +944,30 @@ dashboard. An admin opens it, checks that the code matches, and gives the
 tunnel a hostname. The agent asks every two seconds, and connects as soon as
 it has been let in. From then on it connects with nobody's help.
 
+Anyone can ask, so a stranger can send an admin a real link to a request of
+their own, and the code on the page will match whatever the stranger says it
+should. Making the admin type the code would not change that — the stranger
+would just say which code to type. So the page says what an approval gives
+away, and says where the request came from beside where the admin is: one
+from the admin's own network (the same IPv4 address, or IPv6 /64) is very
+likely the agent they just started. The agent builds the link it opens from
+the dashboard's hostname and a code it has checked, rather than opening a URL
+the server sends, and strips control characters from anything of the
+server's it prints.
+
+A signed request can be used again for as long as its signature is fresh, a
+minute either way. Connecting is the one where that matters — a copy of the
+header from a proxy's log would let someone else serve the hostname — so each
+signature lets one connection in and is remembered until it is too old to be
+accepted anyway. It is the signature that is remembered, not the event id:
+an agent's connections signed in the same second are the same event.
+
 Waiting agents are kept in memory, not the database: a code lasts fifteen
 minutes, sixty-four agents may wait at once, and a restart only means the
-agent asks again. Asking costs nothing but a key, so the bound is what stops
-someone from filling the list, and the oldest is forgotten to make room.
+agent asks again. Asking costs nothing but a key, so the list is bounded, the
+oldest is forgotten to make room, and one address may have only three
+waiting and ask ten times in ten minutes. An address asking as fast as it can
+then crowds out only its own requests.
 
 **Only admins authorize, and only the agent decides where traffic goes.**
 Approving a tunnel lets whoever runs the agent serve anything they like on a

@@ -244,7 +244,7 @@ export function useTunnelRequest(code: string | undefined, enabled = true) {
 
   return useQuery({
     queryKey: useKey('tunnel-request', code ?? ''),
-    queryFn: async () => (await api!.tunnelRequest(code!)).request,
+    queryFn: () => api!.tunnelRequest(code!),
     enabled: !!api && !!code && enabled,
     retry: false,
   });

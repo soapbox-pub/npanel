@@ -1024,6 +1024,9 @@ async fn a_site_counted_on_the_server_loads_no_tracker() {
     gw.stop().await;
 }
 
+/// The key of the agent in the tunnel test.
+const SECRET_B: &str = "000000000000000000000000000000000000000000000000000000000000000b";
+
 /// An origin on loopback for a tunnel to reach: `/hello` says what it was
 /// sent, `/echo` sends its body back, and `/ws` echoes WebSocket messages.
 async fn origin() -> std::net::SocketAddr {
@@ -1041,6 +1044,10 @@ async fn origin() -> std::net::SocketAddr {
                     "/hello" => {
                         let said = format!("{} {} {} {}", header("host"), header("x-forwarded-host"), header("x-forwarded-proto"), request.method());
                         http::Response::new(Body::from(said))
+                    }
+                    "/address" => {
+                        let names = ["x-forwarded-for", "x-real-ip", "forwarded", "true-client-ip", "cf-connecting-ip"];
+                        http::Response::new(Body::from(names.map(header).join(" ")))
                     }
                     "/echo" => http::Response::new(Body::from(request.into_body().collect().await.unwrap().to_bytes())),
                     "/ws" => {
@@ -1102,7 +1109,7 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
     let agent = Arc::new(
         Agent::new(Config {
             server: url::Url::parse(&format!("http://panel.example.com:{}", address.port())).unwrap(),
-            secret: "000000000000000000000000000000000000000000000000000000000000000b".into(),
+            secret: SECRET_B.into(),
             target: origin.to_string().parse().unwrap(),
             name: "laptop".into(),
             connections: crate::tunnel::agent::DEFAULT_CONNECTIONS,
@@ -1169,6 +1176,39 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
     let response = visitor.get(url("/hello")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.text().await.unwrap(), "dev.example.com dev.example.com https GET");
+
+    // The origin is told one address, the one npanel believes — here the
+    // proxy's word, since this is a request through one — and nothing a
+    // visitor wrote in a header of their own.
+    let forged = [("x-real-ip", "127.0.0.1"), ("forwarded", "for=127.0.0.1"), ("true-client-ip", "127.0.0.1"), ("cf-connecting-ip", "127.0.0.1")];
+    let mut request = visitor.get(url("/address")).header("x-forwarded-for", "198.51.100.7, 10.0.0.1");
+    for (name, value) in forged {
+        request = request.header(name, value);
+    }
+    assert_eq!(request.send().await.unwrap().text().await.unwrap(), "198.51.100.7 198.51.100.7 - - -");
+    let mut request = visitor.get(url("/address"));
+    for (name, value) in forged {
+        request = request.header(name, value);
+    }
+    assert_eq!(request.send().await.unwrap().text().await.unwrap(), "- - - - -");
+
+    // What the origin did wrong is the agent's to hear, not a visitor's.
+    let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    match tokio_tungstenite::client_async("ws://dev.example.com/hello", stream).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+            let body = String::from_utf8(response.into_body().unwrap_or_default()).unwrap();
+            assert!(!body.contains(&origin.port().to_string()), "{body}");
+        }
+        other => panic!("a WebSocket the origin didn't accept: {other:?}"),
+    }
+
+    // A signature lets one connection in, and a copy of it none.
+    let signed = crate::auth::sign_nip98(SECRET_B, "GET", "https://panel.example.com/api/tunnel/connect", None, crate::util::now());
+    let (status, _, body) = gw.request("GET", "panel.example.com", "/api/tunnel/connect", &[("authorization", &signed)], None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{}", String::from_utf8_lossy(&body));
+    let (status, _, body) = gw.request("GET", "panel.example.com", "/api/tunnel/connect", &[("authorization", &signed)], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{}", String::from_utf8_lossy(&body));
 
     let large: Vec<u8> = (0..2 * 1024 * 1024u32).map(|i| (i % 253) as u8).collect();
     let response = visitor.post(url("/echo")).body(large.clone()).send().await.unwrap();

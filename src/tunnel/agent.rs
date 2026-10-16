@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use url::Url;
 
-use super::{strip_hop_by_hop, STATUS_PATH, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, TARGET_HEADER};
+use super::{is_code, strip_hop_by_hop, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, STATUS_PATH, TARGET_HEADER};
 use crate::auth::sign_nip98;
 use crate::nostr::event::{generate_secret_key, is_secret_key};
 
@@ -72,6 +72,9 @@ pub enum Event<'a> {
     Connections(usize),
     /// Something went wrong that the agent will try again.
     Retrying(&'a str),
+    /// A request the origin couldn't answer. Visitors are told only that it
+    /// didn't; this is what whoever runs the agent needs to know.
+    Origin(&'a str),
 }
 
 pub type Report = Arc<dyn Fn(Event<'_>) + Send + Sync>;
@@ -125,6 +128,9 @@ pub struct Agent {
     /// The name the server's dashboard answers at, which every request is
     /// signed for: not necessarily the name it was reached by.
     dashboard_host: String,
+    /// Where an admin approves this agent: built here rather than taken from
+    /// the server, since it is handed to whatever opens URLs on this desktop.
+    authorize_url: Url,
     secret: String,
     target: Authority,
     name: String,
@@ -148,7 +154,6 @@ struct Status {
     status: String,
     hostname: Option<String>,
     code: Option<String>,
-    url: Option<String>,
 }
 
 /// Why a connection couldn't be made.
@@ -178,6 +183,10 @@ impl Agent {
             Err(_) => None,
         }
         .ok_or_else(|| anyhow!("{server} doesn't look like an npanel server."))?;
+        let authorize_url = Url::parse(&format!("https://{}/tunnels/authorize", instance.dashboard_host))
+            .ok()
+            .filter(|url| url.host_str() == Some(instance.dashboard_host.as_str()) && url.path() == "/tunnels/authorize")
+            .ok_or_else(|| anyhow!("{server} names its dashboard {}, which isn't a hostname.", printable(&instance.dashboard_host)))?;
 
         let mut connector = HttpConnector::new();
         connector.set_nodelay(true);
@@ -185,6 +194,7 @@ impl Agent {
 
         let agent = Agent {
             dashboard_host: instance.dashboard_host,
+            authorize_url,
             secret: config.secret,
             target: config.target.clone(),
             name: config.name,
@@ -192,7 +202,7 @@ impl Agent {
             resolve: config.resolve,
             http,
             tls: tls_config(),
-            origin: Arc::new(Origin { client, target: config.target }),
+            origin: Arc::new(Origin { client, target: config.target, report: config.report.clone() }),
             report: config.report,
             server: config.server,
         };
@@ -242,7 +252,7 @@ impl Agent {
                 }
                 "pending" => {
                     if !shown {
-                        (self.report)(Event::Code { code: status.code.as_deref().unwrap_or_default(), url: status.url.as_deref().unwrap_or_default() });
+                        self.show_code(status.code.as_deref())?;
                         shown = true;
                     }
                 }
@@ -256,7 +266,7 @@ impl Agent {
                     }
                     let pending: Status = serde_json::from_value(body)?;
                     if pending.status == "pending" {
-                        (self.report)(Event::Code { code: pending.code.as_deref().unwrap_or_default(), url: pending.url.as_deref().unwrap_or_default() });
+                        self.show_code(pending.code.as_deref())?;
                         shown = true;
                     }
                     continue;
@@ -264,6 +274,15 @@ impl Agent {
             }
             tokio::time::sleep(POLL_INTERVAL).await;
         }
+    }
+
+    /// Show the code an admin is to check, with where to approve it.
+    fn show_code(&self, code: Option<&str>) -> Result<()> {
+        let code = code.filter(|code| is_code(code)).ok_or_else(|| anyhow!("{} sent a code npanel doesn't make.", self.server_name()))?;
+        let mut url = self.authorize_url.clone();
+        url.query_pairs_mut().append_pair("code", code);
+        (self.report)(Event::Code { code, url: url.as_str() });
+        Ok(())
     }
 
     /// Hold the tunnel's connections open until it is removed.
@@ -417,6 +436,7 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
 struct Origin {
     client: Client<HttpConnector, Body>,
     target: Authority,
+    report: Report,
 }
 
 impl Origin {
@@ -449,7 +469,10 @@ impl Origin {
 
         let mut response = match self.client.request(outbound).await {
             Ok(response) => response,
-            Err(error) => return text(StatusCode::BAD_GATEWAY, format!("npanel tunnel couldn't reach http://{}: {}.", self.target, root_cause(&error))),
+            Err(error) => {
+                (self.report)(Event::Origin(&format!("Couldn't reach http://{}: {}.", self.target, root_cause(&error))));
+                return text(StatusCode::BAD_GATEWAY, "This site's server isn't answering. Try again in a moment.".into());
+            }
         };
 
         match tunnel_upgrade {
@@ -466,7 +489,8 @@ impl Origin {
                 Response::from_parts(parts, Body::empty())
             }
             Some(_) if response.status().is_success() => {
-                text(StatusCode::BAD_GATEWAY, format!("http://{} answered a WebSocket request without upgrading it.", self.target))
+                (self.report)(Event::Origin(&format!("http://{} answered a WebSocket request without upgrading it.", self.target)));
+                text(StatusCode::BAD_GATEWAY, "This site's server didn't accept the WebSocket connection.".into())
             }
             _ => {
                 strip_hop_by_hop(response.headers_mut());
@@ -611,6 +635,13 @@ fn text(status: StatusCode, body: String) -> Response<Body> {
         .expect("response")
 }
 
+/// `text` as it is safe to print: what the server says could otherwise move
+/// the cursor, retitle the window, or reorder what is shown, with control
+/// characters and bidirectional overrides.
+pub fn printable(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).collect()
+}
+
 /// What the agent says on a terminal: each thing once, as it changes.
 fn terminal(target: Authority, connections: usize) -> Report {
     let last = Mutex::new(String::new());
@@ -620,10 +651,10 @@ fn terminal(target: Authority, connections: usize) -> Report {
                 open_browser(url);
                 format!("To authorize this tunnel, open\n\n    {url}\n\nand check that it shows the code {code}.\n\nWaiting for an admin to approve it…")
             }
-            Event::Authorized { hostname } => format!("https://{hostname} → http://{target}"),
+            Event::Authorized { hostname } => format!("https://{} → http://{target}", printable(hostname)),
             Event::Connections(0) => "Disconnected. Reconnecting…".into(),
             Event::Connections(open) => format!("Connected ({open} of {connections} connections)."),
-            Event::Retrying(message) => message.into(),
+            Event::Retrying(message) | Event::Origin(message) => printable(message),
         };
         let mut last = last.lock();
         if *last != line {
@@ -665,6 +696,13 @@ mod tests {
         assert_eq!(parse_server("npanel.example.com").unwrap().as_str(), "https://npanel.example.com/");
         assert_eq!(parse_server("http://localhost:3000").unwrap().as_str(), "http://localhost:3000/");
         assert!(parse_server("ftp://x").is_err());
+    }
+
+    #[test]
+    fn prints_only_what_is_safe_to() {
+        assert_eq!(printable("dev.example.com\u{1b}]0;owned\u{7}\r\n"), "dev.example.com]0;owned");
+        assert_eq!(printable("abc\u{202e}fed"), "abcfed");
+        assert_eq!(printable("Connected → ok…"), "Connected → ok…");
     }
 
     #[test]

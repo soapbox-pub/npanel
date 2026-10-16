@@ -29,10 +29,11 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{is_websocket, strip_hop_by_hop, KEEP_ALIVE, PROTOCOL};
+use super::{is_websocket, strip_hop_by_hop, CODE_ALPHABET, KEEP_ALIVE, PROTOCOL};
 use crate::db::{Db, Tunnel};
 use crate::fields;
 use crate::log::Logger;
+use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::serve::RequestOrigin;
 
 /// How long the origin has to start answering once the last of the request
@@ -47,9 +48,19 @@ const REQUEST_LIFETIME: i64 = 15 * 60;
 /// list is bounded, and the oldest is forgotten to make room.
 const MAX_PENDING: usize = 64;
 
-/// The letters a code is made of: consonants that can't be misread as one
-/// another, or spell anything.
-const CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+/// How many of them may have asked from one address, so that one address
+/// asking as fast as it can pushes out only its own requests.
+const MAX_PENDING_PER_ADDRESS: usize = 3;
+
+/// How often one address may ask: ten times, refilled over ten minutes. An
+/// agent asks once when it starts and once when its code runs out.
+const ASKING: RateLimit = RateLimit { capacity: 10.0, interval_ms: 10.0 * 60.0 * 1000.0 };
+
+/// Every header a proxy or CDN might name the visitor's address in. The
+/// origin is told one address, npanel's, and a visitor writing any of these
+/// must not be able to tell it another.
+const CLIENT_ADDRESS_HEADERS: &[&str] =
+    &["forwarded", "x-forwarded-for", "x-real-ip", "true-client-ip", "cf-connecting-ip", "fastly-client-ip", "x-client-ip", "x-cluster-client-ip"];
 
 pub struct Tunnels {
     db: Db,
@@ -64,6 +75,11 @@ pub struct Tunnels {
     /// Numbers connections, and picks the next one to send a request down.
     counter: AtomicU64,
     pending: Mutex<Vec<Pending>>,
+    /// Asking to be authorized, metered by address.
+    asking: Mutex<RateLimiter>,
+    /// The signatures connections were let in on, until each is too old to
+    /// be accepted anyway, so that one seen in a log can't be used again.
+    used: Mutex<HashMap<String, i64>>,
 }
 
 struct Live {
@@ -116,6 +132,8 @@ impl Tunnels {
             slots: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
             pending: Mutex::new(Vec::new()),
+            asking: Mutex::new(RateLimiter::new(4096)),
+            used: Mutex::new(HashMap::new()),
         })
     }
 
@@ -246,9 +264,9 @@ impl Tunnels {
     }
 
     /// Pass a visitor's request to the agent serving `tunnel`, and its
-    /// answer back. `visitor` is the address that connected when npanel
-    /// terminated TLS itself; behind a proxy, the proxy's `X-Forwarded-For`
-    /// is passed on as it came.
+    /// answer back. `visitor` is the visitor's address as npanel believes
+    /// it, and the only one the origin is told: it sees every request come
+    /// from the agent, so a forwarding header is all it has to go on.
     pub async fn proxy(&self, tunnel: i64, mut request: Request<Body>, origin: &RequestOrigin, visitor: Option<IpAddr>) -> Response<Body> {
         let Some(mut send) = self.sender(tunnel) else {
             let mut response = text(StatusCode::BAD_GATEWAY, "This site is offline right now. Try again in a moment.");
@@ -261,8 +279,13 @@ impl Tunnels {
         strip_hop_by_hop(&mut parts.headers);
         parts.headers.remove(header::HOST);
         let headers = &mut parts.headers;
+        for name in CLIENT_ADDRESS_HEADERS {
+            headers.remove(*name);
+        }
         if let Some(visitor) = visitor {
-            headers.insert("x-forwarded-for", HeaderValue::from_str(&visitor.to_string()).expect("an address is a header value"));
+            let visitor = HeaderValue::from_str(&visitor.to_string()).expect("an address is a header value");
+            headers.insert("x-forwarded-for", visitor.clone());
+            headers.insert("x-real-ip", visitor);
         }
         headers.insert("x-forwarded-proto", HeaderValue::from_static(origin.scheme));
         headers.insert("x-forwarded-host", HeaderValue::from_str(&origin.hostname).expect("a hostname is a header value"));
@@ -326,15 +349,23 @@ impl Tunnels {
 
     /// Note that an agent is waiting, or refresh what it said if it already
     /// was, and hand back what it should show.
-    pub fn request(&self, pubkey: &str, name: String, target: String, remote: Option<IpAddr>) -> Pending {
+    /// `None` when the address it asked from has asked too much.
+    pub fn request(&self, pubkey: &str, name: String, target: String, remote: Option<IpAddr>) -> Option<Pending> {
+        let remote = remote.map(|ip| ip.to_string());
+        if !self.asking.lock().take(remote.as_deref().unwrap_or_default(), ASKING) {
+            return None;
+        }
         let now = crate::util::now();
         let mut pending = self.pending.lock();
         pending.retain(|p| p.expires_at > now && !(p.denied && p.pubkey == pubkey));
         if let Some(existing) = pending.iter_mut().find(|p| p.pubkey == pubkey) {
             existing.name = name;
             existing.target = target;
-            existing.remote = remote.map(|ip| ip.to_string());
-            return existing.clone();
+            existing.remote = remote;
+            return Some(existing.clone());
+        }
+        if pending.iter().filter(|p| p.remote == remote).count() >= MAX_PENDING_PER_ADDRESS {
+            return None;
         }
         if pending.len() >= MAX_PENDING {
             pending.remove(0);
@@ -351,13 +382,22 @@ impl Tunnels {
             pubkey: pubkey.to_string(),
             name,
             target,
-            remote: remote.map(|ip| ip.to_string()),
+            remote,
             created_at: now,
             expires_at: now + REQUEST_LIFETIME,
             denied: false,
         };
         pending.push(entry.clone());
-        entry
+        Some(entry)
+    }
+
+    /// Whether this is the first time a connection has been let in on
+    /// `signature`, which is good until `expires_at`.
+    pub fn first_use(&self, signature: &str, expires_at: i64) -> bool {
+        let now = crate::util::now();
+        let mut used = self.used.lock();
+        used.retain(|_, expires| *expires >= now);
+        used.insert(signature.to_string(), expires_at).is_none()
     }
 
     /// Every agent still waiting, oldest first.
@@ -505,15 +545,19 @@ mod tests {
     fn codes_read_however_they_are_typed() {
         let code = new_code();
         assert_eq!(code.len(), 9);
-        assert_eq!(normalize_code(&code.to_lowercase().replace('-', " ")), Some(code));
+        assert_eq!(normalize_code(&code.to_lowercase().replace('-', " ")), Some(code.clone()));
         assert_eq!(normalize_code("ABC"), None);
+        assert!(super::super::is_code(&code));
+        for other in ["bcdf-ghjk", "BCDFGHJK", "BCDF-GHJA", "BCDF-GHJK\u{1b}", "BCDF GHJK"] {
+            assert!(!super::super::is_code(other), "{other}");
+        }
     }
 
     #[tokio::test]
     async fn an_agent_waits_once_and_hears_a_refusal_once() {
         let (tunnels, _t) = tunnels();
-        let first = tunnels.request("a", "laptop".into(), "http://localhost:3000".into(), None);
-        let again = tunnels.request("a", "laptop".into(), "http://localhost:4000".into(), None);
+        let first = tunnels.request("a", "laptop".into(), "http://localhost:3000".into(), None).unwrap();
+        let again = tunnels.request("a", "laptop".into(), "http://localhost:4000".into(), None).unwrap();
         assert_eq!(first.code, again.code);
         assert_eq!(tunnels.find(&first.code.to_lowercase()).unwrap().target, "http://localhost:4000");
 
@@ -523,7 +567,7 @@ mod tests {
         assert!(tunnels.waiting("a").is_none());
 
         // Asking again after a refusal is a fresh request.
-        let fresh = tunnels.request("a", "laptop".into(), "http://localhost:3000".into(), None);
+        let fresh = tunnels.request("a", "laptop".into(), "http://localhost:3000".into(), None).unwrap();
         assert!(matches!(tunnels.waiting("a"), Some(Waiting::Pending(p)) if p.code == fresh.code));
         tunnels.resolve("a");
         assert!(tunnels.waiting("a").is_none());
@@ -557,10 +601,41 @@ mod tests {
     async fn waiting_is_bounded() {
         let (tunnels, _t) = tunnels();
         for i in 0..MAX_PENDING + 5 {
-            tunnels.request(&i.to_string(), "x".into(), "y".into(), None);
+            let address = IpAddr::from([10, 0, (i / 256) as u8, (i % 256) as u8]);
+            assert!(tunnels.request(&i.to_string(), "x".into(), "y".into(), Some(address)).is_some());
         }
         let pending = tunnels.pending();
         assert_eq!(pending.len(), MAX_PENDING);
         assert_eq!(pending[0].pubkey, "5");
+    }
+
+    #[tokio::test]
+    async fn one_address_can_crowd_out_only_itself() {
+        let (tunnels, _t) = tunnels();
+        let flood = Some(IpAddr::from([203, 0, 113, 9]));
+        let mine = tunnels.request("mine", "laptop".into(), "y".into(), Some(IpAddr::from([198, 51, 100, 7]))).unwrap();
+        for i in 0..MAX_PENDING_PER_ADDRESS {
+            assert!(tunnels.request(&format!("flood{i}"), "alex-laptop".into(), "y".into(), flood).is_some());
+        }
+        assert!(tunnels.request("one more", "alex-laptop".into(), "y".into(), flood).is_none());
+        // Asking again is metered too, however few are waiting.
+        for _ in 0..10 {
+            tunnels.request("flood0", "alex-laptop".into(), "y".into(), flood);
+        }
+        assert!(tunnels.request("flood0", "alex-laptop".into(), "y".into(), flood).is_none());
+        assert!(tunnels.find(&mine.code).is_some());
+    }
+
+    #[test]
+    fn a_signature_lets_a_connection_in_once() {
+        let (tunnels, _t) = tunnels();
+        let later = crate::util::now() + 60;
+        assert!(tunnels.first_use("a", later));
+        assert!(!tunnels.first_use("a", later));
+        assert!(tunnels.first_use("b", later));
+        // Forgotten once it would be refused as too old anyway.
+        assert!(tunnels.first_use("old", crate::util::now() - 1));
+        assert!(tunnels.first_use("c", later));
+        assert!(!tunnels.used.lock().contains_key("old"));
     }
 }

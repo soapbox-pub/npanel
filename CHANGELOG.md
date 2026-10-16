@@ -18,7 +18,9 @@ it is tagged.
   several agents can share one tunnel's key; together they may hold
   `tunnel_max_connections`, 100 by default, set under **Settings → Tunnels**.
 - Behind nginx, pass on upgraded connections (`Upgrade` and `Connection`) so
-  tunnel agents can connect. Caddy already does.
+  tunnel agents can connect, and set `X-Forwarded-For` to `$remote_addr` so a
+  visitor can't put an address of their choosing in front of their own. Caddy
+  already does both. See [Other proxies](docs/deployment.md#other-proxies).
 
 ## [0.6.2]
 

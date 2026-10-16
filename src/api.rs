@@ -103,6 +103,8 @@ pub enum ApiError {
     Forbidden(&'static str),
     NotFound(String),
     Conflict(String),
+    /// Too much of something, too fast.
+    TooMany(&'static str),
     /// Something npanel runs isn't ready, or took too long: try again.
     Unavailable(&'static str),
     Internal(anyhow::Error),
@@ -136,6 +138,7 @@ impl IntoResponse for ApiError {
                 (status, message.as_str())
             }
             ApiError::Forbidden(message) => (StatusCode::FORBIDDEN, *message),
+            ApiError::TooMany(message) => (StatusCode::TOO_MANY_REQUESTS, *message),
             ApiError::Unavailable(message) => (StatusCode::SERVICE_UNAVAILABLE, *message),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error."),
         };
@@ -1786,15 +1789,16 @@ fn preview_json(preview: &Preview) -> Value {
 /// What an agent answering a stale or unknown code is told.
 const CODE_EXPIRED: &str = "That code has expired, or was already answered. Run npanel tunnel again for a new one.";
 
-/// The agent a request is signed by. Its key is proved the way a user's
-/// is, but there is no row in `users` to look for: a tunnel is its row.
-fn agent_key(headers: &HeaderMap, method: &Method, uri: &Uri, body: &RawBody, dashboard_host: &str) -> Result<String, ApiError> {
+/// The signed event a tunnel's request carries. Its key is proved the way a
+/// user's is, but there is no row in `users` to look for: a tunnel is its row.
+fn tunnel_auth(headers: &HeaderMap, method: &Method, uri: &Uri, body: &RawBody, dashboard_host: &str) -> Result<crate::nostr::Event, ApiError> {
     let path_and_query = uri.path_and_query().map_or(uri.path(), |pq| pq.as_str());
     let header = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
-    match verify_nip98(header, method.as_str(), path_and_query, &body.0, dashboard_host, crate::util::now()) {
-        Ok(event) => Ok(event.pubkey),
-        Err(error) => Err(ApiError::Unauthorized(error.0)),
-    }
+    verify_nip98(header, method.as_str(), path_and_query, &body.0, dashboard_host, crate::util::now()).map_err(|error| ApiError::Unauthorized(error.0))
+}
+
+fn agent_key(headers: &HeaderMap, method: &Method, uri: &Uri, body: &RawBody, dashboard_host: &str) -> Result<String, ApiError> {
+    Ok(tunnel_auth(headers, method, uri, body, dashboard_host)?.pubkey)
 }
 
 fn tunnel_where(conn: &Connection, column: &str, value: &str) -> rusqlite::Result<Option<Tunnel>> {
@@ -1855,14 +1859,17 @@ async fn request_tunnel(
     if let Some(tunnel) = deps.db.call(move |conn| Ok(tunnel_where(conn, "pubkey", &key)?)).await? {
         return ok(json!({ "status": "authorized", "hostname": tunnel.hostname, "enabled": tunnel.enabled }));
     }
-    let pending = deps.tunnels.request(&pubkey, name, target, client.0);
+    let Some(pending) = deps.tunnels.request(&pubkey, name, target, client.0) else {
+        return Err(ApiError::TooMany("Too many tunnels have asked to be approved from this address. Wait a few minutes, or ask an admin to answer the ones waiting."));
+    };
     deps.log.info("tunnel_requested", fields! { "code" => pending.code.as_str(), "name" => pending.name.as_str(), "remote" => pending.remote.clone() });
     ok(pending_status(&deps, &pending))
 }
 
 /// An authorized agent connecting, which turns the connection into a tunnel.
 async fn connect_tunnel(State(deps): State<Deps>, Extension(client): Extension<ClientAddress>, Extension(body): Extension<RawBody>, request: Request) -> ApiResult {
-    let pubkey = agent_key(request.headers(), request.method(), request.uri(), &body, &deps.dashboard_host)?;
+    let auth = tunnel_auth(request.headers(), request.method(), request.uri(), &body, &deps.dashboard_host)?;
+    let pubkey = auth.pubkey.clone();
     let target = request.headers().get(TARGET_HEADER).and_then(|v| v.to_str().ok()).and_then(|v| agent_label(v, 200));
 
     let tunnel = deps
@@ -1883,6 +1890,13 @@ async fn connect_tunnel(State(deps): State<Deps>, Extension(client): Extension<C
     };
     if !tunnel.enabled {
         return Err(ApiError::Forbidden("This tunnel is turned off in the dashboard."));
+    }
+    // Asked only of a tunnel's own signatures, which nobody else can make,
+    // so what is remembered is bounded by how often its agents connect. By
+    // signature rather than event id: two connections signed in the same
+    // second are the same event, and each signing is a signature of its own.
+    if !deps.tunnels.first_use(&auth.sig, auth.created_at.saturating_add(crate::auth::MAX_AUTH_AGE)) {
+        return Err(ApiError::Unauthorized("This signature was already used to connect. Sign a new one.".into()));
     }
     let max_connections = usize::try_from(deps.settings.get().tunnel_max_connections).unwrap_or(usize::MAX);
     Ok(deps.tunnels.accept(&tunnel, request, client.0, max_connections))
@@ -1961,10 +1975,29 @@ async fn list_tunnels(State(deps): State<Deps>, _: Admin) -> ApiResult {
     ok(json!({ "tunnels": list, "requests": deps.tunnels.pending() }))
 }
 
-async fn get_tunnel_request(State(deps): State<Deps>, _: Admin, Path(code): Path<String>) -> ApiResult {
-    match deps.tunnels.find(&code) {
-        Some(pending) => ok(json!({ "request": pending })),
-        None => Err(ApiError::NotFound(CODE_EXPIRED.into())),
+/// A waiting agent, and whether it asked from where the admin looking at it
+/// is: the sign, short of anything a stranger could fake, that it is the one
+/// they started themselves.
+async fn get_tunnel_request(State(deps): State<Deps>, _: Admin, Extension(client): Extension<ClientAddress>, Path(code): Path<String>) -> ApiResult {
+    let Some(pending) = deps.tunnels.find(&code) else {
+        return Err(ApiError::NotFound(CODE_EXPIRED.into()));
+    };
+    let asked_from = pending.remote.as_deref().and_then(|r| r.parse::<std::net::IpAddr>().ok());
+    let from_you = match (asked_from, client.0) {
+        (Some(theirs), Some(yours)) => Some(same_network(theirs, yours)),
+        _ => None,
+    };
+    ok(json!({ "request": pending, "from_you": from_you }))
+}
+
+/// Whether two addresses are one network's: the same IPv4 address, which is
+/// what a household or office shares behind NAT, or the same IPv6 /64.
+fn same_network(a: std::net::IpAddr, b: std::net::IpAddr) -> bool {
+    use std::net::IpAddr::{V4, V6};
+    match (a.to_canonical(), b.to_canonical()) {
+        (V4(a), V4(b)) => a == b,
+        (V6(a), V6(b)) => a.segments()[..4] == b.segments()[..4],
+        _ => false,
     }
 }
 
@@ -2140,4 +2173,20 @@ async fn delete_tunnel(State(deps): State<Deps>, Admin(user): Admin, Path(hostna
     deps.log.info("tunnel_deleted", fields! { "hostname" => tunnel.hostname.as_str(), "actor" => user.pubkey.as_str() });
     tunnels_changed(&deps).await?;
     ok(json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_network_is_one_address_or_one_slash_64() {
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        assert!(same_network(ip("203.0.113.9"), ip("203.0.113.9")));
+        assert!(!same_network(ip("203.0.113.9"), ip("203.0.113.10")));
+        assert!(same_network(ip("2001:db8:1:2::5"), ip("2001:db8:1:2:abcd::1")));
+        assert!(!same_network(ip("2001:db8:1:2::5"), ip("2001:db8:1:3::5")));
+        assert!(same_network(ip("::ffff:203.0.113.9"), ip("203.0.113.9")));
+        assert!(!same_network(ip("203.0.113.9"), ip("2001:db8::1")));
+    }
 }

@@ -1,5 +1,5 @@
 import { useSeoMeta } from '@unhead/react';
-import { Cable } from 'lucide-react';
+import { Cable, Check } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
@@ -43,7 +43,7 @@ export function TunnelAuthorizePage() {
       </Notice>
     );
   } else {
-    body = <Approve request={request.data} />;
+    body = <Approve request={request.data.request} fromYou={request.data.from_you} />;
   }
 
   return (
@@ -89,7 +89,7 @@ function CodeForm({ onCode }: { onCode(code: string): void }) {
   );
 }
 
-function Approve({ request }: { request: TunnelRequest }) {
+function Approve({ request, fromYou }: { request: TunnelRequest; fromYou: boolean | null }) {
   const approveTunnel = useApproveTunnel();
   const denyTunnel = useDenyTunnel();
   const navigate = useNavigate();
@@ -121,6 +121,10 @@ function Approve({ request }: { request: TunnelRequest }) {
         void run(() => approveTunnel.mutateAsync({ code: request.code, hostname }), `${domain} authorized`);
       }}
     >
+      <p className="text-sm text-muted-foreground">
+        Approve a tunnel you started yourself, or one someone you know asked you to. It can serve anything on the
+        domain you give it.
+      </p>
       <div className="space-y-4 rounded-xl bg-card p-5 surface">
         <div className="flex items-center gap-3">
           <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
@@ -137,10 +141,7 @@ function Approve({ request }: { request: TunnelRequest }) {
           <p className="font-mono text-3xl font-semibold tracking-[0.2em]">{request.code}</p>
           <p className="mt-1 text-xs text-muted-foreground">Check that the agent shows this same code.</p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          Asked {timeAgo(request.created_at)}
-          {request.remote && ` from ${request.remote}`}. Approving lets whoever runs it serve anything they like on the domain you give it.
-        </p>
+        <Provenance request={request} fromYou={fromYou} />
       </div>
 
       <div className="space-y-2">
@@ -172,6 +173,36 @@ function Approve({ request }: { request: TunnelRequest }) {
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * Where the request came from, set beside where the admin is: a request from
+ * their own network is very likely the agent they just started.
+ */
+function Provenance({ request, fromYou }: { request: TunnelRequest; fromYou: boolean | null }) {
+  const when = timeAgo(request.created_at);
+
+  if (fromYou && request.remote) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Check className="size-3.5 shrink-0 text-success" aria-hidden />
+        Asked {when} from your network ({request.remote}).
+      </p>
+    );
+  }
+  if (fromYou === false && request.remote) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Asked {when} from {request.remote}, which is a different network from the one you're on.
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      Asked {when}
+      {request.remote && ` from ${request.remote}`}.
+    </p>
   );
 }
 

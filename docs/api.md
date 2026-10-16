@@ -924,8 +924,11 @@ unless npanel gets certificates itself.
 
 ### `GET /api/tunnels/requests/:code`
 
-`{ "request": { ... } }`, one of the `requests` above. The code may be typed in
-any case, with or without its dash. `404` once it has expired (after fifteen
+`{ "request": { ... }, "from_you": true }`, one of the `requests` above.
+`from_you` says whether the agent asked from the network the admin signing
+this request is on (the same IPv4 address, or IPv6 /64), and is `null` when
+either address isn't known. The code may be typed in any case, with or
+without its dash. `404` once it has expired (after fifteen
 minutes) or been answered.
 
 ### `POST /api/tunnels/requests/:code`
@@ -977,14 +980,16 @@ true }`, `{ "status": "pending", "code": "...", "url": "...", "expires_at": ...
 ```
 
 Asks to be authorized, and answers as `GET /api/tunnel` does. Asking again while
-waiting keeps the same code.
+waiting keeps the same code. `429` when three agents from the same address
+are waiting already, or it has asked ten times in ten minutes.
 
 ### `GET /api/tunnel/connect`
 
 With `Connection: upgrade` and `Upgrade: npanel-tunnel` over HTTP/1.1, answered
 with `101`, after which the connection is HTTP/2 with npanel as the client. `404`
 if the key has no tunnel, `403` if the tunnel is off, and `429` if its agents
-already hold `tunnel_max_connections` between them.
+already hold `tunnel_max_connections` between them. Each signature connects
+once: `401` if this one already has.
 
 ## Settings — admin
 

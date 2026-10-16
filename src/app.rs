@@ -27,9 +27,8 @@ pub struct App {
     pub api: axum::Router,
 }
 
-/// Who an API request came from, as far as npanel can tell: the address that
-/// connected, or behind a proxy, the first one its `X-Forwarded-For` names.
-/// Shown to admins about agents, and believed for nothing.
+/// Who an API request came from, as [`client_address`] tells. Shown to admins
+/// about agents, and believed for nothing.
 #[derive(Clone, Copy, Debug)]
 pub struct ClientAddress(pub Option<IpAddr>);
 
@@ -56,24 +55,13 @@ impl App {
             };
             let origin = RequestOrigin { hostname, scheme };
             if let Some(tunnel) = self.tunnels.route(&origin.hostname) {
-                let visitor = match via {
-                    Via::Proxy(_) => None,
-                    Via::Tls(visitor) => Some(visitor),
-                };
+                let visitor = client_address(request.headers(), via);
                 return self.tunnels.proxy(tunnel, request, &origin, visitor).await;
             }
             return self.site.serve(request, origin, peer).await;
         }
 
-        let client = match via {
-            Via::Proxy(_) => request
-                .headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .and_then(|v| v.trim().parse().ok()),
-            Via::Tls(visitor) => Some(visitor),
-        };
+        let client = client_address(request.headers(), via);
         request.extensions_mut().insert(ClientAddress(client));
 
         let path = request.uri().path();
@@ -94,6 +82,21 @@ impl App {
         headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
         headers.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
         response
+    }
+}
+
+/// The visitor's address, by the rule analytics and error reports use
+/// (`client_ip`): the one that connected, or behind a proxy, the proxy's word
+/// for it. `None` behind a proxy that said nothing, rather than the proxy's
+/// own address, which would describe every visitor alike.
+pub fn client_address(headers: &HeaderMap, via: Via) -> Option<IpAddr> {
+    match via {
+        Via::Tls(visitor) => Some(visitor),
+        Via::Proxy(proxy) => {
+            let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+            let address = crate::analytics::client_ip(header("x-forwarded-for"), header("x-real-ip"), Peer::Proxy(proxy));
+            address.parse().ok().filter(|address| *address != proxy)
+        }
     }
 }
 
