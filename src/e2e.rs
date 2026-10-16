@@ -1080,13 +1080,18 @@ async fn origin() -> std::net::SocketAddr {
     address
 }
 
-/// An agent authorized from the dashboard serves its hostname — requests,
-/// bodies and WebSockets — until it is turned off or revoked, and never on a
-/// name a site has.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
-    use futures_util::{SinkExt, StreamExt};
+/// A gateway listening on loopback, an origin, and an agent for it holding
+/// `connections` connections, not yet authorized.
+struct Tunneled {
+    gw: Gateway,
+    /// Where the gateway listens, for visitors and the agent alike.
+    address: std::net::SocketAddr,
+    origin: std::net::SocketAddr,
+    agent: Arc<crate::tunnel::agent::Agent>,
+    shutdown: CancellationToken,
+}
 
+async fn tunneled(connections: usize) -> Tunneled {
     use crate::tunnel::agent::{Agent, Config};
 
     let nostr = Arc::new(FakeNostr { manifests: Mutex::new(Vec::new()), server: String::new() });
@@ -1112,13 +1117,24 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
             secret: SECRET_B.into(),
             target: origin.to_string().parse().unwrap(),
             name: "laptop".into(),
-            connections: crate::tunnel::agent::DEFAULT_CONNECTIONS,
+            connections,
             resolve: Some(address),
             report: Arc::new(|_| {}),
         })
         .await
         .unwrap(),
     );
+    Tunneled { gw, address, origin, agent, shutdown }
+}
+
+/// An agent authorized from the dashboard serves its hostname — requests,
+/// bodies and WebSockets — until it is turned off or revoked, and never on a
+/// name a site has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
+    use futures_util::{SinkExt, StreamExt};
+
+    let Tunneled { gw, address, origin, agent, shutdown } = tunneled(crate::tunnel::agent::DEFAULT_CONNECTIONS).await;
     let npub = crate::nostr::nip19::npub_encode(&crate::nostr::event::public_key(AUTHOR));
     let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1244,6 +1260,57 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
     let stopped = tokio::time::timeout(Duration::from_secs(20), running).await.expect("the agent stopping").unwrap();
     assert!(stopped.unwrap_err().to_string().contains("removed"));
 
+    shutdown.cancel();
+    gw.stop().await;
+}
+
+/// Open WebSockets each hold a stream for as long as they're open, and a
+/// tunnel holds many more of them than hyper's default of 200 per connection:
+/// here, three hundred on one, with requests still answered beside them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tunnel_holds_hundreds_of_websockets_on_one_connection() {
+    use futures_util::{SinkExt, StreamExt};
+
+    let Tunneled { gw, address, agent, shutdown, .. } = tunneled(1).await;
+    let authorizing = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.authorize().await }
+    });
+    let mut code = String::new();
+    eventually("the agent asking", async || {
+        let (_, body) = gw.api("GET", "/api/tunnels", None).await;
+        code = body["requests"][0]["code"].as_str().unwrap_or_default().to_string();
+        !code.is_empty()
+    })
+    .await;
+    let (status, _) = gw.api("POST", &format!("/api/tunnels/requests/{code}"), Some(serde_json::json!({ "hostname": "dev.example.com" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    authorizing.await.unwrap().unwrap();
+    let running = tokio::spawn(agent.clone().run());
+    eventually("the agent connecting", async || {
+        let (_, body) = gw.api("GET", "/api/tunnels/dev.example.com", None).await;
+        body["tunnel"]["connections"].as_array().map(Vec::len) == Some(1)
+    })
+    .await;
+
+    let mut sockets = Vec::new();
+    for _ in 0..300 {
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::client_async("ws://dev.example.com/ws", stream))
+            .await
+            .expect("a WebSocket opening in time")
+            .unwrap();
+        sockets.push(ws);
+    }
+    for (i, ws) in sockets.iter_mut().enumerate() {
+        ws.send(tokio_tungstenite::tungstenite::Message::text(i.to_string())).await.unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap().into_text().unwrap().as_str(), i.to_string());
+    }
+    let visitor = reqwest::Client::builder().no_proxy().resolve("dev.example.com", address).build().unwrap();
+    let response = visitor.get(format!("http://dev.example.com:{}/hello", address.port())).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    running.abort();
     shutdown.cancel();
     gw.stop().await;
 }

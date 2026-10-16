@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use url::Url;
 
-use super::{is_code, strip_hop_by_hop, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, STATUS_PATH, TARGET_HEADER};
+use super::{is_code, strip_hop_by_hop, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, STATUS_PATH, TARGET_HEADER, WEBSOCKET_BUFFER};
 use crate::auth::sign_nip98;
 use crate::nostr::event::{generate_secret_key, is_secret_key};
 
@@ -41,6 +41,12 @@ use crate::nostr::event::{generate_secret_key, is_secret_key};
 /// that either end can lose one without the site going dark while it is made
 /// again.
 pub const DEFAULT_CONNECTIONS: usize = 2;
+
+/// How many requests and WebSockets one connection may carry at once. Each is
+/// a stream, and hyper's default of 200 would cap a tunnel at a few hundred
+/// open sockets: every one past it waits, then times out. An idle stream
+/// costs a few kilobytes, so the limit is set far above any real load.
+const MAX_STREAMS: u32 = 10_000;
 
 /// How often a waiting agent asks whether it has been authorized.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -349,6 +355,7 @@ impl Agent {
             .keep_alive_interval(KEEP_ALIVE)
             .keep_alive_timeout(KEEP_ALIVE)
             .adaptive_window(true)
+            .max_concurrent_streams(MAX_STREAMS)
             .enable_connect_protocol()
             .serve_connection(upgraded, service)
             .await;
@@ -480,7 +487,8 @@ impl Origin {
                 let origin_upgrade = hyper::upgrade::on(&mut response);
                 tokio::spawn(async move {
                     let (Ok(tunnel), Ok(origin)) = tokio::join!(tunnel_upgrade, origin_upgrade) else { return };
-                    let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(tunnel), &mut TokioIo::new(origin)).await;
+                    let (mut tunnel, mut origin) = (TokioIo::new(tunnel), TokioIo::new(origin));
+                    let _ = tokio::io::copy_bidirectional_with_sizes(&mut tunnel, &mut origin, WEBSOCKET_BUFFER, WEBSOCKET_BUFFER).await;
                 });
                 let (mut parts, _) = response.into_parts();
                 strip_hop_by_hop(&mut parts.headers);

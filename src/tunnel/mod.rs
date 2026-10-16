@@ -49,6 +49,12 @@ pub fn is_code(code: &str) -> bool {
 /// dashboard, and nothing else.
 pub const TARGET_HEADER: &str = "npanel-target";
 
+/// The buffer each direction of a WebSocket is copied through, on either end
+/// of the tunnel. Under tokio's 8 KiB: an open socket mostly sits idle, and a
+/// server holding thousands keeps two of these each; a large message only
+/// takes a few more copies.
+pub const WEBSOCKET_BUFFER: usize = 4 * 1024;
+
 /// How often each end pings the other, and how long an answer may take,
 /// before a quiet connection is given up for dead. Under the minute most NAT
 /// and proxy idle timeouts allow.

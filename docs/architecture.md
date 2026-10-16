@@ -894,8 +894,15 @@ control keeps a large upload or download from swamping the connection. Both
 ends grow their flow-control windows to fit the link (hyper's adaptive
 window), since a fixed window caps a connection at its size per round trip:
 1 MB over a 50 ms link is 20 MB/s, however fast the link. The agent holds two
-connections, so either end can lose one without the site going dark, and
-npanel sends requests down them in turn. Each connection is one task at each
+connections, so either end can lose one without the site going dark. npanel
+sends each request down whichever has the fewest streams open, taking turns
+between equals, so a connection carrying a large download or holding many
+WebSockets isn't handed requests the others have room for. A connection may
+carry 10,000 streams at once: every open WebSocket and event stream holds one
+for as long as it's open, and hyper's default of 200 would cap a tunnel at a
+few hundred of them, each past it waiting until it timed out. An idle stream
+costs a few kilobytes, as does each direction of a WebSocket's copy, which
+goes through a 4 KiB buffer at each end rather than tokio's 8 KiB. Each connection is one task at each
 end, framing and encrypting every stream on it, so a busy tunnel spreads
 across more cores with more connections (`--connections`) or more agents
 sharing its key, up to `tunnel_max_connections` in all. A connection counts

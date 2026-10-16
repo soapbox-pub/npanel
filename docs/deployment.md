@@ -682,7 +682,7 @@ dashboard calls the tunnel, which is otherwise the machine's name.
 The agent holds two connections to the server and uses every core. For a busy
 origin, such as a Blossom server, give it more with `--connections 8`, or run
 the same command on several machines with the same key file: they share the
-tunnel, and npanel sends requests to each in turn. All of a tunnel's agents
+tunnel, and npanel sends each request to the least busy connection. All of a tunnel's agents
 together may hold `tunnel_max_connections`, 100 unless an admin changes it
 under **Settings → Tunnels**.
 

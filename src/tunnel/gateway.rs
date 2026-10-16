@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -29,7 +29,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::{is_websocket, strip_hop_by_hop, CODE_ALPHABET, KEEP_ALIVE, PROTOCOL};
+use super::{is_websocket, strip_hop_by_hop, CODE_ALPHABET, KEEP_ALIVE, PROTOCOL, WEBSOCKET_BUFFER};
 use crate::db::{Db, Tunnel};
 use crate::fields;
 use crate::log::Logger;
@@ -87,6 +87,18 @@ struct Live {
     send: SendRequest<Body>,
     info: ConnectionInfo,
     stop: CancellationToken,
+    /// Requests and WebSockets on it now, which is how busy it is.
+    streams: Arc<AtomicUsize>,
+}
+
+/// One stream's place in its connection's count, from when the request is
+/// sent until its response has gone, or its WebSocket has closed.
+struct InFlight(Arc<AtomicUsize>);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// One open connection, as the dashboard shows it.
@@ -222,7 +234,7 @@ impl Tunnels {
                 if !this.routes.load().values().any(|t| *t == id) {
                     return;
                 }
-                live.entry(id).or_default().push(Live { id: number, send, info: info.clone(), stop: stop.clone() });
+                live.entry(id).or_default().push(Live { id: number, send, info: info.clone(), stop: stop.clone(), streams: Arc::default() });
             }
             this.log.info("tunnel_connected", fields! { "hostname" => hostname.as_str(), "remote" => info.remote.clone() });
 
@@ -253,14 +265,13 @@ impl Tunnels {
 
     /// A connection to send a request down: each in turn, skipping any that
     /// have closed.
-    fn sender(&self, tunnel: i64) -> Option<SendRequest<Body>> {
+    fn sender(&self, tunnel: i64) -> Option<(SendRequest<Body>, InFlight)> {
         let live = self.live.lock();
         let open: Vec<&Live> = live.get(&tunnel)?.iter().filter(|c| !c.send.is_closed()).collect();
-        if open.is_empty() {
-            return None;
-        }
-        let turn = self.counter.fetch_add(1, Ordering::Relaxed) as usize;
-        Some(open[turn % open.len()].send.clone())
+        let loads: Vec<usize> = open.iter().map(|c| c.streams.load(Ordering::Relaxed)).collect();
+        let chosen = open[least_busy(&loads, self.counter.fetch_add(1, Ordering::Relaxed) as usize)?];
+        chosen.streams.fetch_add(1, Ordering::Relaxed);
+        Some((chosen.send.clone(), InFlight(chosen.streams.clone())))
     }
 
     /// Pass a visitor's request to the agent serving `tunnel`, and its
@@ -268,7 +279,7 @@ impl Tunnels {
     /// it, and the only one the origin is told: it sees every request come
     /// from the agent, so a forwarding header is all it has to go on.
     pub async fn proxy(&self, tunnel: i64, mut request: Request<Body>, origin: &RequestOrigin, visitor: Option<IpAddr>) -> Response<Body> {
-        let Some(mut send) = self.sender(tunnel) else {
+        let Some((mut send, in_flight)) = self.sender(tunnel) else {
             let mut response = text(StatusCode::BAD_GATEWAY, "This site is offline right now. Try again in a moment.");
             response.headers_mut().insert(header::RETRY_AFTER, HeaderValue::from_static("10"));
             return response;
@@ -331,8 +342,10 @@ impl Tunnels {
             }
             let agent_upgrade = hyper::upgrade::on(&mut response);
             tokio::spawn(async move {
+                let _in_flight = in_flight;
                 let (Ok(agent), Ok(visitor)) = tokio::join!(agent_upgrade, visitor_upgrade) else { return };
-                let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(agent), &mut TokioIo::new(visitor)).await;
+                let (mut agent, mut visitor) = (TokioIo::new(agent), TokioIo::new(visitor));
+                let _ = tokio::io::copy_bidirectional_with_sizes(&mut agent, &mut visitor, WEBSOCKET_BUFFER, WEBSOCKET_BUFFER).await;
             });
             let (mut parts, _) = response.into_parts();
             strip_hop_by_hop(&mut parts.headers);
@@ -344,7 +357,7 @@ impl Tunnels {
         }
 
         strip_hop_by_hop(response.headers_mut());
-        response.map(Body::new)
+        response.map(|body| Body::new(Held { body, _in_flight: in_flight }))
     }
 
     /// Note that an agent is waiting, or refresh what it said if it already
@@ -517,6 +530,38 @@ impl hyper::body::Body for Watched {
     }
 }
 
+/// Which connection to send a request down: the one with the fewest streams
+/// on it, so that one carrying a large download, or holding many WebSockets,
+/// isn't handed requests the others have room for. Ties go to each in turn,
+/// counting from `turn`.
+fn least_busy(loads: &[usize], turn: usize) -> Option<usize> {
+    (0..loads.len()).map(|i| (turn + i) % loads.len()).min_by_key(|&i| loads[i])
+}
+
+/// A response body that keeps its stream counted against its connection
+/// until the visitor has had all of it, or gone.
+struct Held {
+    body: hyper::body::Incoming,
+    _in_flight: InFlight,
+}
+
+impl hyper::body::Body for Held {
+    type Data = Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, hyper::Error>>> {
+        hyper::body::Body::poll_frame(Pin::new(&mut self.body), cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        hyper::body::Body::is_end_stream(&self.body)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        hyper::body::Body::size_hint(&self.body)
+    }
+}
+
 /// When the origin has had [`RESPONSE_TIMEOUT`] to answer. The clock starts
 /// over with each frame of the request body, and runs out for good once the
 /// body has gone: an upload that takes ten minutes is the visitor's time,
@@ -624,6 +669,17 @@ mod tests {
         }
         assert!(tunnels.request("flood0", "alex-laptop".into(), "y".into(), flood).is_none());
         assert!(tunnels.find(&mine.code).is_some());
+    }
+
+    #[test]
+    fn requests_go_where_there_is_room() {
+        assert_eq!(least_busy(&[], 0), None);
+        assert_eq!(least_busy(&[5, 0, 3], 0), Some(1));
+        assert_eq!(least_busy(&[5, 0, 3], 7), Some(1));
+        // Equally busy, they take turns.
+        let turns: Vec<_> = (0..4).map(|turn| least_busy(&[2, 2], turn).unwrap()).collect();
+        assert_eq!(turns, [0, 1, 0, 1]);
+        assert_eq!(least_busy(&[1, 4, 1], 1), Some(2));
     }
 
     #[test]
