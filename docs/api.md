@@ -11,7 +11,7 @@ is `413`, refused before the signature is checked.
 ## Authentication
 
 Every route except `/api/instance` and `/api/sites` requires [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) auth. The
-[agent routes](#agents) are signed by a tunnel agent's own key rather than a
+[tunnel's own routes](#a-tunnels-own-routes) are signed by the tunnel's key rather than a
 user's; the rest of this section applies to them as it is. Sign a
 kind `27235` event and send it base64-encoded:
 
@@ -957,31 +957,33 @@ hostname is taken.
 Revokes the tunnel. Its connections are dropped, its agent stops, and its key
 works nowhere until it is approved again.
 
-## Agents
+## A tunnel's own routes
 
-What `npanel tunnel` calls. Each is signed by the agent's key, and none needs a
-user. They are documented for completeness; the agent is the only client.
+What `npanel tunnel` calls. Each is signed by the tunnel's key, and none needs
+a user. Singular, as `/api/me` is beside `/api/users`: `/api/tunnel` is the
+tunnel signing the request. They are documented for completeness; `npanel
+tunnel` is the only client.
 
-### `GET /api/agent`
+### `GET /api/tunnel`
 
-Where the agent stands: `{ "status": "authorized", "hostname": "...", "enabled":
+Where the key stands: `{ "status": "authorized", "hostname": "...", "enabled":
 true }`, `{ "status": "pending", "code": "...", "url": "...", "expires_at": ...
 }`, `{ "status": "denied" }` (said once), or `{ "status": "unknown" }`.
 
-### `POST /api/agent/request`
+### `POST /api/tunnel/request`
 
 ```json
 { "name": "laptop", "target": "http://localhost:8080" }
 ```
 
-Asks to be authorized, and answers as `GET /api/agent` does. Asking again while
+Asks to be authorized, and answers as `GET /api/tunnel` does. Asking again while
 waiting keeps the same code.
 
-### `GET /api/agent/connect`
+### `GET /api/tunnel/connect`
 
 With `Connection: upgrade` and `Upgrade: npanel-tunnel` over HTTP/1.1, answered
 with `101`, after which the connection is HTTP/2 with npanel as the client. `404`
-if the agent has no tunnel, `403` if the tunnel is off, and `429` if its agents
+if the key has no tunnel, `403` if the tunnel is off, and `429` if its agents
 already hold `tunnel_max_connections` between them.
 
 ## Settings — admin

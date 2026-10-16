@@ -11,7 +11,8 @@ it is tagged.
   WebSockets included, much as `cloudflared` does. The first run prints a
   link and a code for an admin to approve in the dashboard's new **Tunnels**
   page, where tunnels can be turned off, moved to another domain, or removed.
-  The agent dials out over HTTPS, so its machine needs no public address. See
+  The agent dials out over HTTPS, so its machine needs no public address. The
+  origin gets the public domain in `Host`, as behind any reverse proxy. See
   [Tunnels](docs/deployment.md#tunnels).
   For a busy origin, `--connections` opens more than the default two, and
   several agents can share one tunnel's key; together they may hold

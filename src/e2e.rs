@@ -1105,7 +1105,6 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
             secret: "000000000000000000000000000000000000000000000000000000000000000b".into(),
             target: origin.to_string().parse().unwrap(),
             name: "laptop".into(),
-            preserve_host: false,
             connections: crate::tunnel::agent::DEFAULT_CONNECTIONS,
             resolve: Some(address),
             report: Arc::new(|_| {}),
@@ -1169,7 +1168,7 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
 
     let response = visitor.get(url("/hello")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.text().await.unwrap(), format!("{origin} dev.example.com https GET"));
+    assert_eq!(response.text().await.unwrap(), "dev.example.com dev.example.com https GET");
 
     let large: Vec<u8> = (0..2 * 1024 * 1024u32).map(|i| (i % 253) as u8).collect();
     let response = visitor.post(url("/echo")).body(large.clone()).send().await.unwrap();

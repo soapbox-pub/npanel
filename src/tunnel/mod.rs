@@ -25,12 +25,14 @@ use http::header::{self, HeaderMap, HeaderName};
 /// The `Upgrade` token an agent asks for.
 pub const PROTOCOL: &str = "npanel-tunnel";
 
-/// Where an agent asks what it is, and is told whether it is authorized.
-pub const AGENT_PATH: &str = "/api/agent";
+/// Where an agent asks what its key is, and is told whether it is a tunnel.
+/// Singular, as `/api/me` is beside `/api/users`: the tunnel signing the
+/// request, where `/api/tunnels` is every tunnel, for admins.
+pub const STATUS_PATH: &str = "/api/tunnel";
 /// Where an agent asks to be authorized.
-pub const REQUEST_PATH: &str = "/api/agent/request";
+pub const REQUEST_PATH: &str = "/api/tunnel/request";
 /// Where an agent connects.
-pub const CONNECT_PATH: &str = "/api/agent/connect";
+pub const CONNECT_PATH: &str = "/api/tunnel/connect";
 
 /// What the agent forwards to, as it says when it connects. Shown in the
 /// dashboard, and nothing else.

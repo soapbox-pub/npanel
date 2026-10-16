@@ -663,11 +663,14 @@ site. The agent connects as soon as you approve it, and the domain serves
 whatever `localhost:8080` does, WebSockets included.
 
 The target can be a port, a host and port (`devbox:5173`), or an
-`http://` address; the agent forwards plain HTTP. It sends the origin its own
-address as `Host`, which development servers accept, and the public domain as
-`X-Forwarded-Host`; add `--preserve-host` to send the public domain as `Host`
-instead. `--name` sets what the dashboard calls it, which is otherwise the
-machine's name.
+`http://` address; the agent forwards plain HTTP. The origin sees the request
+as it would behind any reverse proxy: the public domain in `Host`, and
+`X-Forwarded-Proto: https`. A server that checks hostnames (Vite, Django's
+`ALLOWED_HOSTS`, Rails' `config.hosts`) needs the domain allowed. Every request
+arrives from the agent, so the visitor's address is only in
+`X-Forwarded-For`: an app that logs or limits by address should trust that
+header from the agent's address, usually `127.0.0.1`. `--name` sets what the
+dashboard calls the tunnel, which is otherwise the machine's name.
 
 The agent holds two connections to the server and uses every core. For a busy
 origin, such as a Blossom server, give it more with `--connections 8`, or run

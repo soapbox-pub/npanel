@@ -1,9 +1,9 @@
 //! The dashboard's JSON API, served only on `dashboard_host`.
 //!
-//! Every route except `/api/instance`, `/api/sites` and the agent's requires
-//! NIP-98 auth from a pubkey that exists in the `users` table. The agent's —
-//! `/api/agent` and under it, where a tunnel agent asks to be authorized and
-//! connects — are NIP-98-signed too, by the agent's own key. The dashboard is
+//! Every route except `/api/instance`, `/api/sites` and a tunnel's own requires
+//! NIP-98 auth from a pubkey that exists in the `users` table. A tunnel's —
+//! `/api/tunnel` and under it, where `npanel tunnel` asks to be authorized and
+//! connects — are NIP-98-signed too, by the tunnel's own key. The dashboard is
 //! a client of this API and uses nothing private, so anything the UI can do,
 //! a script can do.
 
@@ -54,7 +54,7 @@ use crate::sites::{find_host, host_by_id, load_host, newest_event, site_event, s
 use crate::tls::{CertificateStatus, TlsService};
 use crate::tor::TorService;
 use crate::tunnel::gateway::{Pending, Tunnels, Waiting};
-use crate::tunnel::{AGENT_PATH, CONNECT_PATH, REQUEST_PATH, TARGET_HEADER};
+use crate::tunnel::{CONNECT_PATH, REQUEST_PATH, STATUS_PATH, TARGET_HEADER};
 
 /// Largest request body the API accepts. Bodies are read before the caller is
 /// known — NIP-98 hashes the payload — so anyone able to sign an event could
@@ -214,9 +214,9 @@ pub fn router(deps: Deps) -> Router {
     let public = Router::new()
         .route("/api/instance", get(instance))
         .route("/api/sites", get(sites))
-        .route(AGENT_PATH, get(agent_status))
-        .route(REQUEST_PATH, post(agent_request))
-        .route(CONNECT_PATH, get(agent_connect));
+        .route(STATUS_PATH, get(own_tunnel))
+        .route(REQUEST_PATH, post(request_tunnel))
+        .route(CONNECT_PATH, get(connect_tunnel));
 
     let private = Router::new()
         .route("/api/me", get(me))
@@ -1818,7 +1818,7 @@ fn pending_status(deps: &Deps, pending: &Pending) -> Value {
 
 /// Where the agent signing the request stands: a tunnel, waiting for an
 /// admin, refused, or unknown.
-async fn agent_status(State(deps): State<Deps>, method: Method, uri: Uri, headers: HeaderMap, Extension(body): Extension<RawBody>) -> ApiResult {
+async fn own_tunnel(State(deps): State<Deps>, method: Method, uri: Uri, headers: HeaderMap, Extension(body): Extension<RawBody>) -> ApiResult {
     let pubkey = agent_key(&headers, &method, &uri, &body, &deps.dashboard_host)?;
     let key = pubkey.clone();
     if let Some(tunnel) = deps.db.call(move |conn| Ok(tunnel_where(conn, "pubkey", &key)?)).await? {
@@ -1832,7 +1832,7 @@ async fn agent_status(State(deps): State<Deps>, method: Method, uri: Uri, header
 }
 
 /// An agent asking to be authorized, which gets a code to show.
-async fn agent_request(
+async fn request_tunnel(
     State(deps): State<Deps>,
     method: Method,
     uri: Uri,
@@ -1848,7 +1848,7 @@ async fn agent_request(
 
     let pubkey = agent_key(&headers, &method, &uri, &body, &deps.dashboard_host)?;
     let Ask { name, target } = body.json("Expected a JSON body with name and target.")?;
-    let name = agent_label(&name, 64).ok_or_else(|| bad("Give the agent a name of up to 64 characters."))?;
+    let name = agent_label(&name, 64).ok_or_else(|| bad("Give the tunnel a name of up to 64 characters."))?;
     let target = agent_label(&target, 200).ok_or_else(|| bad("Give the target as an address of up to 200 characters."))?;
 
     let key = pubkey.clone();
@@ -1861,7 +1861,7 @@ async fn agent_request(
 }
 
 /// An authorized agent connecting, which turns the connection into a tunnel.
-async fn agent_connect(State(deps): State<Deps>, Extension(client): Extension<ClientAddress>, Extension(body): Extension<RawBody>, request: Request) -> ApiResult {
+async fn connect_tunnel(State(deps): State<Deps>, Extension(client): Extension<ClientAddress>, Extension(body): Extension<RawBody>, request: Request) -> ApiResult {
     let pubkey = agent_key(request.headers(), request.method(), request.uri(), &body, &deps.dashboard_host)?;
     let target = request.headers().get(TARGET_HEADER).and_then(|v| v.to_str().ok()).and_then(|v| agent_label(v, 200));
 
@@ -2018,7 +2018,7 @@ async fn approve_tunnel(State(deps): State<Deps>, Admin(user): Admin, Extension(
         Outcome::Taken => return Err(ApiError::Conflict(format!("{hostname} is already configured."))),
         Outcome::AlreadyAuthorized => {
             deps.tunnels.resolve(&pending.pubkey);
-            return Err(ApiError::Conflict("This agent already has a tunnel.".into()));
+            return Err(ApiError::Conflict("This key already has a tunnel.".into()));
         }
     };
     deps.tunnels.resolve(&pending.pubkey);

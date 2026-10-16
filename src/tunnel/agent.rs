@@ -33,7 +33,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use url::Url;
 
-use super::{strip_hop_by_hop, AGENT_PATH, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, TARGET_HEADER};
+use super::{strip_hop_by_hop, STATUS_PATH, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, REQUEST_PATH, TARGET_HEADER};
 use crate::auth::sign_nip98;
 use crate::nostr::event::{generate_secret_key, is_secret_key};
 
@@ -60,7 +60,6 @@ pub struct Options {
     pub server: String,
     pub target: String,
     pub name: Option<String>,
-    pub preserve_host: bool,
     pub connections: usize,
 }
 
@@ -92,7 +91,6 @@ pub fn main(options: Options) -> Result<()> {
                 name: options.name.unwrap_or_else(machine_name),
                 report: terminal(target.clone(), options.connections),
                 target,
-                preserve_host: options.preserve_host,
                 connections: options.connections,
                 resolve: None,
             })
@@ -115,7 +113,6 @@ pub struct Config {
     pub target: Authority,
     /// What the dashboard calls this agent.
     pub name: String,
-    pub preserve_host: bool,
     /// How many connections to hold open.
     pub connections: usize,
     /// Where to reach the server, in place of looking its name up.
@@ -195,13 +192,13 @@ impl Agent {
             resolve: config.resolve,
             http,
             tls: tls_config(),
-            origin: Arc::new(Origin { client, target: config.target, preserve_host: config.preserve_host }),
+            origin: Arc::new(Origin { client, target: config.target }),
             report: config.report,
             server: config.server,
         };
         // A server too old to know of tunnels says so here, rather than
         // after the agent has asked to be authorized.
-        let (status, _) = agent.call(Method::GET, AGENT_PATH, None).await?;
+        let (status, _) = agent.call(Method::GET, STATUS_PATH, None).await?;
         if status == StatusCode::NOT_FOUND {
             bail!("{server} runs npanel {}, which has no tunnels. It needs upgrading first.", instance.version.as_deref().unwrap_or("older than 0.2.0"));
         }
@@ -224,7 +221,7 @@ impl Agent {
     }
 
     async fn status(&self) -> Result<Status> {
-        let (status, body) = self.call(Method::GET, AGENT_PATH, None).await?;
+        let (status, body) = self.call(Method::GET, STATUS_PATH, None).await?;
         if !status.is_success() {
             bail!("{}", error_message(&body, status));
         }
@@ -420,11 +417,6 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
 struct Origin {
     client: Client<HttpConnector, Body>,
     target: Authority,
-    /// Whether the origin is told the public hostname in `Host`, rather
-    /// than its own address. Off, development servers that check `Host`
-    /// accept what they're sent; the public one is in `X-Forwarded-Host`
-    /// either way.
-    preserve_host: bool,
 }
 
 impl Origin {
@@ -435,11 +427,13 @@ impl Origin {
         let (mut parts, body) = request.into_parts();
 
         strip_hop_by_hop(&mut parts.headers);
-        let host = match (parts.uri.authority(), self.preserve_host) {
-            (Some(public), true) => public.as_str(),
-            _ => self.target.as_str(),
+        // The hostname the visitor asked for, as any reverse proxy passes it
+        // on: the origin is a production server, and routes, redirects and
+        // builds its URLs by it. The target is only where to dial.
+        let Some(public) = parts.uri.authority() else {
+            return text(StatusCode::BAD_REQUEST, "The request named no hostname.".into());
         };
-        parts.headers.insert(header::HOST, HeaderValue::from_str(host).expect("an authority is a header value"));
+        parts.headers.insert(header::HOST, HeaderValue::from_str(public.as_str()).expect("an authority is a header value"));
         let path = parts.uri.path_and_query().map_or("/", |pq| pq.as_str());
         let Ok(uri) = Uri::builder().scheme("http").authority(self.target.clone()).path_and_query(path).build() else {
             return text(StatusCode::BAD_REQUEST, "That path can't be passed on.".into());

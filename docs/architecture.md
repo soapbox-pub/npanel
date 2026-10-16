@@ -885,7 +885,7 @@ another machine, which passes them on to a web server there — what
 
 **The agent dials out.** It connects to the dashboard host over HTTPS, as a
 browser would, and asks to upgrade the connection (`Upgrade: npanel-tunnel`
-on `/api/agent/connect`). So it works from behind NAT and a firewall, and
+on `/api/tunnel/connect`). So it works from behind NAT and a firewall, and
 through the proxy in front of npanel, which carries an upgrade as it carries a
 WebSocket. Once the connection is upgraded the roles reverse: npanel is the
 HTTP/2 client and the agent the server. Each visitor's request is a stream of
@@ -915,10 +915,12 @@ is.
 and the origin is told `X-Forwarded-Host` and `X-Forwarded-Proto`. Behind a
 proxy, its `X-Forwarded-For` goes on as it came; when npanel terminates TLS
 itself, it is replaced with the address that connected, since a visitor's own
-would be a lie. The agent sends `Host` as the origin's own address unless
-it's run with `--preserve-host`. Development servers check `Host` against
-their own list (Vite, Django, Rails), and the public name is in
-`X-Forwarded-Host` either way. An origin has 100 seconds to start answering,
+would be a lie. `Host` is the hostname the visitor asked for, as any reverse
+proxy passes it on; the target is only where the agent dials. A tunnel is for
+production servers, which route, redirect and build URLs by `Host`, and an
+origin told its own address would send visitors to `localhost`. A
+development server that checks `Host` refuses the public name until it is
+configured to allow it, which is deliberate. An origin has 100 seconds to start answering,
 as on Cloudflare, counted from the last of the request body to reach it: an
 upload that takes ten minutes is the visitor's time, and a Blossom server
 answers only once it has the whole file. The clock starts over with every
