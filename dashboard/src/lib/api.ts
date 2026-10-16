@@ -297,6 +297,10 @@ export class ApiClient {
     return this.request('GET', '/api/tunnels');
   }
 
+  tunnel(hostname: string): Promise<{ tunnel: Tunnel }> {
+    return this.request('GET', `/api/tunnels/${path(hostname)}`);
+  }
+
   /**
    * `from_you` says whether it asked from the network the admin is on, or
    * null when either address is unknown.

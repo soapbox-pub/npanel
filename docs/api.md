@@ -922,6 +922,10 @@ machine and can't be changed here. `connected_at` is when an agent last
 connected, or `null` if one never has. `certificates` is as on a host: `null`
 unless npanel gets certificates itself.
 
+### `GET /api/tunnels/:hostname`
+
+`{ "tunnel": { ... } }`, one of the `tunnels` above.
+
 ### `GET /api/tunnels/requests/:code`
 
 `{ "request": { ... }, "from_you": true }`, one of the `requests` above.

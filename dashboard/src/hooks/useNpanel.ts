@@ -238,6 +238,19 @@ export function useTunnels(enabled = true) {
   });
 }
 
+/** One tunnel, kept current: its agent connects and drops on its own. Admins only. */
+export function useTunnel(hostname: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('tunnel', hostname ?? ''),
+    queryFn: async () => (await api!.tunnel(hostname!)).tunnel,
+    enabled: !!api && !!hostname,
+    refetchInterval: LIVE_INTERVAL,
+    retry: false,
+  });
+}
+
 /** The agent showing `code`, waiting to be authorized. */
 export function useTunnelRequest(code: string | undefined, enabled = true) {
   const api = useApi();

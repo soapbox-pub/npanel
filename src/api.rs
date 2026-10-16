@@ -254,7 +254,7 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/link-previews/refresh", post(refresh_link_preview))
         .route("/api/tunnels", get(list_tunnels))
         .route("/api/tunnels/requests/{code}", get(get_tunnel_request).post(approve_tunnel).delete(deny_tunnel))
-        .route("/api/tunnels/{hostname}", patch(update_tunnel).delete(delete_tunnel))
+        .route("/api/tunnels/{hostname}", get(get_tunnel).patch(update_tunnel).delete(delete_tunnel))
         .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
@@ -2080,6 +2080,11 @@ async fn deny_tunnel(State(deps): State<Deps>, Admin(user): Admin, Path(code): P
 async fn find_tunnel(deps: &Deps, hostname: String) -> Result<Tunnel, ApiError> {
     let tunnel = deps.db.call(move |conn| Ok(tunnel_where(conn, "hostname", &hostname)?)).await?;
     tunnel.ok_or_else(|| ApiError::NotFound("Tunnel not found.".into()))
+}
+
+async fn get_tunnel(State(deps): State<Deps>, _: Admin, Path(hostname): Path<String>) -> ApiResult {
+    let tunnel = find_tunnel(&deps, hostname).await?;
+    ok(json!({ "tunnel": serialize_tunnel(&deps, tunnel).await? }))
 }
 
 async fn update_tunnel(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>, Path(hostname): Path<String>) -> ApiResult {

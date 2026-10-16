@@ -97,11 +97,12 @@ function Approve({ request, fromYou }: { request: TunnelRequest; fromYou: boolea
   const [hostname, setHostname] = useState('');
   const domain = hostname.trim().toLowerCase();
 
-  const run = async (action: () => Promise<unknown>, success: string) => {
+  /** Do `action`, then go where it says: the new tunnel's page, or the list. */
+  const run = async (action: () => Promise<string>, success: string) => {
     try {
-      await action();
+      const next = await action();
       toast({ title: success });
-      navigate('/tunnels');
+      navigate(next);
     } catch (error) {
       toast({
         title: "That didn't work",
@@ -118,7 +119,10 @@ function Approve({ request, fromYou }: { request: TunnelRequest; fromYou: boolea
       className="space-y-6"
       onSubmit={(event) => {
         event.preventDefault();
-        void run(() => approveTunnel.mutateAsync({ code: request.code, hostname }), `${domain} authorized`);
+        void run(async () => {
+          const { tunnel } = await approveTunnel.mutateAsync({ code: request.code, hostname });
+          return `/tunnels/${encodeURIComponent(tunnel.hostname)}`;
+        }, `${domain} authorized`);
       }}
     >
       <p className="text-sm text-muted-foreground">
@@ -164,7 +168,12 @@ function Approve({ request, fromYou }: { request: TunnelRequest; fromYou: boolea
           type="button"
           variant="outline"
           disabled={busy}
-          onClick={() => run(() => denyTunnel.mutateAsync(request.code), `${request.name} turned down`)}
+          onClick={() =>
+            run(async () => {
+              await denyTunnel.mutateAsync(request.code);
+              return '/tunnels';
+            }, `${request.name} turned down`)
+          }
         >
           Deny
         </Button>

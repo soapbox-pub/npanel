@@ -1173,6 +1173,11 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
     assert_eq!(limit(100).await, StatusCode::OK);
     eventually("the agent's other connection", async || connected(2).await).await;
 
+    let (status, body) = gw.api("GET", "/api/tunnels/dev.example.com", None).await;
+    assert_eq!((status, body["tunnel"]["name"].as_str()), (StatusCode::OK, Some("laptop")));
+    assert_eq!(body["tunnel"]["connections"].as_array().map(Vec::len), Some(2));
+    assert_eq!(gw.api("GET", "/api/tunnels/nope.example.com", None).await.0, StatusCode::NOT_FOUND);
+
     let response = visitor.get(url("/hello")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.text().await.unwrap(), "dev.example.com dev.example.com https GET");
