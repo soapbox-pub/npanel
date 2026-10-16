@@ -17,6 +17,12 @@ it is tagged.
   For a busy origin, `--connections` opens more than the default two, and
   several agents can share one tunnel's key; together they may hold
   `tunnel_max_connections`, 100 by default, set under **Settings → Tunnels**.
+- Redirects: a domain that sends every visit to another address, as a proxy's
+  `redir` would, added under the dashboard's new **Redirects** page. It keeps
+  the visitor's path unless told not to, and is a `301` unless marked
+  temporary. It gets a certificate like a site, so an old name or a moved
+  `docs.` needs no proxy in front of npanel. See
+  [Redirects](docs/deployment.md#redirects).
 - Behind nginx, pass on upgraded connections (`Upgrade` and `Connection`) so
   tunnel agents can connect, and set `X-Forwarded-For` to `$remote_addr` so a
   visitor can't put an address of their choosing in front of their own. Caddy

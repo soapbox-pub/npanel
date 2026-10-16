@@ -62,9 +62,9 @@ hostname npanel could route on — see
 GET http://127.0.0.1:3001/tls-check?domain=<hostname>
 ```
 
-`200` with `ok` when the domain is `dashboard_host` or an enabled host, `404`
-otherwise, and `429` with a `Retry-After` once `tls_check_limit_per_host` or
-`tls_check_limit_total` is spent. Refusals aren't metered, and `dashboard_host`
+`200` with `ok` when the domain is `dashboard_host` or an enabled host, tunnel
+or redirect, `404` otherwise, and `429` with a `Retry-After` once
+`tls_check_limit_per_host` or `tls_check_limit_total` is spent. Refusals aren't metered, and `dashboard_host`
 is exempt. Nothing else is served on that port.
 
 With `https_port` set npanel gets certificates itself and that port isn't
@@ -963,6 +963,70 @@ hostname is taken.
 
 Revokes the tunnel. Its connections are dropped, its agent stops, and its key
 works nowhere until it is approved again.
+
+## Redirects — admin
+
+A redirect sends every request on its hostname to another address. See
+[Redirects](deployment.md#redirects).
+
+### `GET /api/redirects`
+
+```json
+{
+  "redirects": [
+    {
+      "hostname": "docs.example.com",
+      "target": "https://about.example.com/",
+      "keep_path": true,
+      "permanent": true,
+      "enabled": true,
+      "created_by": "<hex>",
+      "created_at": 1754000000,
+      "updated_at": 1754000000,
+      "certificates": null
+    }
+  ]
+}
+```
+
+`target` is an absolute `http` or `https` URL, as npanel spells it once
+parsed: lowercase, punycode, and a `/` for an empty path. With `keep_path`,
+a request for `/a?b` is sent to the target's path followed by `/a?b`;
+without it, every request is sent to the target as it is. `permanent` is a
+`301`, kept by browsers for an hour; otherwise a `302`. Every method is
+redirected, not only `GET`. `certificates` is as on a host.
+
+### `GET /api/redirects/:hostname`
+
+`{ "redirect": { ... } }`, one of the `redirects` above.
+
+### `POST /api/redirects`
+
+```json
+{ "hostname": "docs.example.com", "target": "https://about.example.com", "keep_path": true, "permanent": true }
+```
+
+`keep_path` and `permanent` default to `true`. `201` with
+`{ "redirect": { ... } }`. `400` for a target that isn't an `http` or `https`
+URL, that carries a username, password or `#fragment`, that has a `?query`
+while keeping the path (the path would land after it), or that points at the
+redirect's own hostname. `409` if a site, tunnel or redirect already has the
+hostname, or it is the dashboard's.
+
+### `PATCH /api/redirects/:hostname`
+
+```json
+{ "hostname": "docs.example.org", "target": "https://example.org", "keep_path": false, "permanent": false, "enabled": false }
+```
+
+Every field is optional, and the target is checked again against the result,
+so a rename or turning on `keep_path` gets the same `400`s as creating one.
+`409` if the new hostname is taken.
+
+### `DELETE /api/redirects/:hostname`
+
+Removes the redirect. Its hostname answers nothing until something else is
+given it.
 
 ## A tunnel's own routes
 

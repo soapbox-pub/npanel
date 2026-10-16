@@ -226,6 +226,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
     .unwrap();
 
     let tunnels = Arc::new(crate::tunnel::gateway::Tunnels::new(db.clone(), log).unwrap());
+    let redirects = Arc::new(crate::redirects::Redirects::new(db.clone()).unwrap());
     let api = crate::api::router(Arc::new(crate::api::ApiDeps {
         db: db.clone(),
         settings: settings.clone(),
@@ -243,12 +244,14 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         serve_cache,
         last_prune,
         tunnels: tunnels.clone(),
+        redirects: redirects.clone(),
         dashboard_host: "panel.example.com".into(),
     }));
     let app = Arc::new(App {
         dashboard_host: "panel.example.com".into(),
         site,
         tunnels,
+        redirects,
         dashboard: crate::dashboard::Dashboard::new(crate::dashboard::Source::disk(vec![dir.path().join("no-dashboard")]), "panel.example.com", log),
         api,
     });
@@ -517,6 +520,62 @@ async fn a_dashboard_on_another_origin_can_use_the_api() {
     let (status, headers, _) = gw.request("GET", "panel.example.com", "/api/me", &[origin, ("authorization", &auth)], None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["access-control-allow-origin"], "*");
+
+    gw.stop().await;
+}
+
+/// A redirect sends every request on its hostname to its target, takes a
+/// name no site has, and stops the moment it is turned off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_redirect_sends_its_hostname_elsewhere() {
+    let nostr = Arc::new(FakeNostr { manifests: Mutex::new(vec![]), server: blossom(HashMap::new()).await });
+    let gw = gateway(nostr).await;
+    let npub = crate::nostr::nip19::npub_encode(&crate::nostr::event::public_key(AUTHOR));
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let create = async |hostname: &str, target: &str| {
+        gw.api("POST", "/api/redirects", Some(serde_json::json!({ "hostname": hostname, "target": target }))).await
+    };
+    let (status, body) = create("docs.example.com", "https://example.org").await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
+    assert_eq!(create("panel.example.com", "https://example.org").await.0, StatusCode::CONFLICT);
+    assert_eq!(create("old.example.com", "https://Old.Example.com/x").await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(create("old.example.com", "example.org").await.0, StatusCode::BAD_REQUEST);
+    let (status, body) = create("Old.Example.com", "https://example.org").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["redirect"]["target"], "https://example.org/");
+    assert_eq!((body["redirect"]["keep_path"].as_bool(), body["redirect"]["permanent"].as_bool()), (Some(true), Some(true)));
+    // Nor can a site take a redirect's name.
+    let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "hostname": "old.example.com" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, headers, _) = gw.request("POST", "old.example.com", "/a/b?c=d", &[], Some("x")).await;
+    assert_eq!(status, StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(headers["location"], "https://example.org/a/b?c=d");
+    assert_eq!(headers["cache-control"], "public, max-age=3600");
+
+    let update = async |patch: serde_json::Value| gw.api("PATCH", "/api/redirects/old.example.com", Some(patch)).await;
+    let (status, body) = update(serde_json::json!({ "target": "https://example.org/landing?from=old", "keep_path": false, "permanent": false })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, headers, _) = gw.request("GET", "old.example.com", "/a", &[], None).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(headers["location"], "https://example.org/landing?from=old");
+    // Keeping the path again would put it after a query.
+    assert_eq!(update(serde_json::json!({ "keep_path": true })).await.0, StatusCode::BAD_REQUEST);
+    // Nor may a rename make it point at itself.
+    let (status, _) = update(serde_json::json!({ "hostname": "example.org" })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    assert_eq!(update(serde_json::json!({ "enabled": false })).await.0, StatusCode::OK);
+    assert_eq!(gw.request("GET", "old.example.com", "/", &[], None).await.0, StatusCode::NOT_FOUND);
+
+    let (status, body) = gw.api("GET", "/api/redirects", None).await;
+    assert_eq!((status, body["redirects"].as_array().map(Vec::len)), (StatusCode::OK, Some(1)));
+    assert_eq!(gw.api("DELETE", "/api/redirects/old.example.com", None).await.0, StatusCode::OK);
+    assert_eq!(gw.api("GET", "/api/redirects/old.example.com", None).await.0, StatusCode::NOT_FOUND);
+    let (status, _) = gw.api("PATCH", "/api/hosts/docs.example.com", Some(serde_json::json!({ "hostname": "old.example.com" }))).await;
+    assert_eq!(status, StatusCode::OK);
 
     gw.stop().await;
 }

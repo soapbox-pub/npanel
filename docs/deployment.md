@@ -697,6 +697,27 @@ to, and its certificate. Turning one off frees its domain at once, and the
 agent waits to be turned back on. Removing one disconnects it for good: its
 key works nowhere until it is approved again.
 
+## Redirects
+
+A redirect sends everyone who visits a domain to another address: an old
+name, a misspelling, a `docs.` that moved. It is what a proxy's `redir` does,
+so a domain like that needs no proxy in front of npanel.
+
+Under **Redirects** in the dashboard, **Add Redirect** with the domain, its
+DNS pointed here as for a site, and the address to send visitors to:
+
+- **Keep the path**, on by default, sends `/about?x=1` to `/about?x=1` at the
+  new address, after any path of its own — Caddy's `redir https://example.com{uri}`.
+  Off, every visit lands on the address itself.
+- **Permanent**, on by default, is a `301`, which search engines follow to the
+  new address. Off, it is a `302`, for a move that won't last.
+
+Every method is redirected, and every path; the domain serves nothing of its
+own. A redirect gets a certificate like a site does, and shares the one
+namespace of domains with sites and tunnels: a domain is one of the three.
+A redirect has no `www` of its own, so add `www.example.com` as a redirect
+too if it needs one.
+
 ## The dashboard as an nsite
 
 Every release also publishes its dashboard as a named nsite, `npanel`, signed by

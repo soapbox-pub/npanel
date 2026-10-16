@@ -4,7 +4,7 @@ import { useApi } from '@/hooks/useApi';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useServer } from '@/hooks/useServer';
 import { fetchInstance, fetchSites } from '@/lib/api';
-import type { HostPatch, Settings, TunnelPatch } from '@/lib/api-types';
+import type { HostPatch, NewRedirect, RedirectPatch, Settings, TunnelPatch } from '@/lib/api-types';
 
 /** Poll while a deploy could be in progress, so progress bars actually move. */
 const LIVE_INTERVAL = 5000;
@@ -263,6 +263,29 @@ export function useTunnelRequest(code: string | undefined, enabled = true) {
   });
 }
 
+/** Every redirect. Admins only. */
+export function useRedirects(enabled = true) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('redirects'),
+    queryFn: async () => (await api!.redirects()).redirects,
+    enabled: !!api && enabled,
+  });
+}
+
+/** One redirect. Admins only. */
+export function useRedirect(hostname: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('redirect', hostname ?? ''),
+    queryFn: async () => (await api!.redirect(hostname!)).redirect,
+    enabled: !!api && !!hostname,
+    retry: false,
+  });
+}
+
 /** Invalidate every npanel query after a change. */
 function useInvalidate() {
   const queryClient = useQueryClient();
@@ -464,6 +487,37 @@ export function useDeleteTunnel() {
 
   return useMutation({
     mutationFn: (hostname: string) => api!.deleteTunnel(hostname),
+    onSuccess: invalidate,
+  });
+}
+
+export function useCreateRedirect() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (input: NewRedirect) => api!.createRedirect(input),
+    onSuccess: invalidate,
+  });
+}
+
+export function useUpdateRedirect() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    // As with hosts, `hostname` names the redirect and the patch may rename it.
+    mutationFn: (input: { hostname: string; patch: RedirectPatch }) => api!.updateRedirect(input.hostname, input.patch),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteRedirect() {
+  const api = useApi();
+  const invalidate = useInvalidate();
+
+  return useMutation({
+    mutationFn: (hostname: string) => api!.deleteRedirect(hostname),
     onSuccess: invalidate,
   });
 }

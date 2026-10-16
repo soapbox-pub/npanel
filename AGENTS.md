@@ -52,6 +52,7 @@ src/
   dns.rs                what staff should point a hostname at
   tor.rs                onion services, on Tor built in (Arti)
   tunnel/               tunnels: `npanel tunnel`, and serving a hostname through one
+  redirects.rs          hostnames that send every request to another URL
   db/                   pool, migrations, rows
   scripts.rs            make-admin, prune-blobs, compress-blobs
   e2e.rs                end-to-end tests with a fake Nostr and Blossom

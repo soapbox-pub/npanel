@@ -1,11 +1,11 @@
 import { useSeoMeta } from '@unhead/react';
 import { ArrowUpRight } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { CertificateRow } from '@/components/CertificateRow';
 import { DnsRecords } from '@/components/DnsRecords';
-import { FieldRow, Row, Section, ToggleRow } from '@/components/Grouped';
+import { EditableField } from '@/components/EditableField';
+import { Row, Section, ToggleRow } from '@/components/Grouped';
 import { PageHeader } from '@/components/PageHeader';
 import {
   AlertDialog,
@@ -19,7 +19,6 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useDeleteTunnel, useTunnel, useUpdateTunnel } from '@/hooks/useNpanel';
 import { useToast } from '@/hooks/useToast';
@@ -183,59 +182,6 @@ function Connections({ tunnel, detail }: { tunnel: Tunnel; detail?: string }) {
         />
       ))}
     </Section>
-  );
-}
-
-/**
- * A field that saves on its own, offering its Save button only once it has
- * been changed. `below` is shown under it while there is a change to save.
- */
-function EditableField({
-  id,
-  label,
-  value,
-  busy,
-  onSave,
-  normalize = (value) => value.trim(),
-  below,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  busy: boolean;
-  onSave(value: string): Promise<boolean>;
-  normalize?(value: string): string;
-  below?(draft: string): ReactNode;
-}) {
-  const [draft, setDraft] = useState(value);
-  const changed = normalize(draft) !== value && normalize(draft) !== '';
-
-  return (
-    <FieldRow label={label} htmlFor={id}>
-      <form
-        className="space-y-3"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          if (!(await onSave(normalize(draft)))) setDraft(value);
-        }}
-      >
-        <div className="flex gap-2">
-          <Input
-            id={id}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {changed && (
-            <Button type="submit" disabled={busy}>
-              Save
-            </Button>
-          )}
-        </div>
-        {changed && below?.(normalize(draft))}
-      </form>
-    </FieldRow>
   );
 }
 

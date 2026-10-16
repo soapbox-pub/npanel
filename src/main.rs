@@ -33,6 +33,7 @@ mod nsite_address;
 mod prune;
 mod psl;
 mod rate_limit;
+mod redirects;
 mod scripts;
 mod send_file;
 mod seo;
@@ -293,6 +294,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
     };
 
     let tunnels = Arc::new(tunnel::gateway::Tunnels::new(db.clone(), log)?);
+    let redirects = Arc::new(redirects::Redirects::new(db.clone())?);
 
     let api = api::router(Arc::new(api::ApiDeps {
         db: db.clone(),
@@ -311,11 +313,12 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         serve_cache,
         last_prune,
         tunnels: tunnels.clone(),
+        redirects: redirects.clone(),
         dashboard_host: config.dashboard_host.clone(),
     }));
     let dashboard = dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log);
     dashboard.warm();
-    let app = Arc::new(App { dashboard_host: config.dashboard_host.clone(), site, tunnels, dashboard, api });
+    let app = Arc::new(App { dashboard_host: config.dashboard_host.clone(), site, tunnels, redirects, dashboard, api });
 
     let servers = match (&tls, config.https_port) {
         (Some(tls), Some(https_port)) => {

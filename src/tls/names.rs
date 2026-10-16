@@ -14,12 +14,16 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::hostname::www_apex;
 
-/// Whether npanel answers for `domain` as a site: an enabled host or tunnel,
-/// or the `www` of a host that redirects it. A redirect still needs a
-/// certificate, since it is an HTTPS response like any other.
+/// Whether npanel answers for `domain` as a site: an enabled host, tunnel or
+/// redirect, or the `www` of a host that redirects it. A redirect still needs
+/// a certificate, since it is an HTTPS response like any other.
 pub fn qualifies(conn: &Connection, domain: &str) -> rusqlite::Result<bool> {
     let configured: Option<i64> = conn
-        .prepare_cached("SELECT id FROM hosts WHERE hostname = ?1 AND enabled = 1 UNION ALL SELECT id FROM tunnels WHERE hostname = ?1 AND enabled = 1")?
+        .prepare_cached(
+            "SELECT id FROM hosts WHERE hostname = ?1 AND enabled = 1
+             UNION ALL SELECT id FROM tunnels WHERE hostname = ?1 AND enabled = 1
+             UNION ALL SELECT id FROM redirects WHERE hostname = ?1 AND enabled = 1",
+        )?
         .query_row([domain], |r| r.get(0))
         .optional()?;
     if configured.is_some() {
@@ -37,9 +41,14 @@ pub fn qualifies(conn: &Connection, domain: &str) -> rusqlite::Result<bool> {
 
 /// Every name [`qualifies`] says yes to.
 pub fn all(conn: &Connection) -> rusqlite::Result<BTreeSet<String>> {
-    // A tunnel's hostname is its only one: nothing redirects to it.
+    // A tunnel's or a redirect's hostname is its only one: nothing redirects
+    // its `www` to it.
     let hosts = conn
-        .prepare_cached("SELECT hostname, redirect_www FROM hosts WHERE enabled = 1 UNION ALL SELECT hostname, 0 FROM tunnels WHERE enabled = 1")?
+        .prepare_cached(
+            "SELECT hostname, redirect_www FROM hosts WHERE enabled = 1
+             UNION ALL SELECT hostname, 0 FROM tunnels WHERE enabled = 1
+             UNION ALL SELECT hostname, 0 FROM redirects WHERE enabled = 1",
+        )?
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(hosts.into_iter().flat_map(|(hostname, redirect_www)| of_host(&hostname, true, redirect_www)).collect())
@@ -91,6 +100,13 @@ mod tests {
                     rusqlite::params![hostname, pubkey, enabled],
                 )?;
             }
+            for (hostname, enabled) in [("old.example.org", true), ("gone.example.org", false)] {
+                conn.execute(
+                    "INSERT INTO redirects (hostname, target, enabled, created_by, created_at, updated_at)
+                     VALUES (?, 'https://example.org/', ?, 'p', 0, 0)",
+                    rusqlite::params![hostname, enabled],
+                )?;
+            }
             Ok(())
         })
         .unwrap();
@@ -102,6 +118,7 @@ mod tests {
             "example.co.uk",
             "example.net",
             "example.org",
+            "old.example.org",
             "www.example.co.uk",
             "www.example.com",
             "www.example.org",
@@ -117,6 +134,9 @@ mod tests {
             "dev.example.org",
             "www.dev.example.org",
             "off.example.org",
+            "old.example.org",
+            "www.old.example.org",
+            "gone.example.org",
             "off.example",
             "www.off.example",
             "example.co.uk",
