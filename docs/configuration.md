@@ -523,6 +523,16 @@ Default `90`, between 1 and 365. How long error reports are kept, in
 `data_dir/errors.sqlite3`: an older report is forgotten, and so is an issue
 with none newer — along with its counts. Checked hourly.
 
+### `tunnel_max_connections`
+
+Default `100`, between 1 and 10000. How many connections one
+[tunnel](deployment.md#tunnels)'s agents may hold open at once, counted across
+every agent running with its key. An agent holds two unless it is run with
+`--connections`, so the default leaves room for a busy tunnel to run many
+agents and spread its traffic across them, as `cloudflared` allows 100 per
+tunnel. Lowering it doesn't drop connections already open; an agent over it
+is refused when it next connects, and keeps trying.
+
 ## Not a setting: the Content Security Policy
 
 Served sites carry a `Content-Security-Policy`, and there is no instance-wide

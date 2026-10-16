@@ -122,6 +122,9 @@ settings! {
     link_preview_max_entries: i64,
     /// Days an error report is kept, and an issue with none newer.
     errors_retention_days: i64,
+    /// Connections one tunnel's agents may hold open at once, across every
+    /// agent running with its key.
+    tunnel_max_connections: i64,
 }
 
 impl Default for SettingsValues {
@@ -155,6 +158,7 @@ impl Default for SettingsValues {
             link_preview_misses_per_minute: 600,
             link_preview_max_entries: 100_000,
             errors_retention_days: 90,
+            tunnel_max_connections: 100,
         }
     }
 }
@@ -359,6 +363,7 @@ fn validate(key: &str, value: &Value) -> Result<Value, String> {
         "link_preview_misses_per_minute" => integer(value, 1, 100_000),
         "link_preview_max_entries" => integer(value, 100, 10_000_000),
         "errors_retention_days" => integer(value, 1, 365),
+        "tunnel_max_connections" => integer(value, 1, 10_000),
         _ => Err("Unknown setting.".into()),
     }
 }

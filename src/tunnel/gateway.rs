@@ -10,18 +10,23 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use axum::body::Body;
+use bytes::Bytes;
 use http::{header, HeaderValue, Method, Request, Response, StatusCode, Version};
+use hyper::body::{Frame, SizeHint};
 use hyper::client::conn::http2::SendRequest;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::{is_websocket, strip_hop_by_hop, KEEP_ALIVE, PROTOCOL};
@@ -30,13 +35,9 @@ use crate::fields;
 use crate::log::Logger;
 use crate::serve::RequestOrigin;
 
-/// How many connections one agent may hold open at once. It opens two, so a
-/// restart of either end never leaves a gap; the rest is room for one to be
-/// replaced before npanel has noticed the old one die.
-const MAX_CONNECTIONS: usize = 4;
-
-/// How long the origin has to start answering. Cloudflare's figure: long
-/// enough for a slow page, short enough that a hung one gets an answer.
+/// How long the origin has to start answering once the last of the request
+/// has gone by. Cloudflare's figure: long enough for a slow page, short
+/// enough that a hung one gets an answer.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(100);
 
 /// How long an agent waits to be authorized before its code is forgotten.
@@ -57,6 +58,9 @@ pub struct Tunnels {
     routes: ArcSwap<HashMap<String, i64>>,
     /// Open connections, by tunnel.
     live: Mutex<HashMap<i64, Vec<Live>>>,
+    /// Connections counted against each tunnel's limit: those open, and
+    /// those still upgrading, which `live` doesn't have yet.
+    slots: Mutex<HashMap<i64, usize>>,
     /// Numbers connections, and picks the next one to send a request down.
     counter: AtomicU64,
     pending: Mutex<Vec<Pending>>,
@@ -109,6 +113,7 @@ impl Tunnels {
             log,
             routes: ArcSwap::from_pointee(routes),
             live: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
             counter: AtomicU64::new(0),
             pending: Mutex::new(Vec::new()),
         })
@@ -144,14 +149,26 @@ impl Tunnels {
 
     /// Answer an agent's request to connect, which it has already proved
     /// is `tunnel`'s, by upgrading the connection and opening HTTP/2 on it.
-    pub fn accept(self: &Arc<Self>, tunnel: &Tunnel, mut request: Request<Body>, remote: Option<IpAddr>) -> Response<Body> {
+    /// Every agent with its key shares `max_connections`.
+    pub fn accept(self: &Arc<Self>, tunnel: &Tunnel, mut request: Request<Body>, remote: Option<IpAddr>, max_connections: usize) -> Response<Body> {
         let asks = request.headers().get(header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case(PROTOCOL));
         if !asks || request.version() != Version::HTTP_11 {
             return text(StatusCode::BAD_REQUEST, "Connect with npanel tunnel: this address only accepts its connections.");
         }
-        if self.live.lock().get(&tunnel.id).is_some_and(|live| live.len() >= MAX_CONNECTIONS) {
-            return text(StatusCode::TOO_MANY_REQUESTS, "This tunnel already has as many connections as it may. Stop the other agent using its key.");
-        }
+        let slot = {
+            let mut slots = self.slots.lock();
+            let taken = slots.entry(tunnel.id).or_default();
+            if *taken >= max_connections {
+                return text(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    format!(
+                        "This tunnel already has {max_connections} connections, as many as the server allows. Run fewer agents with its key or give them fewer --connections, or have an admin raise the limit in Settings."
+                    ),
+                );
+            }
+            *taken += 1;
+            Slot { tunnels: self.clone(), tunnel: tunnel.id }
+        };
 
         let info = ConnectionInfo {
             connected_at: crate::util::now(),
@@ -161,12 +178,14 @@ impl Tunnels {
         let upgrade = hyper::upgrade::on(&mut request);
         let (this, id, hostname) = (self.clone(), tunnel.id, tunnel.hostname.clone());
         tokio::spawn(async move {
+            let _slot = slot;
             let Ok(upgraded) = upgrade.await else { return };
             let handshake = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
                 .timer(TokioTimer::new())
                 .keep_alive_interval(KEEP_ALIVE)
                 .keep_alive_timeout(KEEP_ALIVE)
                 .keep_alive_while_idle(true)
+                .adaptive_window(true)
                 .handshake::<_, Body>(upgraded)
                 .await;
             let (send, connection) = match handshake {
@@ -264,19 +283,23 @@ impl Tunnels {
             }
             None => outbound.method(parts.method).body(body).expect("request"),
         };
+        let (progress, sending) = watch::channel(());
+        let outbound = outbound.map(|body| Body::new(Watched { body, progress }));
 
-        let sent = tokio::time::timeout(RESPONSE_TIMEOUT, async {
-            send.ready().await?;
-            send.send_request(outbound).await
-        })
-        .await;
+        let sent = tokio::select! {
+            sent = async {
+                send.ready().await?;
+                send.send_request(outbound).await
+            } => Some(sent),
+            _ = answer_due(sending) => None,
+        };
         let mut response = match sent {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
+            Some(Ok(response)) => response,
+            Some(Err(error)) => {
                 self.log.debug("tunnel_request_failed", crate::log::with_err(fields! { "hostname" => origin.hostname.as_str() }, error));
                 return text(StatusCode::BAD_GATEWAY, "This site's connection dropped. Try again in a moment.");
             }
-            Err(_) => return text(StatusCode::GATEWAY_TIMEOUT, "This site took too long to answer."),
+            None => return text(StatusCode::GATEWAY_TIMEOUT, "This site took too long to answer."),
         };
 
         if let Some(visitor_upgrade) = websocket {
@@ -380,6 +403,25 @@ impl Tunnels {
     }
 }
 
+/// A connection's place under its tunnel's limit, from the moment it is
+/// let in until it closes, however it ends.
+struct Slot {
+    tunnels: Arc<Tunnels>,
+    tunnel: i64,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut slots = self.tunnels.slots.lock();
+        if let Some(taken) = slots.get_mut(&self.tunnel) {
+            *taken -= 1;
+            if *taken == 0 {
+                slots.remove(&self.tunnel);
+            }
+        }
+    }
+}
+
 fn load_routes(conn: &rusqlite::Connection) -> rusqlite::Result<HashMap<String, i64>> {
     conn.prepare_cached("SELECT hostname, id FROM tunnels WHERE enabled = 1")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
 }
@@ -399,12 +441,55 @@ fn normalize_code(input: &str) -> Option<String> {
     (letters.len() == 8).then(|| format!("{}-{}", &letters[..4], &letters[4..]))
 }
 
-fn text(status: StatusCode, body: &'static str) -> Response<Body> {
+fn text(status: StatusCode, body: impl Into<Body>) -> Response<Body> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Body::from(body))
+        .body(body.into())
         .expect("response")
+}
+
+/// A request body that reports each frame of it the agent takes, and is
+/// dropped once it has all gone.
+struct Watched {
+    body: Body,
+    progress: watch::Sender<()>,
+}
+
+impl hyper::body::Body for Watched {
+    type Data = Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, axum::Error>>> {
+        let frame = hyper::body::Body::poll_frame(Pin::new(&mut self.body), cx);
+        if let Poll::Ready(Some(Ok(_))) = frame {
+            self.progress.send_replace(());
+        }
+        frame
+    }
+
+    fn is_end_stream(&self) -> bool {
+        hyper::body::Body::is_end_stream(&self.body)
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        hyper::body::Body::size_hint(&self.body)
+    }
+}
+
+/// When the origin has had [`RESPONSE_TIMEOUT`] to answer. The clock starts
+/// over with each frame of the request body, and runs out for good once the
+/// body has gone: an upload that takes ten minutes is the visitor's time,
+/// not the origin's. An agent that stops taking the body runs it out too.
+async fn answer_due(mut sending: watch::Receiver<()>) {
+    loop {
+        match tokio::time::timeout(RESPONSE_TIMEOUT, sending.changed()).await {
+            Ok(Ok(())) => continue,
+            // The body was dropped: sent, or abandoned.
+            Ok(Err(_)) => return tokio::time::sleep(RESPONSE_TIMEOUT).await,
+            Err(_) => return,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +527,30 @@ mod tests {
         assert!(matches!(tunnels.waiting("a"), Some(Waiting::Pending(p)) if p.code == fresh.code));
         tunnels.resolve("a");
         assert!(tunnels.waiting("a").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_origin_has_its_time_once_the_body_has_gone() {
+        let (progress, sending) = watch::channel(());
+        let due = tokio::spawn(answer_due(sending));
+        // An upload that keeps moving takes as long as it takes.
+        for _ in 0..30 {
+            tokio::time::sleep(RESPONSE_TIMEOUT / 10).await;
+            progress.send_replace(());
+        }
+        assert!(!due.is_finished());
+
+        drop(progress);
+        tokio::time::sleep(RESPONSE_TIMEOUT - Duration::from_secs(1)).await;
+        assert!(!due.is_finished());
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(due.is_finished());
+
+        // One that stops moving runs it out as well.
+        let (_progress, sending) = watch::channel(());
+        let due = tokio::spawn(answer_due(sending));
+        tokio::time::sleep(RESPONSE_TIMEOUT + Duration::from_secs(1)).await;
+        assert!(due.is_finished());
     }
 
     #[tokio::test]

@@ -1106,6 +1106,7 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
             target: origin.to_string().parse().unwrap(),
             name: "laptop".into(),
             preserve_host: false,
+            connections: crate::tunnel::agent::DEFAULT_CONNECTIONS,
             resolve: Some(address),
             report: Arc::new(|_| {}),
         })
@@ -1155,8 +1156,16 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
         let (_, body) = gw.api("GET", "/api/tunnels", None).await;
         body["tunnels"][0]["connections"].as_array().map(Vec::len) == Some(count)
     };
+    // The server's limit holds an agent to fewer connections than it asks
+    // for, and raising it lets the rest in.
+    let limit = async |max: i64| gw.api("PUT", "/api/settings", Some(serde_json::json!({ "tunnel_max_connections": max }))).await.0;
+    assert_eq!(limit(1).await, StatusCode::OK);
     let running = tokio::spawn(agent.clone().run());
-    eventually("the agent connecting", async || connected(2).await).await;
+    eventually("the agent connecting", async || connected(1).await).await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert!(connected(1).await);
+    assert_eq!(limit(100).await, StatusCode::OK);
+    eventually("the agent's other connection", async || connected(2).await).await;
 
     let response = visitor.get(url("/hello")).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);

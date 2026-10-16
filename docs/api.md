@@ -981,8 +981,8 @@ waiting keeps the same code.
 
 With `Connection: upgrade` and `Upgrade: npanel-tunnel` over HTTP/1.1, answered
 with `101`, after which the connection is HTTP/2 with npanel as the client. `404`
-if the agent has no tunnel, `403` if the tunnel is off, and `429` if it already
-has four connections.
+if the agent has no tunnel, `403` if the tunnel is off, and `429` if its agents
+already hold `tunnel_max_connections` between them.
 
 ## Settings — admin
 

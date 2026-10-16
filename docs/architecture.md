@@ -890,9 +890,17 @@ through the proxy in front of npanel, which carries an upgrade as it carries a
 WebSocket. Once the connection is upgraded the roles reverse: npanel is the
 HTTP/2 client and the agent the server. Each visitor's request is a stream of
 its own, so one slow response holds up nobody else's, and HTTP/2's flow
-control keeps a large upload or download from swamping the connection. The
-agent holds two connections, so either end can lose one without the site
-going dark, and npanel sends requests down them in turn. Both ends ping every
+control keeps a large upload or download from swamping the connection. Both
+ends grow their flow-control windows to fit the link (hyper's adaptive
+window), since a fixed window caps a connection at its size per round trip:
+1 MB over a 50 ms link is 20 MB/s, however fast the link. The agent holds two
+connections, so either end can lose one without the site going dark, and
+npanel sends requests down them in turn. Each connection is one task at each
+end, framing and encrypting every stream on it, so a busy tunnel spreads
+across more cores with more connections (`--connections`) or more agents
+sharing its key, up to `tunnel_max_connections` in all. A connection counts
+against that from the moment it is let in, so agents connecting at once
+can't slip past it together. Both ends ping every
 20 seconds, under the idle timeout of most NATs and proxies, and give a
 connection up when a ping goes unanswered.
 
@@ -911,8 +919,12 @@ would be a lie. The agent sends `Host` as the origin's own address unless
 it's run with `--preserve-host`. Development servers check `Host` against
 their own list (Vite, Django, Rails), and the public name is in
 `X-Forwarded-Host` either way. An origin has 100 seconds to start answering,
-as on Cloudflare. After that, bodies stream for as long as they take, so a
-server-sent event stream stays open.
+as on Cloudflare, counted from the last of the request body to reach it: an
+upload that takes ten minutes is the visitor's time, and a Blossom server
+answers only once it has the whole file. The clock starts over with every
+piece of the body that goes by, so an upload that stops moving, or an agent
+that stops taking it, gets an answer too. After that, response bodies stream
+for as long as they take, so a server-sent event stream stays open.
 
 **An agent is its key.** The first time it is pointed at a server, the agent
 makes a secp256k1 key and keeps it under `~/.config/npanel/tunnels/`, one per

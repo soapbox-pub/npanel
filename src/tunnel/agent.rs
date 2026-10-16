@@ -37,9 +37,10 @@ use super::{strip_hop_by_hop, AGENT_PATH, CONNECT_PATH, KEEP_ALIVE, PROTOCOL, RE
 use crate::auth::sign_nip98;
 use crate::nostr::event::{generate_secret_key, is_secret_key};
 
-/// How many connections the agent keeps open: two, so that either end can
-/// lose one without the site going dark while it is made again.
-const CONNECTIONS: usize = 2;
+/// How many connections the agent keeps open unless told otherwise: two, so
+/// that either end can lose one without the site going dark while it is made
+/// again.
+pub const DEFAULT_CONNECTIONS: usize = 2;
 
 /// How often a waiting agent asks whether it has been authorized.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -60,6 +61,7 @@ pub struct Options {
     pub target: String,
     pub name: Option<String>,
     pub preserve_host: bool,
+    pub connections: usize,
 }
 
 /// What the agent has to say, as it happens.
@@ -82,15 +84,16 @@ pub fn main(options: Options) -> Result<()> {
     let label = options.name.clone().unwrap_or_else(|| target.to_string());
     let secret = load_or_create_key(&key_file(&server, &label)?)?;
 
-    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().thread_name("npanel-tunnel").build()?.block_on(async {
+    tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("npanel-tunnel").build()?.block_on(async {
         let agent = Arc::new(
             Agent::new(Config {
                 server,
                 secret,
                 name: options.name.unwrap_or_else(machine_name),
-                report: terminal(target.clone()),
+                report: terminal(target.clone(), options.connections),
                 target,
                 preserve_host: options.preserve_host,
+                connections: options.connections,
                 resolve: None,
             })
             .await?,
@@ -113,6 +116,8 @@ pub struct Config {
     /// What the dashboard calls this agent.
     pub name: String,
     pub preserve_host: bool,
+    /// How many connections to hold open.
+    pub connections: usize,
     /// Where to reach the server, in place of looking its name up.
     pub resolve: Option<SocketAddr>,
     pub report: Report,
@@ -126,6 +131,7 @@ pub struct Agent {
     secret: String,
     target: Authority,
     name: String,
+    connections: usize,
     resolve: Option<SocketAddr>,
     http: reqwest::Client,
     tls: Arc<rustls::ClientConfig>,
@@ -185,6 +191,7 @@ impl Agent {
             secret: config.secret,
             target: config.target.clone(),
             name: config.name,
+            connections: config.connections,
             resolve: config.resolve,
             http,
             tls: tls_config(),
@@ -268,7 +275,7 @@ impl Agent {
         // at once are reported in the order they changed.
         let open = Arc::new(Mutex::new(0));
         let mut connections = tokio::task::JoinSet::new();
-        for _ in 0..CONNECTIONS {
+        for _ in 0..self.connections {
             let (agent, open) = (self.clone(), open.clone());
             connections.spawn(async move { agent.hold(&open).await });
         }
@@ -325,6 +332,7 @@ impl Agent {
             .timer(TokioTimer::new())
             .keep_alive_interval(KEEP_ALIVE)
             .keep_alive_timeout(KEEP_ALIVE)
+            .adaptive_window(true)
             .enable_connect_protocol()
             .serve_connection(upgraded, service)
             .await;
@@ -610,7 +618,7 @@ fn text(status: StatusCode, body: String) -> Response<Body> {
 }
 
 /// What the agent says on a terminal: each thing once, as it changes.
-fn terminal(target: Authority) -> Report {
+fn terminal(target: Authority, connections: usize) -> Report {
     let last = Mutex::new(String::new());
     Arc::new(move |event| {
         let line = match event {
@@ -620,7 +628,7 @@ fn terminal(target: Authority) -> Report {
             }
             Event::Authorized { hostname } => format!("https://{hostname} → http://{target}"),
             Event::Connections(0) => "Disconnected. Reconnecting…".into(),
-            Event::Connections(open) => format!("Connected ({open} of {CONNECTIONS} connections)."),
+            Event::Connections(open) => format!("Connected ({open} of {connections} connections)."),
             Event::Retrying(message) => message.into(),
         };
         let mut last = last.lock();

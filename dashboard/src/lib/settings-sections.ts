@@ -1,10 +1,11 @@
-import { BadgeCheck, BarChart3, Bug, Globe, House, type LucideIcon, Radio, Rocket, Share2, Waypoints } from 'lucide-react';
+import { BadgeCheck, BarChart3, Bug, Cable, Globe, House, type LucideIcon, Radio, Rocket, Share2, Waypoints } from 'lucide-react';
 
 import type { TileColor } from '@/lib/tile-colors';
 
 export type SettingsSectionId =
   | 'homepage'
   | 'domains'
+  | 'tunnels'
   | 'nostr'
   | 'deploys'
   | 'certificates'
@@ -25,6 +26,7 @@ export const SETTINGS_SECTIONS: SettingsSection[][] = [
   [
     { id: 'homepage', label: 'Homepage', icon: House, color: 'blue' },
     { id: 'domains', label: 'Domains', icon: Globe, color: 'teal' },
+    { id: 'tunnels', label: 'Tunnels', icon: Cable, color: 'purple' },
   ],
   [
     { id: 'nostr', label: 'Nostr', icon: Radio, color: 'purple' },

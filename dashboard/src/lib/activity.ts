@@ -99,6 +99,7 @@ const SETTINGS: Record<string, { label: string; format?: (value: unknown) => str
   link_preview_misses_per_minute: { label: 'Link preview script runs', format: (value) => `${value} a minute` },
   link_preview_max_entries: { label: 'Link previews kept' },
   errors_retention_days: { label: 'Error reports kept for', format: (value) => `${value} days` },
+  tunnel_max_connections: { label: 'Connections per tunnel' },
 };
 
 const ROLES: Record<string, string> = { admin: 'Admin', staff: 'Staff' };

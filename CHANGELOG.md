@@ -13,6 +13,9 @@ it is tagged.
   page, where tunnels can be turned off, moved to another domain, or removed.
   The agent dials out over HTTPS, so its machine needs no public address. See
   [Tunnels](docs/deployment.md#tunnels).
+  For a busy origin, `--connections` opens more than the default two, and
+  several agents can share one tunnel's key; together they may hold
+  `tunnel_max_connections`, 100 by default, set under **Settings → Tunnels**.
 - Behind nginx, pass on upgraded connections (`Upgrade` and `Connection`) so
   tunnel agents can connect. Caddy already does.
 

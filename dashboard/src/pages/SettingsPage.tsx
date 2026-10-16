@@ -56,6 +56,10 @@ function summary(id: SettingsSectionId, settings: Settings): string | undefined 
       return settings.allowed_host_suffixes.length
         ? `${settings.allowed_host_suffixes.length} allowed`
         : 'Any domain';
+    case 'tunnels':
+      return settings.tunnel_max_connections === undefined
+        ? undefined
+        : `${settings.tunnel_max_connections} ${settings.tunnel_max_connections === 1 ? 'connection' : 'connections'} each`;
     case 'nostr':
       return `${settings.relays.length} ${settings.relays.length === 1 ? 'relay' : 'relays'}`;
     case 'deploys':

@@ -219,6 +219,8 @@ export interface Settings {
   link_preview_max_entries: number;
   /** Days an error report is kept. Missing from servers before it was added. */
   errors_retention_days?: number;
+  /** Connections one tunnel's agents may hold open at once. Missing from servers before it was added. */
+  tunnel_max_connections?: number;
 }
 
 /** Whether npanel is on the Tor network, and what it has published there. */

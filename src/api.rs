@@ -1884,7 +1884,8 @@ async fn agent_connect(State(deps): State<Deps>, Extension(client): Extension<Cl
     if !tunnel.enabled {
         return Err(ApiError::Forbidden("This tunnel is turned off in the dashboard."));
     }
-    Ok(deps.tunnels.accept(&tunnel, request, client.0))
+    let max_connections = usize::try_from(deps.settings.get().tunnel_max_connections).unwrap_or(usize::MAX);
+    Ok(deps.tunnels.accept(&tunnel, request, client.0, max_connections))
 }
 
 /// A tunnel as the API shows it, with the connections it has open.

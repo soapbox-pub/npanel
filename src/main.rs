@@ -57,6 +57,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use clap::builder::TypedValueParser as _;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
 
@@ -121,6 +122,9 @@ enum Command {
         /// Send the public hostname in Host, rather than the target's address
         #[arg(long)]
         preserve_host: bool,
+        /// How many connections to hold open to the server
+        #[arg(long, default_value_t = tunnel::agent::DEFAULT_CONNECTIONS, value_parser = clap::value_parser!(u16).range(1..=1000).map(usize::from))]
+        connections: usize,
     },
 }
 
@@ -137,8 +141,8 @@ fn main() {
 
     // The agent runs on another machine than the gateway, with nothing of
     // the gateway's to configure.
-    if let Some(Command::Tunnel { server, target, name, preserve_host }) = cli.command {
-        if let Err(error) = tunnel::agent::main(tunnel::agent::Options { server, target, name, preserve_host }) {
+    if let Some(Command::Tunnel { server, target, name, preserve_host, connections }) = cli.command {
+        if let Err(error) = tunnel::agent::main(tunnel::agent::Options { server, target, name, preserve_host, connections }) {
             eprintln!("{error:#}");
             std::process::exit(1);
         }

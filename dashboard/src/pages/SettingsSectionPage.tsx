@@ -71,6 +71,7 @@ interface Draft {
   linkPreviewMissesPerMinute?: string;
   linkPreviewMaxEntries?: string;
   errorsRetentionDays?: string;
+  tunnelMaxConnections?: string;
 }
 
 /**
@@ -122,6 +123,7 @@ export function SettingsSectionPage() {
     draft.linkPreviewMissesPerMinute ?? String(current?.link_preview_misses_per_minute ?? '');
   const linkPreviewMaxEntries = draft.linkPreviewMaxEntries ?? String(current?.link_preview_max_entries ?? '');
   const errorsRetentionDays = draft.errorsRetentionDays ?? String(current?.errors_retention_days ?? '');
+  const tunnelMaxConnections = draft.tunnelMaxConnections ?? String(current?.tunnel_max_connections ?? '');
 
   const save = async () => {
     try {
@@ -151,6 +153,7 @@ export function SettingsSectionPage() {
         link_preview_max_entries: Number(linkPreviewMaxEntries),
         // Left out for a server that predates it, which would refuse it.
         ...(current?.errors_retention_days === undefined ? {} : { errors_retention_days: Number(errorsRetentionDays) }),
+        ...(current?.tunnel_max_connections === undefined ? {} : { tunnel_max_connections: Number(tunnelMaxConnections) }),
       });
 
       setDraft({});
@@ -233,6 +236,19 @@ export function SettingsSectionPage() {
               Sites must be on one of these or a subdomain of one. One per line.
             </p>
           </FieldRow>
+        </Section>
+      )}
+
+      {section.id === 'tunnels' && (
+        <Section footer="Shared by every agent running with one tunnel's key. Each agent holds 2 unless it's run with --connections, so a busy tunnel can run several agents, on one machine or many, and spread its traffic across them.">
+          <NumberRow
+            id="tunnel-max-connections"
+            label="Connections per tunnel"
+            min={1}
+            max={10000}
+            value={tunnelMaxConnections}
+            onChange={(value) => setDraft({ ...draft, tunnelMaxConnections: value })}
+          />
         </Section>
       )}
 
