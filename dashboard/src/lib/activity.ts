@@ -212,19 +212,6 @@ export function describe(entry: AuditEntry): Activity {
         details: [],
       };
 
-    case 'redirect.create':
-      return {
-        kind: 'site-added',
-        sentence: ['added a redirect from', { strong: target }],
-        details: [{ type: 'value', label: 'To', value: String(after.target ?? ''), mono: true }],
-      };
-
-    case 'redirect.delete':
-      return { kind: 'site-removed', sentence: ['removed the redirect from', { strong: target }], details: [] };
-
-    case 'redirect.update':
-      return redirectUpdate(target, before, after);
-
     case 'settings.update':
       return settingUpdate(target, entry.old_value, entry.new_value);
 
@@ -318,28 +305,6 @@ function siteUpdate(hostname: string, before: Record<string, unknown>, after: Re
   }
 
   return { kind: 'site-changed', sentence: ['changed', { site: hostname }], details };
-}
-
-/** Every switch on a redirect, as its page labels it. */
-const REDIRECT_FLAGS = [
-  { key: 'enabled', label: 'On' },
-  { key: 'keep_path', label: 'Keep the path' },
-  { key: 'permanent', label: 'Permanent' },
-];
-
-function redirectUpdate(hostname: string, before: Record<string, unknown>, after: Record<string, unknown>): Activity {
-  const details: Detail[] = [];
-  if (typeof after.hostname === 'string' && after.hostname !== before.hostname) {
-    details.push({ type: 'change', label: 'Domain', from: hostname, to: after.hostname });
-  }
-  if (typeof after.target === 'string' && after.target !== before.target) {
-    details.push({ type: 'change', label: 'To', from: String(before.target ?? ''), to: after.target, mono: true });
-  }
-  for (const flag of REDIRECT_FLAGS) {
-    if (!(flag.key in after) || truthy(after[flag.key]) === truthy(before[flag.key])) continue;
-    details.push({ type: 'toggle', label: flag.label, on: truthy(after[flag.key]) });
-  }
-  return { kind: 'site-changed', sentence: ['changed the redirect from', { strong: hostname }], details };
 }
 
 function settingUpdate(key: string, before: unknown, after: unknown): Activity {

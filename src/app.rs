@@ -1,6 +1,6 @@
 //! The whole public HTTP surface, routed by `Host`: the dashboard hostname
 //! serves the API and the dashboard SPA, a tunnel's hostname is passed to its
-//! agent, a redirect's is sent on, and every other hostname serves an nsite.
+//! agent, and every other hostname serves an nsite.
 //!
 //! Nothing here is exempt from that rule. Certificate authorization for the
 //! proxy needs to answer requests that carry no hostname to route on, so it
@@ -16,7 +16,6 @@ use tower::ServiceExt;
 use crate::analytics::Peer;
 use crate::dashboard::Dashboard;
 use crate::hostname::request_hostname;
-use crate::redirects::Redirects;
 use crate::serve::{RequestOrigin, SiteServer};
 use crate::tunnel::gateway::Tunnels;
 
@@ -24,7 +23,6 @@ pub struct App {
     pub dashboard_host: String,
     pub site: Arc<SiteServer>,
     pub tunnels: Arc<Tunnels>,
-    pub redirects: Arc<Redirects>,
     pub dashboard: Dashboard,
     pub api: axum::Router,
 }
@@ -59,9 +57,6 @@ impl App {
             if let Some(tunnel) = self.tunnels.route(&origin.hostname) {
                 let visitor = client_address(request.headers(), via);
                 return self.tunnels.proxy(tunnel, request, &origin, visitor).await;
-            }
-            if let Some(redirect) = self.redirects.respond(&origin.hostname, &request) {
-                return redirect;
             }
             return self.site.serve(request, origin, peer).await;
         }

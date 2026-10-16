@@ -377,41 +377,4 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
         BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site'); END"#,
         ],
     ),
-    (
-        "027_redirects",
-        &[
-            r#"CREATE TABLE redirects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        hostname TEXT NOT NULL UNIQUE,
-        target TEXT NOT NULL,
-        keep_path INTEGER NOT NULL DEFAULT 1,
-        permanent INTEGER NOT NULL DEFAULT 1,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        created_by TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )"#,
-            // The namespace hosts and tunnels share, now three tables wide.
-            r#"CREATE TRIGGER hosts_hostname_not_redirect BEFORE INSERT ON hosts
-        WHEN EXISTS (SELECT 1 FROM redirects WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a redirect'); END"#,
-            r#"CREATE TRIGGER hosts_rename_not_redirect BEFORE UPDATE OF hostname ON hosts
-        WHEN EXISTS (SELECT 1 FROM redirects WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a redirect'); END"#,
-            r#"CREATE TRIGGER tunnels_hostname_not_redirect BEFORE INSERT ON tunnels
-        WHEN EXISTS (SELECT 1 FROM redirects WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a redirect'); END"#,
-            r#"CREATE TRIGGER tunnels_rename_not_redirect BEFORE UPDATE OF hostname ON tunnels
-        WHEN EXISTS (SELECT 1 FROM redirects WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a redirect'); END"#,
-            r#"CREATE TRIGGER redirects_hostname_not_host BEFORE INSERT ON redirects
-        WHEN EXISTS (SELECT 1 FROM hosts WHERE hostname = NEW.hostname)
-          OR EXISTS (SELECT 1 FROM tunnels WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site or tunnel'); END"#,
-            r#"CREATE TRIGGER redirects_rename_not_host BEFORE UPDATE OF hostname ON redirects
-        WHEN EXISTS (SELECT 1 FROM hosts WHERE hostname = NEW.hostname)
-          OR EXISTS (SELECT 1 FROM tunnels WHERE hostname = NEW.hostname)
-        BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site or tunnel'); END"#,
-        ],
-    ),
 ];

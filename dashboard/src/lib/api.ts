@@ -19,11 +19,8 @@ import type {
   ListedVersion,
   Me,
   Nip05Name,
-  NewRedirect,
   NpanelUser,
   PublicSite,
-  Redirect,
-  RedirectPatch,
   RefreshedLinkPreview,
   SiteCard,
   ServerStatus,
@@ -326,26 +323,6 @@ export class ApiClient {
 
   deleteTunnel(hostname: string): Promise<{ ok: true }> {
     return this.request('DELETE', `/api/tunnels/${path(hostname)}`);
-  }
-
-  redirects(): Promise<{ redirects: Redirect[] }> {
-    return this.request('GET', '/api/redirects');
-  }
-
-  redirect(hostname: string): Promise<{ redirect: Redirect }> {
-    return this.request('GET', `/api/redirects/${path(hostname)}`);
-  }
-
-  createRedirect(input: NewRedirect): Promise<{ redirect: Redirect }> {
-    return this.request('POST', '/api/redirects', input);
-  }
-
-  updateRedirect(hostname: string, patch: RedirectPatch): Promise<{ redirect: Redirect }> {
-    return this.request('PATCH', `/api/redirects/${path(hostname)}`, patch);
-  }
-
-  deleteRedirect(hostname: string): Promise<{ ok: true }> {
-    return this.request('DELETE', `/api/redirects/${path(hostname)}`);
   }
 }
 

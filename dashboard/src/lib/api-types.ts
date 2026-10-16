@@ -544,36 +544,3 @@ export interface TunnelPatch {
   name?: string;
   enabled?: boolean;
 }
-
-/** A hostname that sends every request to another address. */
-export interface Redirect {
-  hostname: string;
-  /** An absolute http or https URL, as the server spells it. */
-  target: string;
-  /** Whether the visitor's path and query are added to `target`. */
-  keep_path: boolean;
-  /** A 301 rather than a 302. */
-  permanent: boolean;
-  enabled: boolean;
-  created_by: string;
-  created_at: number;
-  updated_at: number;
-  /** Present only when npanel gets certificates itself. */
-  certificates?: CertificateStatus[] | null;
-}
-
-export interface NewRedirect {
-  hostname: string;
-  target: string;
-  keep_path?: boolean;
-  permanent?: boolean;
-}
-
-/** The parts of a redirect an admin can change. */
-export interface RedirectPatch {
-  hostname?: string;
-  target?: string;
-  keep_path?: boolean;
-  permanent?: boolean;
-  enabled?: boolean;
-}

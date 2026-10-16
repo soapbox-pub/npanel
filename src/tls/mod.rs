@@ -42,7 +42,7 @@ use serde::Serialize;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use crate::db::{Db, Host};
+use crate::db::{Db, Host, Tunnel};
 use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::rate_limit::{RateLimit, RateLimiter};
@@ -241,10 +241,10 @@ impl TlsService {
         self.certificates(conn, names::of_host(&host.hostname, host.enabled, host.redirect_www))
     }
 
-    /// A tunnel's or a redirect's certificate, or the wait for one. Neither
-    /// has its `www` redirected to it, so each has only its own name.
-    pub fn own_certificates(&self, conn: &Connection, hostname: &str, enabled: bool) -> rusqlite::Result<Vec<CertificateStatus>> {
-        self.certificates(conn, names::of_host(hostname, enabled, false))
+    /// A tunnel's certificate, or the wait for one. Nothing redirects to a
+    /// tunnel, so it has only its own name.
+    pub fn tunnel_certificates(&self, conn: &Connection, tunnel: &Tunnel) -> rusqlite::Result<Vec<CertificateStatus>> {
+        self.certificates(conn, names::of_host(&tunnel.hostname, tunnel.enabled, false))
     }
 
     fn certificates(&self, conn: &Connection, names: Vec<String>) -> rusqlite::Result<Vec<CertificateStatus>> {

@@ -119,42 +119,6 @@ impl Tunnel {
     }
 }
 
-/// A hostname that sends every request somewhere else. Its hostname shares
-/// one namespace with hosts' and tunnels'.
-#[derive(Clone, Debug)]
-pub struct Redirect {
-    pub id: i64,
-    pub hostname: String,
-    /// An absolute `http` or `https` URL, as `url` spells it.
-    pub target: String,
-    /// Whether the request's path and query are appended to `target`.
-    pub keep_path: bool,
-    /// A 301 rather than a 302.
-    pub permanent: bool,
-    pub enabled: bool,
-    pub created_by: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-pub const REDIRECT_COLUMNS: &str = "id, hostname, target, keep_path, permanent, enabled, created_by, created_at, updated_at";
-
-impl Redirect {
-    pub fn from_row(row: &Row) -> rusqlite::Result<Redirect> {
-        Ok(Redirect {
-            id: row.get(0)?,
-            hostname: row.get(1)?,
-            target: row.get(2)?,
-            keep_path: row.get(3)?,
-            permanent: row.get(4)?,
-            enabled: row.get(5)?,
-            created_by: row.get(6)?,
-            created_at: row.get(7)?,
-            updated_at: row.get(8)?,
-        })
-    }
-}
-
 /// Lifecycle of a single site version. A host only serves versions that
 /// reached `ready`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

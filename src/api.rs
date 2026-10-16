@@ -29,9 +29,7 @@ use crate::analytics::{Analytics, Answer};
 use crate::app::ClientAddress;
 use crate::auth::verify_nip98;
 use crate::builds::current_build;
-use crate::db::{
-    BuildKind, DeployStatus, Db, Host, HostBuild, Redirect, Role, SiteEvent, Tunnel, HOST_COLUMNS, REDIRECT_COLUMNS, SITE_EVENT_COLUMNS, TUNNEL_COLUMNS,
-};
+use crate::db::{BuildKind, DeployStatus, Db, Host, HostBuild, Role, SiteEvent, Tunnel, HOST_COLUMNS, SITE_EVENT_COLUMNS, TUNNEL_COLUMNS};
 use crate::deploy::Deployments;
 use crate::dns::DnsTargets;
 use crate::errors::queries::STATUSES;
@@ -47,7 +45,6 @@ use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
 use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
 use crate::prune::LastPrune;
-use crate::redirects::{parse_target, Redirects};
 use crate::serve::ServeCache;
 use crate::settings::{Settings, SettingsValues, KEYS};
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
@@ -88,7 +85,6 @@ pub struct ApiDeps {
     pub serve_cache: Arc<ServeCache>,
     pub last_prune: LastPrune,
     pub tunnels: Arc<Tunnels>,
-    pub redirects: Arc<Redirects>,
     pub dashboard_host: String,
 }
 
@@ -259,8 +255,6 @@ pub fn router(deps: Deps) -> Router {
         .route("/api/tunnels", get(list_tunnels))
         .route("/api/tunnels/requests/{code}", get(get_tunnel_request).post(approve_tunnel).delete(deny_tunnel))
         .route("/api/tunnels/{hostname}", get(get_tunnel).patch(update_tunnel).delete(delete_tunnel))
-        .route("/api/redirects", get(list_redirects).post(create_redirect))
-        .route("/api/redirects/{hostname}", get(get_redirect).patch(update_redirect).delete(delete_redirect))
         .route_layer(axum::middleware::from_fn_with_state(deps.clone(), authenticate));
 
     public
@@ -461,7 +455,7 @@ fn audit(conn: &Connection, actor: &str, action: &str, target: Option<&str>, old
 }
 
 /// Whether a write failed on a `UNIQUE` constraint, or on the triggers that
-/// make hostnames unique across hosts, tunnels and redirects: two requests racing to
+/// make hostnames unique across hosts and tunnels: two requests racing to
 /// claim one name, where the loser should hear it is taken rather than that
 /// something broke.
 fn is_unique_violation(error: &rusqlite::Error) -> bool {
@@ -1929,7 +1923,7 @@ async fn serialize_tunnel(deps: &Deps, tunnel: Tunnel) -> anyhow::Result<Value> 
     let certificates = match deps.tls.clone() {
         Some(tls) => {
             let t = tunnel.clone();
-            Some(deps.db.call(move |conn| Ok(tls.own_certificates(conn, &t.hostname, t.enabled)?)).await?)
+            Some(deps.db.call(move |conn| Ok(tls.tunnel_certificates(conn, &t)?)).await?)
         }
         None => None,
     };
@@ -1971,7 +1965,7 @@ async fn list_tunnels(State(deps): State<Deps>, _: Admin) -> ApiResult {
             tunnels
                 .into_iter()
                 .map(|tunnel| {
-                    let certificates = tls.as_ref().map(|tls| tls.own_certificates(conn, &tunnel.hostname, tunnel.enabled)).transpose()?;
+                    let certificates = tls.as_ref().map(|tls| tls.tunnel_certificates(conn, &tunnel)).transpose()?;
                     Ok((tunnel, certificates))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()
@@ -2183,248 +2177,6 @@ async fn delete_tunnel(State(deps): State<Deps>, Admin(user): Admin, Path(hostna
 
     deps.log.info("tunnel_deleted", fields! { "hostname" => tunnel.hostname.as_str(), "actor" => user.pubkey.as_str() });
     tunnels_changed(&deps).await?;
-    ok(json!({ "ok": true }))
-}
-
-fn redirect_where(conn: &Connection, column: &str, value: &str) -> rusqlite::Result<Option<Redirect>> {
-    conn.prepare_cached(&format!("SELECT {REDIRECT_COLUMNS} FROM redirects WHERE {column} = ?"))?.query_row([value], Redirect::from_row).optional()
-}
-
-fn redirect_json(redirect: &Redirect, certificates: Option<Vec<CertificateStatus>>) -> Value {
-    json!({
-        "hostname": redirect.hostname,
-        "target": redirect.target,
-        "keep_path": redirect.keep_path,
-        "permanent": redirect.permanent,
-        "enabled": redirect.enabled,
-        "created_by": redirect.created_by,
-        "created_at": redirect.created_at,
-        "updated_at": redirect.updated_at,
-        "certificates": certificates,
-    })
-}
-
-async fn serialize_redirect(deps: &Deps, redirect: Redirect) -> anyhow::Result<Value> {
-    let certificates = match deps.tls.clone() {
-        Some(tls) => {
-            let r = redirect.clone();
-            Some(deps.db.call(move |conn| Ok(tls.own_certificates(conn, &r.hostname, r.enabled)?)).await?)
-        }
-        None => None,
-    };
-    Ok(redirect_json(&redirect, certificates))
-}
-
-/// The fields of a redirect the audit log records, flags as 0 and 1 as a
-/// host's are.
-fn redirect_summary(redirect: &Redirect) -> Map<String, Value> {
-    let mut summary = Map::new();
-    for (key, value) in [
-        ("hostname", json!(redirect.hostname)),
-        ("target", json!(redirect.target)),
-        ("keep_path", json!(i64::from(redirect.keep_path))),
-        ("permanent", json!(i64::from(redirect.permanent))),
-        ("enabled", json!(i64::from(redirect.enabled))),
-    ] {
-        summary.insert(key.into(), value);
-    }
-    summary
-}
-
-/// Tell everything that serves a redirect's hostname that the redirects changed.
-async fn redirects_changed(deps: &Deps) -> Result<(), ApiError> {
-    deps.redirects.reconcile().await?;
-    if let Some(tls) = &deps.tls {
-        tls.hosts_changed();
-    }
-    Ok(())
-}
-
-async fn find_redirect(deps: &Deps, hostname: String) -> Result<Redirect, ApiError> {
-    let redirect = deps.db.call(move |conn| Ok(redirect_where(conn, "hostname", &hostname)?)).await?;
-    redirect.ok_or_else(|| ApiError::NotFound("Redirect not found.".into()))
-}
-
-/// A hostname a redirect may have: one staff could give a site, and not the
-/// dashboard's.
-fn redirect_hostname(deps: &Deps, input: &str) -> Result<String, ApiError> {
-    let hostname = parse_hostname(input, &deps.settings.get().allowed_host_suffixes).map_err(bad)?;
-    if hostname == deps.dashboard_host {
-        return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
-    }
-    Ok(hostname)
-}
-
-async fn list_redirects(State(deps): State<Deps>, _: Admin) -> ApiResult {
-    let tls = deps.tls.clone();
-    let redirects = deps
-        .db
-        .call(move |conn| {
-            let redirects: Vec<Redirect> = conn
-                .prepare_cached(&format!("SELECT {REDIRECT_COLUMNS} FROM redirects ORDER BY hostname"))?
-                .query_map([], Redirect::from_row)?
-                .collect::<rusqlite::Result<_>>()?;
-            redirects
-                .into_iter()
-                .map(|redirect| {
-                    let certificates = tls.as_ref().map(|tls| tls.own_certificates(conn, &redirect.hostname, redirect.enabled)).transpose()?;
-                    Ok((redirect, certificates))
-                })
-                .collect::<anyhow::Result<Vec<_>>>()
-        })
-        .await?;
-    let list: Vec<Value> = redirects.into_iter().map(|(redirect, certificates)| redirect_json(&redirect, certificates)).collect();
-    ok(json!({ "redirects": list }))
-}
-
-async fn create_redirect(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>) -> ApiResult {
-    #[derive(Deserialize)]
-    struct NewRedirect {
-        hostname: String,
-        target: String,
-        #[serde(default)]
-        keep_path: Option<bool>,
-        #[serde(default)]
-        permanent: Option<bool>,
-    }
-
-    let NewRedirect { hostname, target, keep_path, permanent } = body.json("Expected a JSON body with hostname and target.")?;
-    let hostname = redirect_hostname(&deps, &hostname)?;
-    let keep_path = keep_path.unwrap_or(true);
-    let permanent = permanent.unwrap_or(true);
-    let target = parse_target(&target, &hostname, keep_path).map_err(bad)?;
-
-    let (name, actor) = (hostname.clone(), user.pubkey.clone());
-    let created = deps
-        .db
-        .call(move |conn| {
-            let now = crate::util::now();
-            let tx = conn.transaction()?;
-            let inserted = tx.execute(
-                "INSERT INTO redirects (hostname, target, keep_path, permanent, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
-                params![name, target, keep_path, permanent, actor, now, now],
-            );
-            match inserted {
-                Err(error) if is_unique_violation(&error) => return Ok(None),
-                inserted => inserted?,
-            };
-            let redirect = redirect_where(&tx, "hostname", &name)?.expect("the row just inserted");
-            audit(&tx, &actor, "redirect.create", Some(&name), None, Some(&Value::Object(redirect_summary(&redirect))))?;
-            tx.commit()?;
-            Ok(Some(redirect))
-        })
-        .await?;
-    let Some(redirect) = created else {
-        return Err(ApiError::Conflict(format!("{hostname} is already configured.")));
-    };
-
-    deps.log.info("redirect_created", fields! { "hostname" => hostname.as_str(), "target" => redirect.target.as_str(), "actor" => user.pubkey.as_str() });
-    redirects_changed(&deps).await?;
-    Ok(json_reply(StatusCode::CREATED, json!({ "redirect": serialize_redirect(&deps, redirect).await? })))
-}
-
-async fn get_redirect(State(deps): State<Deps>, _: Admin, Path(hostname): Path<String>) -> ApiResult {
-    let redirect = find_redirect(&deps, hostname).await?;
-    ok(json!({ "redirect": serialize_redirect(&deps, redirect).await? }))
-}
-
-async fn update_redirect(State(deps): State<Deps>, Admin(user): Admin, Extension(body): Extension<RawBody>, Path(hostname): Path<String>) -> ApiResult {
-    use rusqlite::types::Value as Sql;
-
-    #[derive(Deserialize, Default)]
-    #[serde(default)]
-    struct RedirectPatch {
-        hostname: Option<String>,
-        target: Option<String>,
-        keep_path: Option<bool>,
-        permanent: Option<bool>,
-        enabled: Option<bool>,
-    }
-
-    let redirect = find_redirect(&deps, hostname).await?;
-    let request: RedirectPatch = body.json("Expected a JSON body.")?;
-
-    let mut patch: Vec<Change> = Vec::new();
-    let mut renamed = None;
-    let mut hostname = redirect.hostname.clone();
-    if let Some(new_hostname) = &request.hostname {
-        let parsed = redirect_hostname(&deps, new_hostname)?;
-        if parsed != redirect.hostname {
-            patch.push(("hostname", Sql::Text(parsed.clone())));
-            hostname = parsed.clone();
-            renamed = Some(parsed);
-        }
-    }
-    // The target is checked against what the redirect will be once the patch
-    // is applied, so a rename or keeping the path can't make a stored one
-    // loop or lose its meaning.
-    let keep_path = request.keep_path.unwrap_or(redirect.keep_path);
-    if request.target.is_some() || renamed.is_some() || keep_path != redirect.keep_path {
-        let target = parse_target(request.target.as_deref().unwrap_or(&redirect.target), &hostname, keep_path).map_err(bad)?;
-        if target != redirect.target {
-            patch.push(("target", Sql::Text(target)));
-        }
-    }
-    for (column, value) in [("keep_path", request.keep_path), ("permanent", request.permanent), ("enabled", request.enabled)] {
-        if let Some(value) = value {
-            patch.push((column, Sql::Integer(i64::from(value))));
-        }
-    }
-    if patch.is_empty() {
-        return ok(json!({ "redirect": serialize_redirect(&deps, redirect).await? }));
-    }
-
-    let summary = redirect_summary(&redirect);
-    let mut after = summary.clone();
-    for (column, value) in &patch {
-        let value = match value {
-            Sql::Text(text) => json!(text),
-            Sql::Integer(number) => json!(number),
-            _ => Value::Null,
-        };
-        after.insert(column.to_string(), value);
-    }
-
-    let (r, p, actor) = (redirect.clone(), patch, user.pubkey.clone());
-    let updated = deps
-        .db
-        .call(move |conn| {
-            let tx = conn.transaction()?;
-            for (column, value) in &p {
-                match tx.execute(&format!("UPDATE redirects SET {column} = ? WHERE id = ?"), params![value, r.id]) {
-                    Err(error) if is_unique_violation(&error) => return Ok(None),
-                    result => result?,
-                };
-            }
-            tx.execute("UPDATE redirects SET updated_at = ? WHERE id = ?", params![crate::util::now(), r.id])?;
-            audit(&tx, &actor, "redirect.update", Some(&r.hostname), Some(&Value::Object(summary)), Some(&Value::Object(after)))?;
-            let updated = redirect_where(&tx, "id", &r.id.to_string())?.expect("the row just updated");
-            tx.commit()?;
-            Ok(Some(updated))
-        })
-        .await?;
-    let Some(updated) = updated else {
-        return Err(ApiError::Conflict(format!("{} is already configured.", renamed.unwrap_or_default())));
-    };
-
-    deps.log.info("redirect_updated", fields! { "hostname" => redirect.hostname.as_str(), "actor" => user.pubkey.as_str() });
-    redirects_changed(&deps).await?;
-    ok(json!({ "redirect": serialize_redirect(&deps, updated).await? }))
-}
-
-async fn delete_redirect(State(deps): State<Deps>, Admin(user): Admin, Path(hostname): Path<String>) -> ApiResult {
-    let redirect = find_redirect(&deps, hostname).await?;
-    let (r, actor) = (redirect.clone(), user.pubkey.clone());
-    deps.db
-        .call(move |conn| {
-            conn.execute("DELETE FROM redirects WHERE id = ?", [r.id])?;
-            audit(conn, &actor, "redirect.delete", Some(&r.hostname), Some(&Value::Object(redirect_summary(&r))), None)?;
-            Ok(())
-        })
-        .await?;
-
-    deps.log.info("redirect_deleted", fields! { "hostname" => redirect.hostname.as_str(), "actor" => user.pubkey.as_str() });
-    redirects_changed(&deps).await?;
     ok(json!({ "ok": true }))
 }
 

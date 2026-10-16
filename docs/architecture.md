@@ -30,7 +30,6 @@ hostname's requests on to a web server on another machine, through a
    a crawler on a page ──► previews thread ──► the site's script ──► relays
    a site's onion address ──► Tor, built in, on its own thread ──► the same site
    a tunnel's hostname ──► its agent's connection ──► a web server on its machine
-   a redirect's hostname ──► 301 or 302 to its target
    with https_port: SQLite ◄── ACME, on its own thread ◄──► the CA, via :80 and :443
 ```
 
@@ -39,11 +38,7 @@ hostname's requests on to a web server on another machine, through a
 Everything hangs off the `Host` header, checked in one middleware in
 `src/app.rs`. If it equals `dashboard_host`, the request goes to the axum API at
 `/api` and otherwise to the built dashboard SPA. A tunnel's hostname is passed
-to its agent, and a redirect's is answered with a `301` or `302` to its target
-(`src/redirects.rs`), looked up in a map reconciled from the `redirects` table
-as the tunnels' is. Any other hostname is served as an nsite. The three tables
-share one namespace of hostnames, kept by triggers in the database rather than
-by every writer remembering to check.
+to its agent. Any other hostname is served as an nsite.
 
 Only `Host` is read — or, over HTTP/2, which has none, `:authority`, which is
 the same thing by another name (`request_host`). Ports and the trailing dot of an FQDN are stripped and the
@@ -409,7 +404,6 @@ The tables:
 | `nip05_names` | The NIP-05 names a host answers for                        |
 | `host_env`    | The variables a host's pages read as `window.ENV`           |
 | `tunnels`     | Hostname → the key of the agent serving it, and whether it's on |
-| `redirects`   | Hostname → the URL it sends visitors to, and how            |
 
 **Blobs** live on the filesystem at `data_dir/blobs/<ab>/<cd>/<sha256>`, a
 two-level fanout that keeps directories small. Downloads stream into
