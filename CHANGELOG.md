@@ -4,7 +4,7 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
-## [Unreleased]
+## [0.7.0]
 
 - Tunnels: `npanel tunnel npanel.example.com 8080`, run on any machine that
   can reach the server, serves a domain from a web server on that machine,
