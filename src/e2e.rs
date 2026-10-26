@@ -311,10 +311,14 @@ async fn a_published_site_is_deployed_built_and_served() {
     assert_eq!(body["host"]["hostname"], "docs.example.com");
 
     // A name that's taken is a conflict, whether added or renamed onto, and
-    // a malformed body is the caller's mistake.
+    // a malformed body is the caller's mistake. The other host names a site
+    // nobody published: one that built before it was deleted would leave its
+    // generated files behind for pruning, and the storage figures below
+    // would depend on which won the race.
     let (status, body) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "docs.example.com", "address": npub }))).await;
     assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
-    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "other.example.com", "address": npub }))).await;
+    let unpublished = crate::nostr::nip19::npub_encode(&crate::nostr::event::public_key(ADMIN));
+    let (status, _) = gw.api("POST", "/api/hosts", Some(serde_json::json!({ "hostname": "other.example.com", "address": unpublished }))).await;
     assert_eq!(status, StatusCode::CREATED);
     let (status, body) = gw.api("PATCH", "/api/hosts/other.example.com", Some(serde_json::json!({ "hostname": "DOCS.example.com" }))).await;
     assert_eq!((status, body["error"].as_str()), (StatusCode::CONFLICT, Some("docs.example.com is already configured.")));
@@ -487,11 +491,18 @@ async fn a_missing_blob_fails_the_deploy_and_says_why() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(headers["retry-after"], "30");
 
-    let (_, log) = gw.api("GET", &format!("/api/hosts/broken.example.com/versions/{}/log", manifest.id), None).await;
+    // The resync at startup and the one adding the host asks for can overlap,
+    // so the first run's verdict can land while the second is still logging.
+    // Every run ends with one, so the log settles on it.
+    let mut log = serde_json::Value::Null;
+    eventually("the deploy log ending in its verdict", async || {
+        log = gw.api("GET", &format!("/api/hosts/broken.example.com/versions/{}/log", manifest.id), None).await.1;
+        log["entries"].as_array().and_then(|entries| entries.last()).is_some_and(|last| last["msg"] == "deploy_failed")
+    })
+    .await;
     let messages: Vec<&str> = log["entries"].as_array().unwrap().iter().map(|e| e["msg"].as_str().unwrap()).collect();
     assert!(messages.contains(&"blob_download_failed"), "{messages:?}");
     assert!(messages.contains(&"blob_unavailable"), "{messages:?}");
-    assert_eq!(messages.last(), Some(&"deploy_failed"));
     assert_eq!(log["entries"][messages.iter().position(|m| *m == "blob_download_failed").unwrap()]["fields"]["status"], 404);
 
     gw.stop().await;
@@ -546,11 +557,16 @@ async fn a_failed_deploy_is_retried_with_backoff_then_left_to_the_next_sync() {
     // A resync that finds the version unfinished starts a fresh run of
     // attempts, and the one at startup can overlap the one adding the host
     // asks for, so how many runs there were is a matter of timing. Each run is
-    // retried with backoff, and the last one gives up.
-    let (_, log) = gw.api("GET", &format!("/api/hosts/flaky.example.com/versions/{}/log", manifest.id), None).await;
+    // retried with backoff, and the last one gives up — once any run still
+    // going has given up too.
+    let mut log = serde_json::Value::Null;
+    eventually("the deploy log ending in its verdict", async || {
+        log = gw.api("GET", &format!("/api/hosts/flaky.example.com/versions/{}/log", manifest.id), None).await.1;
+        log["entries"].as_array().and_then(|entries| entries.last()).is_some_and(|last| last["msg"] == "deploy_failed")
+    })
+    .await;
     let messages: Vec<&str> = log["entries"].as_array().unwrap().iter().map(|e| e["msg"].as_str().unwrap()).collect();
     assert!(messages.iter().filter(|m| **m == "deploy_retrying").count() >= 2, "{messages:?}");
-    assert_eq!(messages.last(), Some(&"deploy_failed"), "{messages:?}");
 
     gw.stop().await;
 }
