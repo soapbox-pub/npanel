@@ -335,7 +335,9 @@ async fn a_published_site_is_deployed_built_and_served() {
     assert_eq!(headers["vary"], "accept-encoding");
     assert_eq!(headers["access-control-allow-origin"], "*");
     assert_eq!(headers["link"], "<https://docs.example.com/>; rel=\"canonical\"");
-    assert_eq!(headers["x-nsite-addr"], crate::nsite_address::encode_naddr(&NsiteAddress { pubkey: manifest.pubkey.clone(), kind: 15128, identifier: String::new() }));
+    let naddr = crate::nsite_address::encode_naddr(&NsiteAddress { pubkey: manifest.pubkey.clone(), kind: 15128, identifier: String::new() });
+    assert_eq!(headers["nsite-location"], format!("nsite://{naddr}/"));
+    assert!(!headers.contains_key("x-nsite-addr"));
     assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);
     let mut decoded = Vec::new();
     brotli::BrotliDecompress(&mut body.as_slice(), &mut decoded).unwrap();
@@ -345,9 +347,10 @@ async fn a_published_site_is_deployed_built_and_served() {
     let (status, ..) = gw.request("GET", "docs.example.com", "/", &[("accept-encoding", "br"), ("if-none-match", &etag)], None).await;
     assert_eq!(status, StatusCode::NOT_MODIFIED);
 
-    let (status, headers, body) = gw.request("GET", "docs.example.com", "/app.js", &[("range", "bytes=0-6")], None).await;
+    let (status, headers, body) = gw.request("GET", "docs.example.com", "/app.js?v=1", &[("range", "bytes=0-6")], None).await;
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(headers["content-range"], format!("bytes 0-6/{}", script.len()));
+    assert_eq!(headers["nsite-location"], format!("nsite://{naddr}/app.js?v=1"));
     assert_eq!(body, b"console");
 
     // Generated for the host, since the site published neither.

@@ -26,6 +26,9 @@ it is tagged.
   them had nothing new to upload Arti skipped the rest: they waited up to two
   hours for the next scheduled upload, after a restart too, and the service
   reported itself unreachable meanwhile. Fixed in Soapbox's fork of Arti.
+- Site responses name the page they serve on Nostr with `Nsite-Location:
+  nsite://naddr1…/path`, path and query included, in place of the
+  `X-Nsite-Addr` header, which is gone. See [Site responses](docs/api.md#site-responses).
 
 ## [0.6.2]
 

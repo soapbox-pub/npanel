@@ -547,7 +547,8 @@ to index a page the site's latest deploy deleted.
 Responses carry an `ETag` of the blob hash (so conditional requests are free and
 exact), `Last-Modified` from the event's `created_at` — capped at when npanel
 saw it, since an author can date a manifest however they please — and an
-`X-Nsite-Addr` header naming the nsite the hostname resolved to. Range requests
+`Nsite-Location` header naming the same page on Nostr, `nsite://<naddr><path>`.
+Range requests
 are supported, including suffix ranges.
 
 Which of a blob's stored copies gets sent is settled before any of that. The

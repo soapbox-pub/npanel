@@ -85,6 +85,7 @@ const SEC_PURPOSE: HeaderName = HeaderName::from_static("sec-purpose");
 const PURPOSE: HeaderName = HeaderName::from_static("purpose");
 const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 const X_REAL_IP: HeaderName = HeaderName::from_static("x-real-ip");
+const NSITE_LOCATION: HeaderName = HeaderName::from_static("nsite-location");
 
 /// A preview image at the version a page named never changes; one asked for
 /// at any other is the current one, which may not last.
@@ -123,8 +124,9 @@ pub struct CachedSite {
     /// What the host serves under this name: `None` while the host is
     /// disabled or nothing has finished building for it.
     pub version: Option<CachedVersion>,
-    /// The host's `X-Nsite-Addr`.
-    pub naddr: HeaderValue,
+    /// The host's nsite as a URL, `nsite://naddr1…`, that `Nsite-Location`
+    /// appends a request's path to.
+    pub nsite_url: String,
 }
 
 /// The hostname → build lookups behind every request, cached.
@@ -174,8 +176,8 @@ impl ServeCache {
             build_id: build.id,
             last_modified: HeaderValue::from_str(&http_date(build.last_modified)).expect("an HTTP date is a valid header"),
         });
-        let naddr = HeaderValue::from_str(&encode_naddr(&host.host.address())).unwrap_or(HeaderValue::from_static(""));
-        let site = Arc::new(CachedSite { host, version, naddr });
+        let nsite_url = format!("nsite://{}", encode_naddr(&host.host.address()));
+        let site = Arc::new(CachedSite { host, version, nsite_url });
 
         self.entries.write().insert(hostname.to_string(), (site.clone(), Instant::now() + HOST_TTL));
         Ok(Some(site))
@@ -429,10 +431,8 @@ impl SiteServer {
             .header(header::CACHE_CONTROL, cache_control(&file.path))
             .header(header::ETAG, &etag)
             .header(header::LAST_MODIFIED, version.last_modified.clone())
-            .header(header::ACCEPT_RANGES, "bytes")
-            // Which nsite this hostname is serving, in the one form a client
-            // can paste anywhere.
-            .header("x-nsite-addr", site.naddr.clone());
+            .header(header::ACCEPT_RANGES, "bytes");
+        builder = nsite_location(builder, request, site);
 
         if let Some(encoding) = encoding {
             builder = builder.header(header::CONTENT_ENCODING, encoding.as_str());
@@ -564,8 +564,8 @@ impl SiteServer {
             .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
             .header(header::CACHE_CONTROL, CACHE_CONTROL)
             .header(header::ETAG, &etag)
-            .header(header::VARY, "user-agent")
-            .header("x-nsite-addr", site.naddr.clone());
+            .header(header::VARY, "user-agent");
+        let builder = nsite_location(builder, request, site);
         // The preview depends on whatever the script read, too: of the
         // headers it's given, so names that are all valid ones.
         let builder = script::HEADERS
@@ -613,7 +613,7 @@ impl SiteServer {
         let named = request.uri.query().and_then(|q| url::form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "v").map(|(_, v)| v.into_owned()));
         if let Some(version) = &named {
             if let Some(image) = previews.image(version, IMAGE_WAIT).await {
-                return Ok(image_reply(request, site, version, image, true));
+                return Ok(image_reply(request, version, image, true));
             }
         }
 
@@ -626,7 +626,7 @@ impl SiteServer {
         };
         let Some(version) = preview.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
         if let Some(image) = previews.image(&version, IMAGE_WAIT).await {
-            return Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version)));
+            return Ok(image_reply(request, &version, image, named.as_ref() == Some(&version)));
         }
         // Drawn once and let go since, or never finished: draw it again.
         let preview = match previews.redraw(page, IMAGE_WAIT).await {
@@ -636,7 +636,7 @@ impl SiteServer {
         };
         let Some(version) = preview.drawn.as_ref().map(|drawn| drawn.version.clone()) else { return not_found() };
         match previews.image(&version, IMAGE_WAIT).await {
-            Some(image) => Ok(image_reply(request, site, &version, image, named.as_ref() == Some(&version))),
+            Some(image) => Ok(image_reply(request, &version, image, named.as_ref() == Some(&version))),
             None => not_found(),
         }
     }
@@ -795,7 +795,7 @@ fn script_page(request: &Parts, url: &str) -> script::Page {
     script::Page { url: url.to_string(), method: request.method.as_str().to_string(), headers }
 }
 
-fn image_reply(request: &Parts, site: &CachedSite, version: &str, image: Bytes, current: bool) -> Reply {
+fn image_reply(request: &Parts, version: &str, image: Bytes, current: bool) -> Reply {
     let mime = match imagesize::image_type(&image) {
         Ok(imagesize::ImageType::Png) => "image/png",
         Ok(imagesize::ImageType::Gif) => "image/gif",
@@ -806,8 +806,7 @@ fn image_reply(request: &Parts, site: &CachedSite, version: &str, image: Bytes, 
     let builder = Response::builder()
         .header(header::CONTENT_TYPE, mime)
         .header(header::CACHE_CONTROL, if current { IMAGE_CACHE_CONTROL } else { STALE_IMAGE_CACHE_CONTROL })
-        .header(header::ETAG, &etag)
-        .header("x-nsite-addr", site.naddr.clone());
+        .header(header::ETAG, &etag);
     if matches_etag(header_str(&request.headers, header::IF_NONE_MATCH), &etag) {
         return builder.status(StatusCode::NOT_MODIFIED).body(Body::empty()).expect("response");
     }
@@ -839,6 +838,18 @@ pub fn nip05_document(entries: &[(String, String, Vec<String>)]) -> serde_json::
         serde_json::json!({ "names": names })
     } else {
         serde_json::json!({ "names": names, "relays": relays })
+    }
+}
+
+/// Where this response lives on Nostr: the nsite's `naddr` as an `nsite://`
+/// URL, with the request's path and query, much as `Onion-Location` names the
+/// same page on the onion.
+fn nsite_location(builder: http::response::Builder, request: &Parts, site: &CachedSite) -> http::response::Builder {
+    let path_and_query = request.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    // A path the request line carried can still hold bytes a header can't.
+    match HeaderValue::from_bytes(format!("{}{path_and_query}", site.nsite_url).as_bytes()) {
+        Ok(value) => builder.header(NSITE_LOCATION, value),
+        Err(_) => builder,
     }
 }
 

@@ -1191,12 +1191,17 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 | `Content-Encoding`        | `br` or `gzip`, when a compressed copy was sent  |
 | `Vary`                    | `Accept-Encoding`, and `User-Agent` on a page with a link preview |
 | `Content-Security-Policy` | The site's own policy, or npanel's               |
-| `X-Nsite-Addr`            | Which nsite this hostname serves, as an `naddr`  |
+| `Nsite-Location`          | The same page on Nostr, as an `nsite://` URL     |
 | `Onion-Location`          | The site's onion address, when it has one        |
 
-`X-Nsite-Addr` is the one header naming the site itself. An `naddr` carries the
-pubkey, kind, and `d` tag together, so it is a single value a client can paste
-anywhere rather than three headers to reassemble.
+`Nsite-Location` names the nsite this hostname serves and the page within it:
+`nsite://naddr1…/docs/intro?ref=x` for a request for `/docs/intro?ref=x`, the
+path and query carried over as they were asked for, the way `Onion-Location`
+carries them to the onion. An `naddr` holds the pubkey, kind, and `d` tag
+together, so a client that reads nsites directly can open the page from this
+one value. It is sent with every file of the site, and with a page's link
+preview, but not with a preview's image, which is npanel's and not a file at
+any path of the site.
 
 `Content-Security-Policy` is whatever the site declared in the `<meta>` tags of
 its `/index.html`, or a restrictive default when it declared nothing. It is the
@@ -1219,7 +1224,7 @@ over Tor never carry it.
 Every site response is readable from any origin, headers included:
 `Access-Control-Allow-Origin` and `Access-Control-Expose-Headers` are both `*`,
 so a cross-origin `fetch` can revalidate against the `ETag`, resume from a
-`Content-Range`, and read `X-Nsite-Addr` or `Onion-Location` like a same-origin
+`Content-Range`, and read `Nsite-Location` or `Onion-Location` like a same-origin
 one. Preflights are answered for `GET`, `HEAD`, and `OPTIONS`. There is nothing
 to configure — a site is public files with no credential attached.
 
