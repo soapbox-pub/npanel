@@ -9,6 +9,30 @@ pub fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
+/// Take the hard limit on open files as the soft one, as Go's runtime does.
+/// Every connection is a descriptor — the gateway's, the large blobs it keeps
+/// open for sendfile, and an agent's one per request or WebSocket it passes
+/// to its origin — and the soft limit a process starts with, 1024 under
+/// systemd and most shells, is a default for select(2), which nothing here
+/// calls.
+#[cfg(target_os = "linux")]
+pub fn raise_open_file_limit() -> std::io::Result<()> {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a valid rlimit for the call to fill in.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if limit.rlim_cur >= limit.rlim_max {
+        return Ok(());
+    }
+    let raised = libc::rlimit { rlim_cur: limit.rlim_max, rlim_max: limit.rlim_max };
+    // SAFETY: as above; raising the soft limit up to the hard one needs no privilege.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// `n` random bytes as hex.
 pub fn random_hex(n: usize) -> String {
     let mut bytes = vec![0u8; n];

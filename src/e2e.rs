@@ -1097,6 +1097,11 @@ struct Tunneled {
 async fn tunneled(connections: usize) -> Tunneled {
     use crate::tunnel::agent::{Agent, Config};
 
+    // The gateway, the agent and the origin share this process, where
+    // `npanel serve` and `npanel tunnel` would each raise their own limit:
+    // hundreds of WebSockets through all three are more descriptors than a
+    // soft limit of 1024.
+    crate::util::raise_open_file_limit().unwrap();
     let nostr = Arc::new(FakeNostr { manifests: Mutex::new(Vec::new()), server: String::new() });
     let gw = gateway(nostr).await;
     let listener = crate::server::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();

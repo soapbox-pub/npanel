@@ -172,26 +172,10 @@ fn main() {
 
 fn serve(config: Config, log: Logger) -> Result<()> {
     #[cfg(target_os = "linux")]
-    raise_open_file_limit(log);
+    if let Err(error) = util::raise_open_file_limit() {
+        log.warn("open_file_limit_unchanged", crate::log::err_fields(error));
+    }
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("npanel").build()?.block_on(run(config, log))
-}
-
-/// Take the hard limit on open files as the soft one, as Go's runtime does.
-/// Connections and the large blobs kept open for sendfile are all
-/// descriptors, and the soft limit a service starts with — 1024 under
-/// systemd — is a default for select(2), which nothing here calls.
-#[cfg(target_os = "linux")]
-fn raise_open_file_limit(log: Logger) {
-    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
-    // SAFETY: `limit` is a valid rlimit for the call to fill in.
-    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 || limit.rlim_cur >= limit.rlim_max {
-        return;
-    }
-    let raised = libc::rlimit { rlim_cur: limit.rlim_max, rlim_max: limit.rlim_max };
-    // SAFETY: as above; raising the soft limit up to the hard one needs no privilege.
-    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raised) } != 0 {
-        log.warn("open_file_limit_unchanged", crate::log::err_fields(std::io::Error::last_os_error()));
-    }
 }
 
 async fn run(config: Config, log: Logger) -> Result<()> {

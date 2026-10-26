@@ -91,6 +91,10 @@ pub fn main(options: Options) -> Result<()> {
     let target = parse_target(&options.target)?;
     let label = options.name.clone().unwrap_or_else(|| target.to_string());
     let secret = load_or_create_key(&key_file(&server, &label)?)?;
+    // Failing leaves the limit the shell gave, which serves all but the
+    // busiest origins, so it isn't worth stopping for.
+    #[cfg(target_os = "linux")]
+    let _ = crate::util::raise_open_file_limit();
 
     tokio::runtime::Builder::new_multi_thread().enable_all().thread_name("npanel-tunnel").build()?.block_on(async {
         let agent = Arc::new(
