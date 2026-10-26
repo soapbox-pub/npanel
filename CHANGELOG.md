@@ -21,6 +21,11 @@ it is tagged.
   tunnel agents can connect, and set `X-Forwarded-For` to `$remote_addr` so a
   visitor can't put an address of their choosing in front of their own. Caddy
   already does both. See [Other proxies](docs/deployment.md#other-proxies).
+- Onion services publish their descriptors for every time period on time. A
+  descriptor is published for several time periods at once, and when one of
+  them had nothing new to upload Arti skipped the rest: they waited up to two
+  hours for the next scheduled upload, after a restart too, and the service
+  reported itself unreachable meanwhile. Fixed in Soapbox's fork of Arti.
 
 ## [0.6.2]
 
