@@ -4,6 +4,15 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [0.7.1]
+
+- `npanel tunnel` raises its open-file limit to the most the system allows,
+  as the server already did. Each request or WebSocket it passes on is a
+  connection to the origin, and with the 1024 most shells allow, a busy
+  tunnel answered 502 past about a thousand of them.
+- 0.7.0 was tagged but never published: its release failed a test of the
+  same limit. Its notes below are part of this release.
+
 ## [0.7.0]
 
 - Tunnels: `npanel tunnel npanel.example.com 8080`, run on any machine that
