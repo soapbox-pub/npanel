@@ -172,11 +172,13 @@ impl ServeCache {
             return Ok(None);
         };
 
+        // Only a host with a build sends it, so the build's relays are the ones.
+        let relays = build.as_ref().map_or(&[][..], |build| build.relays.as_slice());
+        let nsite_url = format!("nsite://{}", encode_naddr(&host.host.address(), relays));
         let version = build.map(|build| CachedVersion {
             build_id: build.id,
             last_modified: HeaderValue::from_str(&http_date(build.last_modified)).expect("an HTTP date is a valid header"),
         });
-        let nsite_url = format!("nsite://{}", encode_naddr(&host.host.address()));
         let site = Arc::new(CachedSite { host, version, nsite_url });
 
         self.entries.write().insert(hostname.to_string(), (site.clone(), Instant::now() + HOST_TTL));

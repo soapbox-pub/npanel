@@ -179,9 +179,22 @@ pub fn format_nsite_address(address: &NsiteAddress) -> String {
     format!("{}:{}:{}", address.kind, address.pubkey, address.identifier)
 }
 
-/// An `naddr` for the address, useful for links and copy buttons.
-pub fn encode_naddr(address: &NsiteAddress) -> String {
-    nip19::naddr_encode(&address.pubkey, address.kind as u32, &address.identifier, &[])
+/// An `naddr` for the address, useful for links and copy buttons, naming
+/// `relays` as where to find it.
+pub fn encode_naddr(address: &NsiteAddress, relays: &[String]) -> String {
+    nip19::naddr_encode(&address.pubkey, address.kind as u32, &address.identifier, relays)
+}
+
+/// How many relays an `naddr` names. Enough that one being down doesn't
+/// strand a client, and few enough to keep the address short.
+pub const NADDR_RELAYS: usize = 2;
+
+/// The relays an `naddr` for an author's site names: the first of the
+/// author's write relays, where NIP-65 tells a client to look, or of the
+/// gateway's own, where npanel found the site, when the author lists none.
+pub fn naddr_relays(author: &[String], gateway: &[String]) -> Vec<String> {
+    let relays = if author.is_empty() { gateway } else { author };
+    relays.iter().take(NADDR_RELAYS).cloned().collect()
 }
 
 /// Decode a 50-character base36 pubkey label to hex.
@@ -274,6 +287,20 @@ mod tests {
         let nsec = nip19::nsec_encode(PUBKEY);
         assert!(parse_nsite_address(&nsec).unwrap_err().contains("private key"));
         assert!(parse_nsite_address("hello").unwrap_err().starts_with("Unrecognized address"));
+    }
+
+    #[test]
+    fn names_the_authors_relays_or_the_gateways() {
+        let urls = |names: &[&str]| names.iter().map(|name| format!("wss://{name}.example.com")).collect::<Vec<_>>();
+        assert_eq!(naddr_relays(&urls(&["a", "b", "c"]), &urls(&["g"])), urls(&["a", "b"]));
+        assert_eq!(naddr_relays(&urls(&["a"]), &urls(&["g", "h"])), urls(&["a"]));
+        assert_eq!(naddr_relays(&[], &urls(&["g", "h", "i"])), urls(&["g", "h"]));
+
+        let naddr = encode_naddr(&named("docs"), &urls(&["a", "b"]));
+        assert_eq!(
+            nip19::decode(&naddr).unwrap(),
+            nip19::Decoded::Naddr { pubkey: PUBKEY.into(), kind: NAMED_SITE_KIND as u32, identifier: "docs".into(), relays: urls(&["a", "b"]) }
+        );
     }
 
     #[test]

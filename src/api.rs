@@ -43,7 +43,7 @@ use crate::link_previews::script::{self, Page, Scripts};
 use crate::link_previews::{LinkPreviews, PreviewError, ScriptPage};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
-use crate::nsite_address::{encode_naddr, format_nsite_address, parse_nsite_address};
+use crate::nsite_address::{encode_naddr, format_nsite_address, naddr_relays, parse_nsite_address};
 use crate::prune::LastPrune;
 use crate::serve::ServeCache;
 use crate::settings::{Settings, SettingsValues, KEYS};
@@ -517,7 +517,12 @@ async fn host_json(deps: &Deps, host: &Host, details: HostDetails) -> anyhow::Re
         "kind": host.kind,
         "identifier": host.identifier,
         "address": format_nsite_address(&address),
-        "naddr": encode_naddr(&address),
+        // The one `Nsite-Location` names, or, before there's a build to
+        // name one, with the gateway's relays.
+        "naddr": encode_naddr(&address, &match &details.build {
+            Some(build) => build.relays.clone(),
+            None => naddr_relays(&[], &deps.settings.get().relays),
+        }),
         "enabled": host.enabled,
         "hidden": host.hidden,
         "redirect_www": host.redirect_www,

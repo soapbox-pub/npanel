@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use base64::Engine;
+use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use indexmap::IndexMap;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -62,7 +63,10 @@ use crate::sites::{
 ///
 /// 6 loads the tracker `async`, so a request for it that never returns holds
 /// up nothing the site wrote.
-pub const BUILDER_VERSION: i64 = 6;
+///
+/// 7 records the relays the site's `naddr` names, which builds before it
+/// went without.
+pub const BUILDER_VERSION: i64 = 7;
 
 /// Wait before a second attempt at a build. It doubles after that.
 pub const RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -120,9 +124,13 @@ pub struct HostBuilderDeps {
     pub settings: Arc<Settings>,
     /// Told whenever what a host serves changes, so serving's cache is cleared.
     pub serving_changed: Arc<dyn Fn() + Send + Sync>,
+    /// The relays an `naddr` for this author's site should name.
+    pub relay_hints: RelayHints,
     pub log: Logger,
     pub retry_backoff: Duration,
 }
+
+pub type RelayHints = Arc<dyn Fn(&str) -> BoxFuture<'static, Vec<String>> + Send + Sync>;
 
 enum Command {
     /// Reconcile these hosts, or every host. Carries the request's number, so
@@ -504,13 +512,16 @@ impl HostBuilder {
         let started = std::time::Instant::now();
         let now = crate::util::now();
         let t = target.clone();
+        // Not in the fingerprint: a relay list changing is no reason to
+        // rebuild, and is picked up by whatever rebuilds next.
+        let relays = serde_json::to_string(&(deps.relay_hints)(&target.host.pubkey).await)?;
 
         let id = deps
             .db
             .call(move |conn| {
                 conn.execute(
-                    "INSERT INTO host_builds (host_id, kind, origin, event_id, fingerprint, status, error, last_modified, created_at, built_at)
-                     VALUES (?, ?, ?, ?, ?, 'building', NULL, ?, ?, NULL)",
+                    "INSERT INTO host_builds (host_id, kind, origin, event_id, fingerprint, status, error, last_modified, created_at, built_at, relays)
+                     VALUES (?, ?, ?, ?, ?, 'building', NULL, ?, ?, NULL, ?)",
                     params![
                         t.host.id,
                         t.kind.as_str(),
@@ -518,7 +529,8 @@ impl HostBuilder {
                         t.event.event_id,
                         t.fingerprint,
                         t.event.last_modified(),
-                        now
+                        now,
+                        relays
                     ],
                 )?;
                 let id = conn.last_insert_rowid();
@@ -996,6 +1008,10 @@ mod tests {
             serving_changed: Arc::new(move || {
                 counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }),
+            relay_hints: Arc::new(|pubkey: &str| {
+                let hint = format!("wss://{}.example.com", &pubkey[..4]);
+                Box::pin(async move { vec![hint] })
+            }),
             log: Logger::new(crate::log::LogLevel::Error),
             retry_backoff: Duration::from_millis(1),
         });
@@ -1018,6 +1034,8 @@ mod tests {
         let paths: Vec<&str> = list.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(paths, ["/index.html", "/robots.txt", "/sitemap.xml"]);
         assert_eq!(changed.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let relays = t.db.with(|conn| Ok(current_build(conn, host_id, BuildKind::Clearnet)?.unwrap().relays)).unwrap();
+        assert_eq!(relays, ["wss://aaaa.example.com"]);
 
         // Unchanged inputs rebuild nothing.
         builder.hosts_changed(Some(&[host_id]));

@@ -339,7 +339,8 @@ async fn a_published_site_is_deployed_built_and_served() {
     assert_eq!(headers["vary"], "accept-encoding");
     assert_eq!(headers["access-control-allow-origin"], "*");
     assert_eq!(headers["link"], "<https://docs.example.com/>; rel=\"canonical\"");
-    let naddr = crate::nsite_address::encode_naddr(&NsiteAddress { pubkey: manifest.pubkey.clone(), kind: 15128, identifier: String::new() });
+    // The author lists no relays, so the gateway's are named.
+    let naddr = crate::nsite_address::encode_naddr(&NsiteAddress { pubkey: manifest.pubkey.clone(), kind: 15128, identifier: String::new() }, &["wss://relay.invalid".into()]);
     assert_eq!(headers["nsite-location"], format!("nsite://{naddr}/"));
     assert!(!headers.contains_key("x-nsite-addr"));
     assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);

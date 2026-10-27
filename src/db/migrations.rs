@@ -377,4 +377,10 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
         BEGIN SELECT RAISE(ABORT, 'hostname belongs to a site'); END"#,
         ],
     ),
+    (
+        "027_host_builds_relays",
+        &[
+            r#"ALTER TABLE host_builds ADD COLUMN relays TEXT NOT NULL DEFAULT '[]'"#,
+        ],
+    ),
 ];

@@ -4,6 +4,13 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- The `naddr` in `Nsite-Location`, and a host's `naddr` in the API, name
+  relays to find the site on: the first two of its author's write relays, or
+  of npanel's own when the author lists none. Every host is rebuilt once at
+  startup to pick them up.
+
 ## [0.7.1]
 
 - `npanel tunnel` raises its open-file limit to the most the system allows,

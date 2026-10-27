@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::blobs::BlobStore;
 use crate::builds::{HostBuilder, HostBuilderDeps};
@@ -26,7 +27,7 @@ use crate::db::Db;
 use crate::fields;
 use crate::log::{with_err, Logger};
 use crate::nostr::service::{NostrService, NostrSource};
-use crate::nsite_address::NsiteAddress;
+use crate::nsite_address::{naddr_relays, NsiteAddress};
 use crate::prune::{LastPrune, Pruner, PrunerDeps};
 use crate::settings::Settings;
 use crate::sync::{SyncWorker, SyncWorkerDeps};
@@ -67,11 +68,20 @@ pub struct DeployerDeps {
 
 impl Deployer {
     pub fn new(deps: DeployerDeps) -> Deployer {
+        let nostr = deps.nostr.clone();
         let builder = HostBuilder::new(HostBuilderDeps {
             db: deps.db.clone(),
             blobs: deps.blobs.clone(),
             settings: deps.settings.clone(),
             serving_changed: deps.serving_changed,
+            relay_hints: Arc::new(move |pubkey: &str| {
+                let (nostr, pubkey) = (nostr.clone(), pubkey.to_string());
+                // Usually answered from the cache the deploy just filled.
+                Box::pin(async move {
+                    let authors = nostr.authors_relays(std::slice::from_ref(&pubkey), &CancellationToken::new()).await;
+                    naddr_relays(authors.get(&pubkey).map_or(&[], Vec::as_slice), &nostr.relays())
+                })
+            }),
             log: deps.log,
             retry_backoff: deps.retry_backoff.unwrap_or(crate::builds::RETRY_BACKOFF),
         });

@@ -273,12 +273,20 @@ pub struct HostBuild {
     pub fingerprint: String,
     /// `Last-Modified` for its responses, in epoch seconds.
     pub last_modified: i64,
+    /// The relays its site's `naddr` names, chosen when it was built.
+    pub relays: Vec<String>,
 }
 
-pub const HOST_BUILD_COLUMNS: &str = "id, event_id, fingerprint, last_modified";
+pub const HOST_BUILD_COLUMNS: &str = "id, event_id, fingerprint, last_modified, relays";
 
 impl HostBuild {
     pub fn from_row(row: &Row) -> rusqlite::Result<HostBuild> {
-        Ok(HostBuild { id: row.get(0)?, event_id: row.get(1)?, fingerprint: row.get(2)?, last_modified: row.get(3)? })
+        Ok(HostBuild {
+            id: row.get(0)?,
+            event_id: row.get(1)?,
+            fingerprint: row.get(2)?,
+            last_modified: row.get(3)?,
+            relays: crate::identifiers::parse_relay_list(&row.get::<_, String>(4)?),
+        })
     }
 }

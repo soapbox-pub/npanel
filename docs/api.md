@@ -1198,8 +1198,11 @@ Not part of the JSON API, but worth knowing when debugging a served site:
 `nsite://naddr1…/docs/intro?ref=x` for a request for `/docs/intro?ref=x`, the
 path and query carried over as they were asked for, the way `Onion-Location`
 carries them to the onion. An `naddr` holds the pubkey, kind, and `d` tag
-together, so a client that reads nsites directly can open the page from this
-one value. It is sent with every file of the site, and with a page's link
+together, and relays to find the site on, so a client that reads nsites
+directly can open the page from this one value. The relays are the first two
+of the author's write relays (their NIP-65 list), or of npanel's own relays
+when the author lists none, as they stood when the host's build was made. A
+host's `naddr` in the API is the same one. It is sent with every file of the site, and with a page's link
 preview, but not with a preview's image, which is npanel's and not a file at
 any path of the site.
 
