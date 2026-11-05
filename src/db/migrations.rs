@@ -383,4 +383,13 @@ pub const MIGRATIONS: &[(&str, &[&str])] = &[
             r#"ALTER TABLE host_builds ADD COLUMN relays TEXT NOT NULL DEFAULT '[]'"#,
         ],
     ),
+    (
+        "028_crawler_pattern_agents",
+        &[
+            // A deployment still on the old default is seeded the new one,
+            // with AI agents' fetchers, on its next load; one an admin edited
+            // keeps their pattern.
+            r#"DELETE FROM settings WHERE key = 'link_preview_crawler_pattern' AND value = json_quote('googlebot|bingbot|yandex|baiduspider|duckduckbot|applebot|twitterbot|discordbot|facebookexternalhit|facebookcatalog|meta-externalagent|linkedinbot|slackbot|slack-imgproxy|telegrambot|whatsapp|embedly|iframely|quora link preview|showyoubot|outbrain|pinterest|vkshare|redditbot|skypeuripreview|mastodon|pleroma|akkoma|misskey|rocket\.chat|cardyb|w3c_validator|rogerbot')"#,
+        ],
+    ),
 ];

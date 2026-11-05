@@ -10,6 +10,11 @@ it is tagged.
   relays to find the site on: the first two of its author's write relays, or
   of npanel's own when the author lists none. Every host is rebuilt once at
   startup to pick them up.
+- Link previews go to AI assistants and coding agents fetching a page for
+  someone, as they do to crawlers: Claude and Claude Code, OpenCode, ChatGPT,
+  Perplexity and Mistral read the page a site's preview script renders rather
+  than an empty app shell. A deployment still on the old default
+  `link_preview_crawler_pattern` gets the new one; an edited pattern is kept.
 
 ## [0.7.1]
 

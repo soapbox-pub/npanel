@@ -300,6 +300,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
 
     #[test]
     fn migrates_and_cascades() {
@@ -409,6 +410,32 @@ mod tests {
             migrate(conn, None)?;
             let value: String = conn.query_row("SELECT value FROM settings WHERE key = 'relays'", [], |r| r.get(0))?;
             assert_eq!(value, r#"["wss://relay.example.com"]"#);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn forgets_the_old_default_crawler_pattern() {
+        // Stored as settings seeds it: the pattern as a JSON string.
+        let old = "googlebot|bingbot|yandex|baiduspider|duckduckbot|applebot|twitterbot|discordbot|\
+facebookexternalhit|facebookcatalog|meta-externalagent|linkedinbot|slackbot|slack-imgproxy|telegrambot|whatsapp|\
+embedly|iframely|quora link preview|showyoubot|outbrain|pinterest|vkshare|redditbot|skypeuripreview|mastodon|\
+pleroma|akkoma|misskey|rocket\\.chat|cardyb|w3c_validator|rogerbot";
+        let stored = |conn: &mut Connection, pattern: &str| -> Result<Option<String>> {
+            conn.execute("DELETE FROM settings WHERE key = 'link_preview_crawler_pattern'", [])?;
+            conn.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('link_preview_crawler_pattern', ?, 1)",
+                params![serde_json::Value::from(pattern).to_string()],
+            )?;
+            conn.execute("DELETE FROM schema_migrations WHERE name = '028_crawler_pattern_agents'", [])?;
+            migrate(conn, None)?;
+            Ok(conn.query_row("SELECT value FROM settings WHERE key = 'link_preview_crawler_pattern'", [], |r| r.get(0)).optional()?)
+        };
+        let t = testing::temp_db();
+        t.db.with(|conn| {
+            assert_eq!(stored(conn, old)?, None);
+            assert_eq!(stored(conn, "googlebot|rocket\\.chat")?, Some(r#""googlebot|rocket\\.chat""#.into()));
             Ok(())
         })
         .unwrap();

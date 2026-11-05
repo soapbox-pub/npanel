@@ -58,12 +58,14 @@ use crate::rate_limit::{RateLimit, RateLimiter};
 use crate::settings::{Settings, SettingsValues};
 
 /// The crawlers that get a preview, as `link_preview_crawler_pattern` starts.
-/// Search engines, and the services that unfurl a link pasted into a chat or
-/// a post.
+/// Search engines, the services that unfurl a link pasted into a chat or a
+/// post, and AI assistants and coding agents fetching a page someone asked
+/// about, which read HTML without running its scripts just as a crawler does.
 pub const DEFAULT_CRAWLER_PATTERN: &str = "googlebot|bingbot|yandex|baiduspider|duckduckbot|applebot|twitterbot|discordbot|\
 facebookexternalhit|facebookcatalog|meta-externalagent|linkedinbot|slackbot|slack-imgproxy|telegrambot|whatsapp|\
 embedly|iframely|quora link preview|showyoubot|outbrain|pinterest|vkshare|redditbot|skypeuripreview|mastodon|\
-pleroma|akkoma|misskey|rocket\\.chat|cardyb|w3c_validator|rogerbot";
+pleroma|akkoma|misskey|rocket\\.chat|cardyb|w3c_validator|rogerbot|\
+claude-user|opencode-user|chatgpt-user|perplexity-user|mistralai-user";
 
 /// The longest User-Agent read. Real ones are a few hundred characters, and
 /// a pattern needn't run over the rest of one that isn't.
@@ -835,6 +837,9 @@ mod tests {
             "WhatsApp/2.23.20.0",
             "Mastodon/4.2.0 (http.rb/5.1.1; +https://mastodon.social/)",
             "Mozilla/5.0 (compatible; Bluesky Cardyb/1.1; +mailto:support@bsky.app)",
+            "Claude-User (claude-code/2.1.317; +https://support.anthropic.com/)",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; OpenCode-User/1.0; +https://opencode.ai",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot",
         ] {
             assert!(pattern.is_match(crawler), "{crawler}");
         }

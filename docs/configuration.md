@@ -478,8 +478,10 @@ regular expression, matched case-insensitively against the first 512
 characters of the header. The default names the search engines, and the
 services that unfurl a link pasted into a chat or a post — Google, Bing,
 DuckDuckGo, Apple, X, Discord, Facebook, LinkedIn, Slack, Telegram, WhatsApp,
-Mastodon and the other fediverse servers, Bluesky, and a few more. Everyone it
-doesn't match gets the page as published.
+Mastodon and the other fediverse servers, Bluesky, and a few more — and the
+fetchers AI assistants and coding agents use to read a page someone asked
+about: Claude and Claude Code, OpenCode, ChatGPT, Perplexity and Mistral.
+Everyone it doesn't match gets the page as published.
 
 It can't be empty: a pattern that matches nothing would be a way to turn
 previews off, which is a site's switch, not this one. It is compiled with a
