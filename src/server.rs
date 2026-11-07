@@ -92,16 +92,6 @@ impl Connections {
         Connections { shutdown: CancellationToken::new(), open: TaskTracker::new() }
     }
 
-    /// Serve HTTP/1.1 on `io`, in a task of its own.
-    pub fn serve<I, H, F>(&self, io: I, handler: H)
-    where
-        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-        H: Fn(Request<Body>) -> F + Send + 'static,
-        F: Future<Output = Response<Body>> + Send + 'static,
-    {
-        tokio::spawn(http1(self.watcher(), io, handler));
-    }
-
     /// Serve HTTP/1.1 on a TCP connection, which sends a large blob's body
     /// straight from its file.
     fn serve_tcp<H, F>(&self, stream: TcpStream, handler: H)
@@ -137,6 +127,12 @@ pub struct Watcher {
 }
 
 impl Watcher {
+    /// Resolves once shutdown has asked every connection to finish, for a
+    /// connection that is still being set up and can simply be abandoned.
+    pub async fn shutdown_requested(&self) {
+        self.shutdown.cancelled().await;
+    }
+
     /// Run `connection` until it ends by itself, which is `false`, or until
     /// shutdown asks it to finish, which is `true`: the caller then asks it
     /// to wind down gracefully and waits for it to.
@@ -468,10 +464,10 @@ mod tests {
         let expected = vec![blob[100_000..300_000].to_vec(), blob.to_vec()];
         let (mut client, stream) = tokio::io::duplex(64 * 1024);
         let connections = Connections::new();
-        connections.serve(stream, move |request| {
+        tokio::spawn(http1(connections.watcher(), stream, move |request| {
             let response = respond(&blob, &request);
             async move { response }
-        });
+        }));
         assert_eq!(exchange(&mut client).await, expected);
     }
 }

@@ -697,10 +697,21 @@ async fn accept(
 ) {
     let mut streams = std::pin::pin!(tor_hsservice::handle_rend_requests(requests));
     while let Some(request) = streams.next().await {
-        let Some(stream) = open(request).await else {
-            continue;
-        };
-        connections.serve(stream, onion_handler(site.clone(), address.clone(), log));
+        // Every visitor's rendezvous is driven by polling `streams`, so
+        // answering a stream here would hold up all of them for as long as
+        // its circuit takes to carry the reply. Each is answered in a task of
+        // its own, which holds a watcher so that draining waits for it.
+        let watcher = connections.watcher();
+        let handler = onion_handler(site.clone(), address.clone(), log);
+        tokio::spawn(async move {
+            let stream = tokio::select! {
+                stream = open(request) => stream,
+                () = watcher.shutdown_requested() => None,
+            };
+            if let Some(stream) = stream {
+                crate::server::http1(watcher, stream, handler).await;
+            }
+        });
     }
 }
 

@@ -602,7 +602,11 @@ async fn a_site_is_served_at_its_onion_and_only_there() {
     let over_tor = async |arrived_at: &str, host: &str| -> String {
         let (mut client, stream) = tokio::io::duplex(64 * 1024);
         let connections = crate::server::Connections::new();
-        connections.serve(stream, crate::tor::onion_handler(gw.app.site.clone(), arrived_at.to_string(), Logger::new(LogLevel::Error)));
+        tokio::spawn(crate::server::http1(
+            connections.watcher(),
+            stream,
+            crate::tor::onion_handler(gw.app.site.clone(), arrived_at.to_string(), Logger::new(LogLevel::Error)),
+        ));
         let request = format!("GET / HTTP/1.1\r\nhost: {host}\r\nconnection: close\r\n\r\n");
         tokio::io::AsyncWriteExt::write_all(&mut client, request.as_bytes()).await.unwrap();
         let mut response = String::new();
