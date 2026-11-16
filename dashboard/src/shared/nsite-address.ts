@@ -45,7 +45,7 @@ export function parseNsiteAddress(input: string): NsiteAddress {
 
   let value = trimmed.replace(/^nostr:/i, "").replace(/^web\+nostr:/i, "");
 
-  // Full URL, eg https://<label>.nsite.lol/some/page
+  // Full URL, eg https://<label>.nsite.lol/some/page, or nsite://naddr1…/page
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
     let url: URL;
     try {
@@ -87,6 +87,22 @@ export function parseNsiteAddress(input: string): NsiteAddress {
   throw new Error(
     `Unrecognized address: ${trimmed}. Use an npub, naddr, ${NAMED_SITE_KIND}:<pubkey>:<identifier>, or an nsite URL.`,
   );
+}
+
+/**
+ * The web page an address is, when it is one: an `http(s)://` URL. A page
+ * whose host doesn't name a site, so that `parseNsiteAddress` refuses it, can
+ * still say which nsite it is, in an `Nsite-Location` header — which only the
+ * server can read, since a browser can't see another origin's headers.
+ */
+export function webPageUrl(input: string): URL | undefined {
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    return undefined;
+  }
+  return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? url : undefined;
 }
 
 function fromNip19(value: string, original: string): NsiteAddress {

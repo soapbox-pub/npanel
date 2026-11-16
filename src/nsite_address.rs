@@ -49,7 +49,7 @@ pub fn parse_nsite_address(input: &str) -> Result<NsiteAddress, String> {
     value = crate::util::strip_prefix_ci(value, "web+nostr:");
     let mut value = value.to_string();
 
-    // Full URL, eg https://<label>.nsite.lol/some/page
+    // Full URL, eg https://<label>.nsite.lol/some/page, or nsite://naddr1…/page
     if is_url_like(&value) {
         let url = url::Url::parse(&value).map_err(|_| format!("Not a valid URL: {trimmed}"))?;
         value = url.host_str().unwrap_or("").to_string();
@@ -83,6 +83,14 @@ pub fn parse_nsite_address(input: &str) -> Result<NsiteAddress, String> {
     Err(format!(
         "Unrecognized address: {trimmed}. Use an npub, naddr, {NAMED_SITE_KIND}:<pubkey>:<identifier>, or an nsite URL."
     ))
+}
+
+/// The web page an address is, when it is one: an `http(s)://` URL. A page
+/// whose host doesn't name a site, so that [`parse_nsite_address`] refuses
+/// it, can still say which nsite it is, in an `Nsite-Location` header.
+pub fn web_page_url(input: &str) -> Option<url::Url> {
+    let url = url::Url::parse(input.trim()).ok()?;
+    (matches!(url.scheme(), "http" | "https") && url.host().is_some()).then_some(url)
 }
 
 /// `^[a-z][a-z0-9+.-]*://`, case-insensitively.
@@ -276,6 +284,36 @@ mod tests {
         assert_eq!(parse_nsite_address(&naddr).unwrap(), named("docs"));
         let label = format!("{}docs", encode_pubkey_b36(PUBKEY).unwrap());
         assert_eq!(parse_nsite_address(&format!("https://{label}.nsite.lol")).unwrap(), named("docs"));
+    }
+
+    #[test]
+    fn parses_nsite_and_nostr_uris() {
+        let npub = nip19::npub_encode(PUBKEY);
+        let label = format!("{}docs", encode_pubkey_b36(PUBKEY).unwrap());
+        let naddr = nip19::naddr_encode(PUBKEY, 35128, "docs", &["wss://relay.example.com".into()]);
+        let root_naddr = nip19::naddr_encode(PUBKEY, 15128, "", &[]);
+
+        assert_eq!(parse_nsite_address(&format!("nsite://{npub}/")).unwrap(), root());
+        assert_eq!(parse_nsite_address(&format!("nsite://{npub}")).unwrap(), root());
+        assert_eq!(parse_nsite_address(&format!("nsite://{label}/a/b?c=d#e")).unwrap(), named("docs"));
+        assert_eq!(parse_nsite_address(&format!("nsite://{naddr}/app.js?v=1")).unwrap(), named("docs"));
+        assert_eq!(parse_nsite_address(&format!("NSITE://{}/", naddr.to_uppercase())).unwrap(), named("docs"));
+        assert_eq!(parse_nsite_address(&format!("nsite://{root_naddr}/")).unwrap(), root());
+
+        assert_eq!(parse_nsite_address(&format!("nostr:{naddr}")).unwrap(), named("docs"));
+        assert_eq!(parse_nsite_address(&format!("NOSTR:{}", nip19::nprofile_encode(PUBKEY, &[]))).unwrap(), root());
+        assert_eq!(parse_nsite_address(&format!("web+nostr:{npub}")).unwrap(), root());
+    }
+
+    #[test]
+    fn tells_web_pages_apart() {
+        assert_eq!(web_page_url(" https://example.com/a ").unwrap().as_str(), "https://example.com/a");
+        assert!(web_page_url("http://example.com").is_some());
+        assert!(web_page_url("nsite://example").is_none());
+        assert!(web_page_url("example.com").is_none());
+        assert!(web_page_url("https://").is_none());
+        // A page off any gateway is no site by its name alone.
+        assert!(parse_nsite_address("https://example.com/").unwrap_err().starts_with("Unrecognized address"));
     }
 
     #[test]

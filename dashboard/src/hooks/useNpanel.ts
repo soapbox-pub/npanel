@@ -83,6 +83,21 @@ export function useDnsTarget() {
   });
 }
 
+/** The site a web page names in its `Nsite-Location`, asked of the server. */
+export function useResolvedAddress(address: string | undefined) {
+  const api = useApi();
+
+  return useQuery({
+    queryKey: useKey('address', address ?? ''),
+    queryFn: async () => (await api!.resolveAddress(address!)).address,
+    enabled: !!api && !!address,
+    // What a page names is the answer for as long as the dialog is open; a
+    // failed lookup is the page's to fix, not a blip worth retrying.
+    staleTime: 60 * 1000,
+    retry: false,
+  });
+}
+
 export function useHosts() {
   const api = useApi();
 

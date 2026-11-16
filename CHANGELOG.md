@@ -4,6 +4,14 @@ Release notes, one section per version. `ngit release publish` takes the
 section matching the tag it publishes, so every release needs one here before
 it is tagged.
 
+## [Unreleased]
+
+- A site's address can be pasted as an `nsite://` URL, as `Nsite-Location`
+  and Din name one, or as the address of an https page that isn't on a
+  gateway: npanel asks the page, with a HEAD request, which nsite its
+  `Nsite-Location` header names. The dashboard shows the answer before the
+  site is added, from the new `GET /api/address`.
+
 ## [0.7.2]
 
 - The `naddr` in `Nsite-Location`, and a host's `naddr` in the API, name

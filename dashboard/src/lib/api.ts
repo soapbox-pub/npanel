@@ -34,6 +34,7 @@ import type {
   TunnelRequest,
 } from './api-types.ts';
 import type { StatsQueryBody, StatsResponse } from './analytics/query.ts';
+import type { NsiteAddress } from '@shared/nsite-address';
 
 /** NIP-98 HTTP auth event kind. */
 const NIP98_KIND = 27235;
@@ -111,6 +112,11 @@ export class ApiClient {
 
   dns(): Promise<DnsTarget> {
     return this.request('GET', '/api/dns');
+  }
+
+  /** The site an address names, asking a web page's own `Nsite-Location` when it is one. */
+  resolveAddress(address: string): Promise<{ address: NsiteAddress }> {
+    return this.request('GET', `/api/address?address=${encodeURIComponent(address)}`);
   }
 
   /** Sites this user manages, plus the ones they may only be told the name of. */

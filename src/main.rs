@@ -41,6 +41,7 @@ mod server;
 mod settings;
 mod site_csp;
 mod site_env;
+mod site_location;
 mod site_preview;
 mod sites;
 mod supervise;
@@ -295,6 +296,7 @@ async fn run(config: Config, log: Logger) -> Result<()> {
         serve_cache,
         last_prune,
         tunnels: tunnels.clone(),
+        site_lookup: site_location::SiteLookup::new(),
         dashboard_host: config.dashboard_host.clone(),
     }));
     let dashboard = dashboard::Dashboard::new(dashboard::source(), &config.dashboard_host, log);

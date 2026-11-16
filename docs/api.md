@@ -137,6 +137,28 @@ rather than shown broken. `null` when there is none.
 { "pubkey": "<hex>", "npub": "npub1...", "role": "admin" }
 ```
 
+## Addresses
+
+### `GET /api/address?address=…`
+
+The site an address names, as `POST /api/hosts` would store it. Available to
+any authenticated user.
+
+```json
+{ "address": { "pubkey": "3bf0c63f…", "kind": 35128, "identifier": "docs" } }
+```
+
+An `https://` URL whose host doesn't name a site is a web page to ask: npanel
+sends it a `HEAD` request, following up to five redirects, and reads the
+`nsite://` URL in its `Nsite-Location` header. Only pages on the public
+internet over https are asked, since where a page redirects is up to whoever
+runs it. The dashboard parses every other form itself and comes here for
+these, as a browser can't read another origin's headers.
+
+`400` with a sentence saying what went wrong — the page couldn't be reached,
+had no `Nsite-Location`, or named something that isn't an nsite — or for an
+address that isn't one at all.
+
 ## DNS
 
 ### `GET /api/dns`
@@ -256,9 +278,12 @@ empty for an admin, whose `hosts` already holds everything.
 { "hostname": "example.org", "address": "npub1...", "hidden": false, "redirect_www": true, "spa": false, "csp": true, "seo": true, "merge_deployments": false, "analytics": false }
 ```
 
-`address` accepts an npub, nprofile, naddr, an `a` tag
-(`35128:<pubkey>:<identifier>`), a NIP-5A label, or a URL containing one of
-those. It's stored decomposed into pubkey, kind, and identifier.
+`address` accepts an npub, nprofile, naddr (bare or as a `nostr:` URI), an
+`a` tag (`35128:<pubkey>:<identifier>`), a NIP-5A label, a URL containing one
+of those (a gateway's `https://` URL or an `nsite://` one), or the `https://`
+address of a page whose `Nsite-Location` header names the site — see
+[`GET /api/address`](#get-apiaddress). It's stored decomposed into pubkey,
+kind, and identifier.
 
 `201` with `{ "host": {...} }`. `409` if the hostname is already configured or
 is `dashboard_host`. `400` if it doesn't sit under one of

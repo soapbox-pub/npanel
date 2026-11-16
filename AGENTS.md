@@ -23,6 +23,7 @@ src/
   util.rs               small helpers used throughout
   settings.rs           runtime settings, DB-backed and live-reloading
   nsite_address.rs      address parsing
+  site_location.rs      asking a web page which nsite it is (Nsite-Location)
   identifiers.rs        relay URLs, pubkeys, NIP-05 names
   manifest.rs           manifest event parsing
   mime.rs               content types by file extension

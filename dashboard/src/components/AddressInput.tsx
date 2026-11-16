@@ -16,8 +16,9 @@ interface AddressInputProps {
 
 /**
  * Address field accepting every format an nsite might be pasted in — npub,
- * nprofile, naddr, an `a` tag, an nsite subdomain label, or a full nsite URL —
- * and saying whose site it turned out to be.
+ * nprofile, naddr, a `nostr:` URI, an `a` tag, an nsite subdomain label, an
+ * nsite gateway or `nsite://` URL, or the address of a web page that names
+ * its nsite — and saying whose site it turned out to be.
  */
 export function AddressInput({ value, onChange, parsed, label = 'nsite', id = 'address' }: AddressInputProps) {
   return (
@@ -27,11 +28,17 @@ export function AddressInput({ value, onChange, parsed, label = 'nsite', id = 'a
         id={id}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="npub1…, naddr1…, or an nsite URL"
+        placeholder="npub1…, naddr1…, nsite://…, or a site’s URL"
         autoComplete="off"
         spellCheck={false}
         aria-invalid={parsed.error ? true : undefined}
       />
+
+      {parsed.checking && (
+        <p className="text-xs text-muted-foreground" aria-live="polite">
+          Asking {parsed.checking} which nsite it is…
+        </p>
+      )}
 
       {parsed.error && <p className="text-xs text-destructive">{parsed.error}</p>}
 

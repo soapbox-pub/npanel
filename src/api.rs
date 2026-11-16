@@ -43,11 +43,12 @@ use crate::link_previews::script::{self, Page, Scripts};
 use crate::link_previews::{LinkPreviews, PreviewError, ScriptPage};
 use crate::log::{with_err, Logger};
 use crate::nostr::nip19;
-use crate::nsite_address::{encode_naddr, format_nsite_address, naddr_relays, parse_nsite_address};
+use crate::nsite_address::{encode_naddr, format_nsite_address, naddr_relays};
 use crate::prune::LastPrune;
 use crate::serve::ServeCache;
 use crate::settings::{Settings, SettingsValues, KEYS};
 use crate::site_csp::{SiteCsp, GATEWAY_CSP};
+use crate::site_location::SiteLookup;
 use crate::site_env::{parse_env_name, parse_env_value, MAX_VARIABLES};
 use crate::site_preview::{SitePreview, SitePreviews};
 use crate::sites::{find_host, host_by_id, load_host, newest_event, site_event, site_key};
@@ -85,6 +86,7 @@ pub struct ApiDeps {
     pub serve_cache: Arc<ServeCache>,
     pub last_prune: LastPrune,
     pub tunnels: Arc<Tunnels>,
+    pub site_lookup: SiteLookup,
     pub dashboard_host: String,
 }
 
@@ -224,6 +226,7 @@ pub fn router(deps: Deps) -> Router {
     let private = Router::new()
         .route("/api/me", get(me))
         .route("/api/dns", get(dns))
+        .route("/api/address", get(resolve_address))
         .route("/api/hosts", get(list_hosts).post(create_host))
         .route("/api/hosts/{hostname}", get(get_host).patch(update_host).delete(delete_host))
         .route("/api/hosts/{hostname}/versions", get(versions))
@@ -397,6 +400,16 @@ async fn me(user: AuthUser) -> ApiResult {
 async fn dns(State(deps): State<Deps>) -> ApiResult {
     let (records, source) = deps.dns.target().await;
     ok(json!({ "records": records, "source": source, "dashboard_host": deps.dashboard_host }))
+}
+
+/// The site an address names, as creating a host with it would store it.
+/// The dashboard parses most addresses itself; it asks here for a web page's,
+/// which only a request to the page can answer, and a browser can't read
+/// another origin's headers.
+async fn resolve_address(State(deps): State<Deps>, _: AuthUser, Query(query): Query<HashMap<String, String>>) -> ApiResult {
+    let input = query.get("address").ok_or_else(|| bad("Add the address to look up, as ?address=."))?;
+    let address = deps.site_lookup.resolve(input).await.map_err(bad)?;
+    ok(json!({ "address": address }))
 }
 
 /// The hosts npanel will name to someone who can't manage them: none unless
@@ -682,7 +695,7 @@ async fn create_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     let NewHost { hostname, address, flags } = body.json("Expected a JSON body with hostname and address.")?;
 
     let hostname = parse_hostname(&hostname, &deps.settings.get().allowed_host_suffixes).map_err(bad)?;
-    let address = parse_nsite_address(&address).map_err(bad)?;
+    let address = deps.site_lookup.resolve(&address).await.map_err(bad)?;
     if hostname == deps.dashboard_host {
         return Err(ApiError::Conflict("That domain serves the dashboard itself.".into()));
     }
@@ -791,7 +804,7 @@ async fn update_host(State(deps): State<Deps>, user: AuthUser, Extension(body): 
     }
 
     if let Some(new_address) = &request.address {
-        let address = parse_nsite_address(new_address).map_err(bad)?;
+        let address = deps.site_lookup.resolve(new_address).await.map_err(bad)?;
         patch.push(("pubkey", Sql::Text(address.pubkey)));
         patch.push(("kind", Sql::Integer(address.kind)));
         patch.push(("identifier", Sql::Text(address.identifier)));

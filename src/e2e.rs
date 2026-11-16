@@ -243,6 +243,7 @@ async fn gateway(nostr: Arc<FakeNostr>) -> Gateway {
         serve_cache,
         last_prune,
         tunnels: tunnels.clone(),
+        site_lookup: crate::site_location::SiteLookup::allowing_private(),
         dashboard_host: "panel.example.com".into(),
     }));
     let app = Arc::new(App {
@@ -342,6 +343,11 @@ async fn a_published_site_is_deployed_built_and_served() {
     // The author lists no relays, so the gateway's are named.
     let naddr = crate::nsite_address::encode_naddr(&NsiteAddress { pubkey: manifest.pubkey.clone(), kind: 15128, identifier: String::new() }, &["wss://relay.invalid".into()]);
     assert_eq!(headers["nsite-location"], format!("nsite://{naddr}/"));
+    // Which the dashboard can paste back to name the same site.
+    let (status, found) = gw.api("GET", &format!("/api/address?address=nsite://{naddr}/"), None).await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!((found["address"]["pubkey"].as_str(), found["address"]["kind"].as_i64()), (Some(manifest.pubkey.as_str()), Some(15128)));
+    assert_eq!(gw.api("GET", "/api/address?address=hello", None).await.0, StatusCode::BAD_REQUEST);
     assert!(!headers.contains_key("x-nsite-addr"));
     assert_eq!(headers["content-security-policy"], crate::site_csp::GATEWAY_CSP);
     let mut decoded = Vec::new();

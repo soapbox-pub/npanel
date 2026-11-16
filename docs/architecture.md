@@ -204,10 +204,17 @@ manifest's own `server` tags, the author's kind 10063 list, then the configured
 fallbacks (`blob_sources`, `src/nostr/service.rs`).
 
 `src/nsite_address.rs` accepts every form a person might paste — npub, nprofile,
-naddr, an `a` tag, a NIP-5A label, a URL — and reduces it to
-`{ pubkey, kind, identifier }`. The dashboard has a TypeScript twin of it
-(`dashboard/src/shared/nsite-address.ts`) so the address preview in the UI
-matches what the server will store; the two are changed together.
+naddr, a `nostr:` URI, an `a` tag, a NIP-5A label, a gateway or `nsite://` URL —
+and reduces it to `{ pubkey, kind, identifier }`. The dashboard has a TypeScript
+twin of it (`dashboard/src/shared/nsite-address.ts`) so the address preview in
+the UI matches what the server will store; the two are changed together.
+
+One form needs the network: an `https://` page that isn't on a gateway, which
+may name its nsite in an `Nsite-Location` header. `src/site_location.rs` asks
+it with a `HEAD` request, through the same public-only resolver blob downloads
+use, when a host is created or retargeted and when the dashboard previews the
+address (`GET /api/address`, since a browser can't read another origin's
+headers).
 
 ## Sync
 
