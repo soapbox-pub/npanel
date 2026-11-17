@@ -52,8 +52,17 @@ pub const TARGET_HEADER: &str = "npanel-target";
 /// The flow-control windows both ends of a tunnel connection open with: how
 /// much may be in flight on the whole connection, and on one stream, before
 /// the sender waits to hear it was read. A window caps throughput at its size
-/// per round trip, so these are large: 4 MiB is 80 MB/s for one stream over
-/// 50 ms, 20 MB/s over 200 ms.
+/// per round trip: 2 MiB is 40 MB/s for one stream over 50 ms, 10 MB/s over
+/// 200 ms.
+///
+/// What a visitor hasn't read yet counts against both windows until they
+/// read it, and a video player stops reading once it has buffered ahead. So
+/// the connection's window is as large as HTTP/2 allows, room for a thousand
+/// such streams, and each stream's window alone holds it back: a connection
+/// window of a few streams' worth was filled by a few paused players, and
+/// every other request on the connection waited behind them. The stream
+/// window is then what bounds how much a slow visitor leaves buffered in
+/// npanel.
 ///
 /// Fixed rather than hyper's adaptive window, which grows to fit the link but
 /// always opens at 64 KiB. h2 sizes its guard against floods of small DATA
@@ -61,9 +70,9 @@ pub const TARGET_HEADER: &str = "npanel-target";
 /// read — so an adaptive window left room for about 130 of them across the
 /// whole connection. A WebSocket message is a small frame, and a few hundred
 /// sockets each sending one at once closed the connection with every socket
-/// on it. Half of 16 MiB is room for some 32,000.
-pub const CONNECTION_WINDOW: u32 = 16 * 1024 * 1024;
-pub const STREAM_WINDOW: u32 = 4 * 1024 * 1024;
+/// on it.
+pub const CONNECTION_WINDOW: u32 = (1 << 31) - 1;
+pub const STREAM_WINDOW: u32 = 2 * 1024 * 1024;
 
 /// The buffer each direction of a WebSocket is copied through, on either end
 /// of the tunnel. Under tokio's 8 KiB: an open socket mostly sits idle, and a

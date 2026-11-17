@@ -1057,8 +1057,13 @@ async fn a_site_counted_on_the_server_loads_no_tracker() {
 /// The key of the agent in the tunnel test.
 const SECRET_B: &str = "000000000000000000000000000000000000000000000000000000000000000b";
 
+/// The size of the origin's `/big` download: more than a tunnel connection
+/// would hold for a handful of visitors who stop reading it.
+const BIG: usize = 64 * 1024 * 1024;
+
 /// An origin on loopback for a tunnel to reach: `/hello` says what it was
-/// sent, `/echo` sends its body back, and `/ws` echoes WebSocket messages.
+/// sent, `/echo` sends its body back, `/big` sends `BIG` bytes, and `/ws`
+/// echoes WebSocket messages.
 async fn origin() -> std::net::SocketAddr {
     use futures_util::{SinkExt, StreamExt};
     use hyper_util::rt::TokioIo;
@@ -1080,6 +1085,11 @@ async fn origin() -> std::net::SocketAddr {
                         http::Response::new(Body::from(names.map(header).join(" ")))
                     }
                     "/echo" => http::Response::new(Body::from(request.into_body().collect().await.unwrap().to_bytes())),
+                    "/big" => {
+                        let chunk = bytes::Bytes::from(vec![7u8; 64 * 1024]);
+                        let chunks = futures_util::stream::iter((0..BIG / chunk.len()).map(move |_| Ok::<_, std::convert::Infallible>(chunk.clone())));
+                        http::Response::new(Body::from_stream(chunks))
+                    }
                     "/ws" => {
                         let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(header("sec-websocket-key").as_bytes());
                         let upgrade = hyper::upgrade::on(&mut request);
@@ -1302,6 +1312,62 @@ async fn a_tunnel_carries_requests_and_websockets_to_its_agent() {
 /// Open WebSockets each hold a stream for as long as they're open, and a
 /// tunnel holds many more of them than hyper's default of 200 per connection:
 /// here, three hundred on one, with requests still answered beside them.
+/// Visitors who stop reading a download, as a video player does once it has
+/// buffered ahead, hold up only their own streams: a connection with a dozen
+/// of them still answers everyone else straight away.
+#[tokio::test(flavor = "multi_thread")]
+async fn stalled_downloads_hold_up_no_one_else_on_a_tunnel_connection() {
+    use tokio::io::AsyncWriteExt;
+
+    let Tunneled { gw, address, agent, shutdown, .. } = tunneled(1).await;
+    let authorizing = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.authorize().await }
+    });
+    let mut code = String::new();
+    eventually("the agent asking", async || {
+        let (_, body) = gw.api("GET", "/api/tunnels", None).await;
+        code = body["requests"][0]["code"].as_str().unwrap_or_default().to_string();
+        !code.is_empty()
+    })
+    .await;
+    let (status, _) = gw.api("POST", &format!("/api/tunnels/requests/{code}"), Some(serde_json::json!({ "hostname": "dev.example.com" }))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    authorizing.await.unwrap().unwrap();
+    let running = tokio::spawn(agent.clone().run());
+    eventually("the agent connecting", async || {
+        let (_, body) = gw.api("GET", "/api/tunnels/dev.example.com", None).await;
+        body["tunnel"]["connections"].as_array().map(Vec::len) == Some(1)
+    })
+    .await;
+
+    // Small receive buffers, so what each stalled visitor leaves unread backs
+    // up into the tunnel rather than into the kernel.
+    let mut stalled = Vec::new();
+    for _ in 0..12 {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.set_recv_buffer_size(4096).unwrap();
+        let mut stream = socket.connect(address).await.unwrap();
+        stream.write_all(b"GET /big HTTP/1.1\r\nHost: dev.example.com\r\n\r\n").await.unwrap();
+        stalled.push(stream);
+    }
+    // Long enough for the downloads to fill whatever room they are given.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let visitor = reqwest::Client::builder().no_proxy().resolve("dev.example.com", address).build().unwrap();
+    let hello = visitor.get(format!("http://dev.example.com:{}/hello", address.port())).send();
+    let response = tokio::time::timeout(Duration::from_secs(10), hello).await.expect("an answer while other downloads are stalled").unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let big = visitor.get(format!("http://dev.example.com:{}/big", address.port())).send();
+    let body = tokio::time::timeout(Duration::from_secs(30), async { big.await.unwrap().bytes().await.unwrap() }).await.expect("a whole download while others are stalled");
+    assert_eq!(body.len(), BIG);
+
+    drop(stalled);
+    running.abort();
+    shutdown.cancel();
+    gw.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tunnel_holds_hundreds_of_websockets_on_one_connection() {
     use futures_util::{SinkExt, StreamExt};

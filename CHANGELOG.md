@@ -11,6 +11,14 @@ it is tagged.
   gateway: npanel asks the page, with a HEAD request, which nsite its
   `Nsite-Location` header names. The dashboard shows the answer before the
   site is added, from the new `GET /api/address`.
+- A tunnel no longer stalls behind visitors who stop reading. Video players
+  stop once they have buffered ahead, and a few of them used up a tunnel
+  connection's whole flow-control window: every other request on it, images
+  and videos alike, waited until they read on. A connection's window is now as
+  large as HTTP/2 allows, and each download is held back only by its own,
+  2 MiB rather than 4. Each end sets the windows for what it is sent, so
+  upgrading the server fixes downloads, and upgrading an agent fixes uploads
+  to its origin.
 
 ## [0.7.2]
 
