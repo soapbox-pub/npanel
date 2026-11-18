@@ -404,8 +404,8 @@ exact path. And every page response carries a `Link: rel="canonical"` header
 naming its one URL, so `/foo`, `/foo/`, `/foo.html` and `/foo/index.html` are
 indexed as one page rather than four competing copies. The URL named is the
 clean one: `.html` comes off and `index.html` collapses into its directory,
-which is both what site generators link to and always servable here, since an
-extensionless path resolves to its `.html` sibling. `.htm` is left alone, as
+which is both what site generators link to and always servable here, since a
+path resolves to its `.html` sibling. `.htm` is left alone, as
 it has no such step. Turn the flag off for a site that manages canonical URLs
 itself — one that declares `<link rel="canonical">` tags of its own would be
 contradicted by the header.

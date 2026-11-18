@@ -156,8 +156,8 @@ pub struct ResolvedFile {
 }
 
 /// Resolve a request path within a host's build: exact match, then a `.html`
-/// sibling and then `index.html` beneath it,
-/// and finally the site's own `/404.html`.
+/// sibling and then `index.html` beneath it, and finally the site's own
+/// `/404.html`.
 ///
 /// The `.html` step is what a multi-page generator needs: VitePress with
 /// `cleanUrls` emits `self-hosting.html` and links to `/self-hosting`. It is

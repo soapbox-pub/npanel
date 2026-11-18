@@ -173,6 +173,8 @@ mod tests {
         assert_eq!(canonical_path("/hacking.html"), "/hacking");
         assert_eq!(canonical_path("/old.htm"), "/old.htm");
         assert_eq!(canonical_path("/myindex.html"), "/myindex");
+        // Servable too: sites::tests::resolves_paths holds that to account.
+        assert_eq!(canonical_path("/release-v0.2.html"), "/release-v0.2");
     }
 
     #[test]

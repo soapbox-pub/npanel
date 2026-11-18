@@ -6,10 +6,10 @@ it is tagged.
 
 ## [Unreleased]
 
-- Resolve clean document URLs containing dots, such as `/release-v0.2`, to
-  their published HTML siblings or directory indexes. Exact files retain
-  precedence; well-known paths and missing-asset SPA behavior are unchanged.
-
+- A page whose name has a dot in it, like `/release-v0.2.html`, can be
+  reached at `/release-v0.2`. The dot was taken for an extension, so neither
+  the `.html` file nor a `/release-v0.2/index.html` was looked for, and the
+  sitemap and canonical links named that clean URL all the same.
 - A site's address can be pasted as an `nsite://` URL, as `Nsite-Location`
   and Din name one, or as the address of an https page that isn't on a
   gateway: npanel asks the page, with a HEAD request, which nsite its
