@@ -6,6 +6,10 @@ it is tagged.
 
 ## [Unreleased]
 
+- Resolve clean document URLs containing dots, such as `/release-v0.2`, to
+  their published HTML siblings or directory indexes. Exact files retain
+  precedence; well-known paths and missing-asset SPA behavior are unchanged.
+
 - A site's address can be pasted as an `nsite://` URL, as `Nsite-Location`
   and Din name one, or as the address of an https page that isn't on a
   gateway: npanel asks the page, with a HEAD request, which nsite its

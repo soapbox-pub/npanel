@@ -155,8 +155,8 @@ pub struct ResolvedFile {
     pub variants: Option<Variants>,
 }
 
-/// Resolve a request path within a host's build: exact match, then — for an
-/// extensionless path — a `.html` sibling and then `index.html` beneath it,
+/// Resolve a request path within a host's build: exact match, then a `.html`
+/// sibling and then `index.html` beneath it,
 /// and finally the site's own `/404.html`.
 ///
 /// The `.html` step is what a multi-page generator needs: VitePress with
@@ -186,9 +186,10 @@ pub fn resolve_site_path(
     let normalized = normalize_site_path(request_path);
     let exact = normalized == "/.well-known" || normalized.starts_with("/.well-known/");
     let extension = extname(&normalized);
-    let extensionless = !exact && extension.is_empty();
-    let html_path = (extensionless && normalized != "/").then(|| format!("{normalized}.html"));
-    let index_path = extensionless.then(|| join_root(&format!("{normalized}/index.html")));
+    // A dot may belong to a document name, such as /release-v0.2. Only
+    // published siblings qualify; missing assets still do not get an SPA shell.
+    let html_path = (!exact && normalized != "/").then(|| format!("{normalized}.html"));
+    let index_path = (!exact).then(|| join_root(&format!("{normalized}/index.html")));
     let not_found = (!exact).then_some("/404.html");
     let address = normalized.rsplit('/').next().is_some_and(|segment| segment.contains('@'));
     let shell = !exact && spa && (address || matches!(extension.to_lowercase().as_str(), "" | ".html" | ".htm"));
@@ -464,6 +465,9 @@ mod tests {
                     ("/guide/index.html", &sha('3')),
                     ("/404.html", &sha('4')),
                     ("/app.js", &sha('5')),
+                    ("/release-v0.2.html", &sha('2')),
+                    ("/guide-v0.2/index.html", &sha('3')),
+                    ("/app.js.html", &sha('2')),
                     ("/.well-known/apple-app-site-association", &sha('6')),
                     ("/.well-known/matrix.html", &sha('7')),
                     ("/.well-known/npanel/preview.js", &sha('8')),
@@ -473,6 +477,11 @@ mod tests {
             let at = |path: &str, spa: bool| resolve_site_path(conn, build, path, spa).unwrap().map(|f| (f.path, f.status));
             assert_eq!(at("/", false), Some(("/index.html".into(), 200)));
             assert_eq!(at("/about", false), Some(("/about.html".into(), 200)));
+            assert_eq!(at("/release-v0.2", false), Some(("/release-v0.2.html".into(), 200)));
+            assert_eq!(at("/release-v0.2", true), Some(("/release-v0.2.html".into(), 200)));
+            assert_eq!(at("/guide-v0.2", false), Some(("/guide-v0.2/index.html".into(), 200)));
+            assert_eq!(at("/guide-v0.2/", false), Some(("/guide-v0.2/index.html".into(), 200)));
+            assert_eq!(at("/app.js", false), Some(("/app.js".into(), 200)));
             assert_eq!(at("/guide", false), Some(("/guide/index.html".into(), 200)));
             assert_eq!(at("/guide/", false), Some(("/guide/index.html".into(), 200)));
             assert_eq!(at("/missing", false), Some(("/404.html".into(), 404)));

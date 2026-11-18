@@ -487,8 +487,10 @@ which stores the files it generates before it writes the rows naming them.
 `src/serve.rs` handles a request in a few steps: find the host, find its
 build, resolve the path, send the blob.
 
-Path resolution mirrors what static hosts do: exact match, then `index.html` for
-extensionless paths, then the site's own `/404.html`. Resolution reads
+Path resolution tries an exact match, a `.html` sibling, then `index.html`
+beneath the requested path, before the site's own `/404.html`. Dots in document
+names, such as `/release-v0.2`, do not prevent lookup of a published HTML file.
+Well-known paths require an exact match. Resolution reads
 `host_build_files`, never a manifest event — serving a file never parses Nostr.
 
 The answer is then held in memory, keyed by build and path, which is what
