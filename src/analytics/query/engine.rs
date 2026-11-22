@@ -780,7 +780,7 @@ impl<'c> QueryEngine<'c> {
 
     fn groups(&self, sql: &str, params: Params, dimensions: usize) -> Result<Groups> {
         let mut statement = self.conn.prepare(sql)?;
-        let names: Vec<String> = statement.column_names().into_iter().map(str::to_string).collect();
+        let names: Vec<String> = statement.column_names().map(str::to_string).collect();
         let mut rows = statement.query(rusqlite::params_from_iter(params.0))?;
         let mut groups = Groups::new();
 

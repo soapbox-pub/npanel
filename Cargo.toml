@@ -58,7 +58,7 @@ regex = "1"
 resvg = { version = "0.48", default-features = false, features = ["text", "raster-images", "system-fonts", "memmap-fonts"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 safelog = "0.10"
 svgtypes = "0.16"
 scraper = "0.23"
