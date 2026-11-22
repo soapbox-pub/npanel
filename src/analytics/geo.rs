@@ -91,9 +91,12 @@ impl Geo {
 
     /// Load whatever database is already on disk.
     pub fn load(&self) {
-        match Reader::open_mmap(self.inner.dir.join(FILE)) {
+        // SAFETY: the mapped file is never written to: a new month's database
+        // is unpacked under another name and renamed over it, which leaves
+        // this mapping on the old file until the reader is dropped.
+        match unsafe { Reader::open_mmap(self.inner.dir.join(FILE)) } {
             Ok(reader) => {
-                let built = chrono::DateTime::from_timestamp(reader.metadata.build_epoch as i64, 0).unwrap_or_default();
+                let built = chrono::DateTime::from_timestamp(reader.metadata().build_epoch as i64, 0).unwrap_or_default();
                 self.inner.log.info("geo_loaded", fields! { "built" => built.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) });
                 *self.inner.reader.write() = Some(reader);
             }
@@ -131,7 +134,7 @@ impl Geo {
         let Some(reader) = reader.as_ref() else {
             return Location::default();
         };
-        let Ok(Some(record)) = reader.lookup::<CityRecord>(address) else {
+        let Ok(Some(record)) = reader.lookup(address).and_then(|found| found.decode::<CityRecord>()) else {
             return Location::default();
         };
 
@@ -155,7 +158,7 @@ impl Geo {
         let month = now.format("%Y-%m").to_string();
         let previous = (now.date_naive().with_day(1).unwrap_or_default() - chrono::Days::new(1)).format("%Y-%m").to_string();
         let have = self.inner.reader.read().as_ref().map(|r| {
-            chrono::DateTime::from_timestamp(r.metadata.build_epoch as i64, 0).unwrap_or_default().format("%Y-%m").to_string()
+            chrono::DateTime::from_timestamp(r.metadata().build_epoch as i64, 0).unwrap_or_default().format("%Y-%m").to_string()
         });
 
         // This month's may not be published yet in its first days; last

@@ -44,7 +44,7 @@ instant-acme = { version = "0.8", default-features = false, features = ["ring", 
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 libc = "0.2"
 lru = "0.12"
-maxminddb = { version = "0.26", features = ["mmap"] }
+maxminddb = { version = "0.33", features = ["mmap"] }
 memmap2 = "0.9"
 parking_lot = "0.12"
 rand = "0.8"
