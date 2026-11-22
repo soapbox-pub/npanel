@@ -43,7 +43,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server", "client-legacy", 
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "rcgen"] }
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 libc = "0.2"
-lru = "0.12"
+lru = "0.19"
 maxminddb = { version = "0.33", features = ["mmap"] }
 memmap2 = "0.9"
 parking_lot = "0.12"
